@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ZMj+kj7ZI6huPLYgoW44dJOh4GWNQoZV8xqxA28npbE='; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Соты — рабочее пространство · демонстрация</title>
+  <style>html{color-scheme:light dark}body{margin:0;padding:16px;background:light-dark(#fff,#121817);color:light-dark(#17252a,#e8efed)}</style>
+</head>
+<body>
+<div id="ideal-soty-workspace" lang="ru" aria-label="Соты — рабочее пространство">
+  <div class="sw-demo-bar">
+    <span>Демонстрация концепции</span>
+    <label>Состояние
+      <select id="sw-scenario" aria-label="Состояние демонстрации">
+        <option value="work">Рабочий пример</option>
+        <option value="empty">Пустое пространство</option>
+        <option value="offline">Без сети</option>
+      </select>
+    </label>
+  </div>
+  <div class="sw-product">
+    <header class="sw-header">
+      <div class="sw-brand"><span class="sw-brand-mark" aria-hidden="true"></span><strong>Соты</strong></div>
+      <div class="sw-header-actions">
+        <button type="button" id="sw-assistant-toggle" class="sw-button cursor-interaction" aria-expanded="false" aria-controls="sw-assistant">Помощник</button>
+        <button type="button" id="sw-profile" class="sw-avatar cursor-interaction" aria-label="Мой профиль и настройки">Я</button>
+      </div>
+    </header>
+    <nav class="sw-nav" aria-label="Главные разделы">
+      <button type="button" class="sw-nav-button cursor-interaction" data-view="home" aria-current="page">Моё</button>
+      <button type="button" class="sw-nav-button cursor-interaction" data-view="messages">Сообщения</button>
+      <button type="button" class="sw-nav-button cursor-interaction" data-view="search">Поиск</button>
+    </nav>
+    <div id="sw-offline" class="sw-connection" hidden>
+      <span>Без сети · сохранённая работа доступна</span>
+      <button type="button" id="sw-reconnect" class="sw-link-button cursor-interaction">Вернуть связь</button>
+    </div>
+    <div class="sw-layout">
+      <main class="sw-main">
+        <section id="sw-home" aria-labelledby="sw-home-title">
+          <div class="sw-page-heading"><div><span class="sw-eyebrow">Ваше пространство</span><h1 id="sw-home-title">Моё</h1></div><button type="button" class="sw-button sw-primary cursor-interaction" data-add>+ Добавить</button></div>
+          <div id="sw-empty" class="sw-empty" hidden><span class="sw-empty-mark" aria-hidden="true"></span><h2>Здесь будет нужное вам</h2><p>Приложения, люди и общие дела — в одном месте.</p><button type="button" class="sw-button sw-primary cursor-interaction" data-add>Добавить приложение</button></div>
+          <div id="sw-home-content">
+            <div class="sw-section-heading"><h2>Закреплено</h2></div>
+            <div class="sw-object-grid" id="sw-home-objects">
+              <div class="sw-object"><button type="button" class="sw-object-open cursor-interaction" data-open="planner"><span class="sw-app-mark" aria-hidden="true">П</span><span><strong>Планировщик</strong><small>Личные задачи</small></span></button><button type="button" class="sw-link-button cursor-interaction" data-discuss="planner">Обсудить</button></div>
+              <div class="sw-object"><button type="button" class="sw-object-open cursor-interaction" data-open="document"><span class="sw-app-mark" aria-hidden="true">Д</span><span><strong>Документы</strong><small>Заметки и результаты</small></span></button><button type="button" class="sw-link-button cursor-interaction" data-discuss="document">Обсудить</button></div>
+              <div class="sw-object"><button type="button" class="sw-object-open cursor-interaction" data-open="board"><span class="sw-app-mark" aria-hidden="true">С</span><span><strong>Доска проекта</strong><small>Общее дело команды</small></span></button><button type="button" class="sw-link-button cursor-interaction" data-discuss="board">Обсудить</button></div>
+              <div class="sw-object"><button type="button" class="sw-object-open cursor-interaction" id="sw-team-open"><span class="sw-person-mark" aria-hidden="true">К</span><span><strong>Команда проекта</strong><small>Открыть разговор</small></span></button><span class="sw-object-note">Люди</span></div>
+            </div>
+          </div>
+          <div id="sw-added-card" class="sw-object" hidden><button type="button" class="sw-object-open cursor-interaction" data-open="shopping"><span class="sw-app-mark" aria-hidden="true">П</span><span><strong>Покупки</strong><small>Добавлено в ваше пространство</small></span></button><button type="button" class="sw-link-button cursor-interaction" data-discuss="shopping">Обсудить</button></div>
+        </section>
+        <section id="sw-workspace" hidden aria-labelledby="sw-app-title">
+          <div class="sw-work-header"><button type="button" id="sw-back" class="sw-link-button cursor-interaction">← Моё</button><button type="button" id="sw-app-settings" class="sw-link-button cursor-interaction">Настройки приложения</button></div>
+          <div class="sw-page-heading"><div><span id="sw-access-label" class="sw-eyebrow">Мои данные</span><h1 id="sw-app-title">Планировщик</h1></div><span class="sw-profile-note">Профиль Сот · Я</span></div>
+          <div class="sw-app-tabs" role="tablist" aria-label="Работа и обсуждение">
+            <button type="button" id="sw-tab-app" role="tab" aria-selected="true" aria-controls="sw-app-panel" class="sw-tab cursor-interaction">Приложение</button>
+            <button type="button" id="sw-tab-chat" role="tab" aria-selected="false" aria-controls="sw-chat-panel" class="sw-tab cursor-interaction">Обсуждение</button>
+          </div>
+          <div id="sw-app-panel" role="tabpanel" aria-labelledby="sw-tab-app">
+            <section data-app-panel="planner" aria-label="Задачи планировщика">
+              <div class="sw-section-heading"><h2>План на неделю</h2><span id="sw-task-state">Локальный пример</span></div>
+              <div id="sw-task-list" class="sw-task-list">
+                <label class="sw-check"><input type="checkbox"><span>Согласовать первый результат</span></label>
+                <label class="sw-check"><input type="checkbox"><span>Подготовить короткий документ</span></label>
+              </div>
+              <div role="group" id="sw-task-form" class="sw-compose"><label for="sw-task-input">Новая задача</label><div><input id="sw-task-input" placeholder="Что нужно сделать?" maxlength="160"><button class="sw-button sw-primary cursor-interaction" type="button">Добавить</button></div></div>
+              <label class="sw-field" for="sw-planner-note">Заметка к плану<textarea id="sw-planner-note" data-draft="planner" rows="3" placeholder="Введите текст и переключитесь в обсуждение"></textarea></label>
+            </section>
+            <section data-app-panel="document" hidden aria-label="Редактор документа"><div class="sw-section-heading"><h2>Короткий документ</h2><span>Ваш черновик</span></div><label class="sw-field" for="sw-document-text">Текст документа<textarea id="sw-document-text" data-draft="document" rows="7" placeholder="Здесь можно начать документ…"></textarea></label><p class="sw-hint">Переключайтесь между работой и обсуждением — текст остаётся на месте.</p></section>
+            <section data-app-panel="board" hidden aria-label="Доска проекта"><div class="sw-section-heading"><h2>Следующий шаг</h2><span>Общее пространство</span></div><div class="sw-board"><div><h3>Идея</h3><p>Один понятный путь к результату</p></div><div><h3>В работе</h3><label class="sw-field" for="sw-board-note">Заметка команды<textarea id="sw-board-note" data-draft="board" rows="4" placeholder="Что проверяем сейчас?"></textarea></label></div></div></section>
+            <section data-app-panel="shopping" hidden aria-label="Подключённое приложение Покупки"><div class="sw-section-heading"><h2>Мой список</h2><span>Общий вход Сот · пример</span></div><p class="sw-hint">Приложение открыто в вашем профиле.</p><label class="sw-field" for="sw-shopping-note">Что купить<textarea id="sw-shopping-note" data-draft="shopping" rows="5" placeholder="Добавьте свой список"></textarea></label></section>
+            <p class="sw-save-note">Текст хранится только в этой демонстрации.</p>
+          </div>
+          <div id="sw-chat-panel" role="tabpanel" aria-labelledby="sw-tab-chat" hidden>
+            <div class="sw-section-heading"><h2 id="sw-discussion-title">Обсуждение планировщика</h2><span>Команда проекта · пример</span></div>
+            <div id="sw-discussion-log" class="sw-chat-log" role="log" aria-label="Сообщения обсуждения"><div class="sw-message"><small>Участник · пример</small><p>Давайте начнём с понятного плана и одного результата.</p></div></div>
+            <div role="group" id="sw-discussion-form" class="sw-compose"><label for="sw-discussion-input">Сообщение</label><textarea id="sw-discussion-input" rows="3" maxlength="1000" placeholder="Обсудите текущее приложение"></textarea><div class="sw-compose-footer"><span class="sw-hint">Черновик остаётся при переключении</span><button type="button" class="sw-button sw-primary cursor-interaction">Отправить</button></div></div>
+          </div>
+        </section>
+        <section id="sw-messages" hidden aria-labelledby="sw-messages-title">
+          <div class="sw-page-heading"><div><span class="sw-eyebrow">Люди и общие дела</span><h1 id="sw-messages-title">Сообщения</h1></div></div>
+          <div class="sw-thread-list"><button type="button" class="sw-thread cursor-interaction" id="sw-team-thread"><span class="sw-person-mark" aria-hidden="true">К</span><span><strong>Команда проекта</strong><small>Продолжим здесь</small></span><span aria-hidden="true">→</span></button><button type="button" class="sw-thread cursor-interaction" data-discuss="planner"><span class="sw-app-mark" aria-hidden="true">П</span><span><strong>Планировщик</strong><small>Обсуждение приложения</small></span><span aria-hidden="true">→</span></button></div>
+          <section id="sw-team-chat" hidden aria-label="Разговор команды"><div class="sw-section-heading"><h2>Команда проекта</h2><span>Локальный пример</span></div><div id="sw-team-log" class="sw-chat-log" role="log" aria-label="Сообщения команды"><div class="sw-message"><small>Участник · пример</small><p>План, обсуждение и результат остаются рядом.</p></div></div><div role="group" id="sw-team-form" class="sw-compose"><label for="sw-team-input">Сообщение команде</label><textarea id="sw-team-input" rows="3" maxlength="1000" placeholder="Напишите сообщение"></textarea><div class="sw-compose-footer"><span></span><button type="button" class="sw-button sw-primary cursor-interaction">Отправить</button></div></div></section>
+        </section>
+        <section id="sw-search" hidden aria-labelledby="sw-search-title"><div class="sw-page-heading"><div><span class="sw-eyebrow">Нужное рядом</span><h1 id="sw-search-title">Поиск</h1></div></div><label class="sw-field" for="sw-search-input">Приложение или разговор<input id="sw-search-input" type="search" placeholder="Например, документы"></label><div id="sw-search-results" class="sw-search-results" aria-live="polite"></div></section>
+      </main>
+      <aside id="sw-assistant" class="sw-assistant" hidden aria-labelledby="sw-assistant-title">
+        <div class="sw-assistant-heading"><div><span class="sw-eyebrow">Помощник рядом</span><h2 id="sw-assistant-title">Моё пространство</h2></div><button type="button" id="sw-assistant-close" class="sw-link-button cursor-interaction">Закрыть</button></div>
+        <p id="sw-assistant-context" class="sw-hint">В контексте — ваше пространство.</p>
+        <div role="group" id="sw-assistant-form"><label class="sw-field" for="sw-assistant-input">Поручение<textarea id="sw-assistant-input" rows="4" maxlength="500" placeholder="Собери задачи из обсуждения"></textarea></label><button type="button" class="sw-button sw-primary cursor-interaction">Поручить</button></div>
+        <div id="sw-assistant-result" class="sw-assistant-result" hidden aria-live="polite"><span class="sw-eyebrow">Пример результата</span><p id="sw-assistant-response"></p><button type="button" id="sw-assistant-apply" class="sw-button cursor-interaction">Добавить в план</button></div>
+      </aside>
+    </div>
+    <footer class="sw-footer"><span id="sw-status" role="status" aria-live="polite">Всё готово к работе в примере</span><span>Рабочее пространство</span></footer>
+    <dialog id="sw-add-dialog" class="sw-dialog" aria-labelledby="sw-add-title"><div class="sw-dialog-heading"><h2 id="sw-add-title">Добавить приложение</h2><button type="button" class="sw-link-button cursor-interaction" data-close="sw-add-dialog">Закрыть</button></div><span class="sw-eyebrow">Подготовленный проект · пример</span><div class="sw-project"><span class="sw-app-mark" aria-hidden="true">П</span><div><h3>Покупки</h3><p>Личный список с общим входом Сот</p></div></div><div class="sw-device"><span class="sw-device-dot" aria-hidden="true"></span><div><strong>Мой компьютер</strong><small id="sw-device-state">Подключён · проект готов</small></div></div><p id="sw-add-note" class="sw-hint">Соты подключат проект и сразу откроют его в вашем профиле.</p><button type="button" id="sw-add-confirm" class="sw-button sw-primary cursor-interaction">Добавить и открыть</button><button type="button" id="sw-add-reconnect" class="sw-button cursor-interaction" hidden>Восстановить связь в примере</button></dialog>
+    <dialog id="sw-settings-dialog" class="sw-dialog" aria-labelledby="sw-settings-title"><div class="sw-dialog-heading"><h2 id="sw-settings-title">Мой профиль</h2><button type="button" class="sw-link-button cursor-interaction" data-close="sw-settings-dialog">Закрыть</button></div><div id="sw-profile-settings"><p class="sw-hint">Демо-профиль · один вход для приложений</p><label class="sw-field" for="sw-theme">Оформление<select id="sw-theme"><option value="system">Как в системе</option><option value="light">Светлое</option><option value="dark">Тёмное</option></select></label><label class="sw-check"><input id="sw-notifications" type="checkbox" checked><span>Уведомления о сообщениях</span></label></div><div id="sw-app-settings-content" hidden><p id="sw-settings-app-name" class="sw-hint">Планировщик</p><label class="sw-field" for="sw-visibility">Кому доступно<select id="sw-visibility"><option value="private">Только мне</option><option value="team">Команде проекта</option><option value="link">По ссылке</option></select></label><p class="sw-hint">Личные записи остаются в вашей области.</p></div><button type="button" id="sw-settings-save" class="sw-button sw-primary cursor-interaction">Готово</button></dialog>
+  </div>
+</div>
+<style>
+#ideal-soty-workspace{--sw-bg:light-dark(#f5f6f3,#11191b);--sw-panel:light-dark(#fff,#1a2427);--sw-fg:light-dark(#172e2d,#e6f0ee);--sw-muted:light-dark(#556966,#a4b9b3);--sw-line:light-dark(#d7e1db,#354849);--sw-soft:light-dark(#e8eeea,#253537);--sw-accent:light-dark(#255d52,#b1e5d0);--sw-on-accent:light-dark(#fff,#15362e);color:var(--sw-fg);font:400 15px/1.5 "Segoe UI",system-ui,sans-serif;width:100%;min-width:0;color-scheme:light dark}
+#ideal-soty-workspace *{box-sizing:border-box}
+#ideal-soty-workspace [hidden]{display:none!important}
+#ideal-soty-workspace button,#ideal-soty-workspace input,#ideal-soty-workspace select,#ideal-soty-workspace textarea{font:inherit;color:inherit}
+#ideal-soty-workspace button{touch-action:manipulation}
+#ideal-soty-workspace h1,#ideal-soty-workspace h2,#ideal-soty-workspace h3,#ideal-soty-workspace p{margin:0}
+#ideal-soty-workspace h1{font-size:28px;line-height:1.2;font-weight:500;letter-spacing:-.04em}
+#ideal-soty-workspace h2{font-size:17px;line-height:1.35;font-weight:500;letter-spacing:-.02em}
+#ideal-soty-workspace h3{font-size:15px;font-weight:500}
+#ideal-soty-workspace strong{font-weight:500}
+#ideal-soty-workspace small{display:block;font-size:13px;line-height:1.45;color:var(--sw-muted)}
+#ideal-soty-workspace .sw-demo-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:0 96px 12px 0;color:var(--sw-muted);font-size:12px}
+#ideal-soty-workspace .sw-demo-bar label{display:flex;align-items:center;gap:8px}
+#ideal-soty-workspace .sw-demo-bar select{max-width:185px;background:var(--sw-panel);border:1px solid var(--sw-line);border-radius:8px;padding:6px}
+#ideal-soty-workspace .sw-product{color:var(--sw-fg);background:var(--sw-bg);border:1px solid var(--sw-line);border-radius:20px;overflow:clip}
+#ideal-soty-workspace .sw-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 28px 16px}
+#ideal-soty-workspace .sw-brand{display:flex;align-items:center;gap:10px;font-size:20px;letter-spacing:-.04em}
+#ideal-soty-workspace .sw-brand-mark,#ideal-soty-workspace .sw-empty-mark{display:block;background:var(--sw-accent);clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)}
+#ideal-soty-workspace .sw-brand-mark{width:24px;height:27px}
+#ideal-soty-workspace .sw-header-actions{display:flex;align-items:center;gap:10px}
+#ideal-soty-workspace .sw-button{display:inline-flex;justify-content:center;align-items:center;gap:8px;min-height:40px;padding:9px 15px;border:1px solid var(--sw-line);border-radius:10px;background:var(--sw-panel);font-weight:500;text-align:center;max-width:100%;overflow-wrap:anywhere}
+#ideal-soty-workspace .sw-primary{background:var(--sw-accent);color:var(--sw-on-accent);border-color:var(--sw-accent)}
+#ideal-soty-workspace .sw-button:disabled{opacity:.55}
+#ideal-soty-workspace .sw-avatar{height:40px;width:40px;border:0;border-radius:50%;background:var(--sw-soft);font-weight:500}
+#ideal-soty-workspace .sw-nav{display:flex;padding:0 28px;gap:24px;border-bottom:1px solid var(--sw-line)}
+#ideal-soty-workspace .sw-nav-button{min-height:46px;padding:10px 0;border:0;background:transparent;color:var(--sw-muted);border-bottom:2px solid transparent}
+#ideal-soty-workspace .sw-nav-button[aria-current=page]{color:var(--sw-fg);border-bottom-color:var(--sw-accent);font-weight:500}
+#ideal-soty-workspace .sw-layout{display:grid;grid-template-columns:minmax(0,1fr)}
+#ideal-soty-workspace .sw-layout.has-assistant{grid-template-columns:minmax(0,1fr) minmax(240px,300px)}
+#ideal-soty-workspace .sw-main{min-width:0;padding:28px}
+#ideal-soty-workspace .sw-page-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px;flex-wrap:wrap}
+#ideal-soty-workspace .sw-eyebrow{display:block;color:var(--sw-muted);font-size:12px;margin-bottom:5px}
+#ideal-soty-workspace .sw-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:24px 0 12px;flex-wrap:wrap}
+#ideal-soty-workspace .sw-section-heading>span{color:var(--sw-muted);font-size:12px}
+#ideal-soty-workspace .sw-app-mark,#ideal-soty-workspace .sw-person-mark{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:40px;height:44px;color:var(--sw-accent);background:var(--sw-soft);font-weight:500}
+#ideal-soty-workspace .sw-app-mark{clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)}
+#ideal-soty-workspace .sw-person-mark{border-radius:50%;height:40px}
+#ideal-soty-workspace .sw-object-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+#ideal-soty-workspace .sw-object{display:flex;align-items:center;gap:4px;min-width:0;padding:8px 12px 8px 4px;background:var(--sw-panel);border-radius:12px}
+#ideal-soty-workspace .sw-object-open{display:flex;align-items:center;gap:12px;padding:10px;border:0;background:transparent;text-align:left;min-width:0;flex:1}
+#ideal-soty-workspace .sw-object-open>span:last-child{min-width:0}
+#ideal-soty-workspace .sw-object strong,#ideal-soty-workspace .sw-thread strong{display:block;overflow-wrap:anywhere}
+#ideal-soty-workspace .sw-link-button{padding:7px 4px;min-height:36px;border:0;background:transparent;color:var(--sw-accent);text-align:left;overflow-wrap:anywhere}
+#ideal-soty-workspace .sw-object-note{font-size:12px;color:var(--sw-muted)}
+#ideal-soty-workspace #sw-added-card{margin-top:10px}
+#ideal-soty-workspace .sw-work-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+#ideal-soty-workspace .sw-profile-note{color:var(--sw-muted);font-size:12px}
+#ideal-soty-workspace .sw-app-tabs{display:flex;gap:6px;align-items:center;border-bottom:1px solid var(--sw-line);padding-bottom:10px}
+#ideal-soty-workspace .sw-tab{padding:8px 12px;min-height:40px;border:0;border-radius:9px;background:transparent;color:var(--sw-muted)}
+#ideal-soty-workspace .sw-tab[aria-selected=true]{background:var(--sw-soft);color:var(--sw-fg);font-weight:500}
+#ideal-soty-workspace .sw-task-list{display:grid;gap:8px}
+#ideal-soty-workspace .sw-check{display:flex;align-items:center;gap:10px;padding:10px 0;min-height:44px}
+#ideal-soty-workspace .sw-check input{width:18px;height:18px;flex-shrink:0;accent-color:var(--sw-accent)}
+#ideal-soty-workspace .sw-check input:checked+span{text-decoration:line-through;color:var(--sw-muted)}
+#ideal-soty-workspace .sw-field{display:grid;gap:7px;margin:18px 0 0;min-width:0}
+#ideal-soty-workspace input:not([type=checkbox]),#ideal-soty-workspace textarea,#ideal-soty-workspace .sw-field select{width:100%;max-width:100%;min-width:0;padding:11px 12px;border:1px solid var(--sw-line);border-radius:9px;background:var(--sw-panel);resize:vertical;font-size:16px;line-height:1.45}
+#ideal-soty-workspace input::placeholder,#ideal-soty-workspace textarea::placeholder{color:var(--sw-muted)}
+#ideal-soty-workspace .sw-compose{display:grid;gap:8px;margin-top:20px}
+#ideal-soty-workspace .sw-compose>div{display:flex;align-items:center;gap:8px}
+#ideal-soty-workspace .sw-compose>div>input{flex:1}
+#ideal-soty-workspace .sw-compose-footer{justify-content:space-between;flex-wrap:wrap}
+#ideal-soty-workspace .sw-hint,#ideal-soty-workspace .sw-save-note{font-size:13px;color:var(--sw-muted)}
+#ideal-soty-workspace .sw-save-note{margin-top:16px}
+#ideal-soty-workspace .sw-hint{margin-top:12px}
+#ideal-soty-workspace .sw-board{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#ideal-soty-workspace .sw-board>div{min-width:0;background:var(--sw-panel);padding:18px;border-radius:12px}
+#ideal-soty-workspace .sw-board p{margin-top:12px}
+#ideal-soty-workspace .sw-chat-log{display:grid;gap:12px;margin-top:16px}
+#ideal-soty-workspace .sw-message{padding:14px 16px;max-width:90%;background:var(--sw-panel);border-radius:12px;overflow-wrap:anywhere}
+#ideal-soty-workspace .sw-message p{margin-top:5px;white-space:pre-wrap}
+#ideal-soty-workspace .sw-message.is-own{justify-self:end;background:var(--sw-soft)}
+#ideal-soty-workspace .sw-thread-list{display:grid;gap:8px}
+#ideal-soty-workspace .sw-thread{display:flex;align-items:center;gap:12px;width:100%;padding:16px;background:var(--sw-panel);border:0;border-radius:12px;text-align:left}
+#ideal-soty-workspace .sw-thread>span:nth-child(2){flex:1;min-width:0}
+#ideal-soty-workspace .sw-search-results{display:grid;gap:8px;margin-top:20px}
+#ideal-soty-workspace .sw-empty{padding:22px 0 34px;max-width:390px}
+#ideal-soty-workspace .sw-empty-mark{height:38px;width:34px;opacity:.3;margin-bottom:16px}
+#ideal-soty-workspace .sw-empty p{color:var(--sw-muted);margin:8px 0 20px}
+#ideal-soty-workspace .sw-connection{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 28px;background:var(--sw-soft);flex-wrap:wrap;font-size:13px}
+#ideal-soty-workspace .sw-assistant{min-width:0;background:var(--sw-panel);padding:24px;border-left:1px solid var(--sw-line)}
+#ideal-soty-workspace .sw-assistant-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+#ideal-soty-workspace #sw-assistant-form>.sw-button{margin-top:12px}
+#ideal-soty-workspace .sw-assistant-result{border-top:1px solid var(--sw-line);padding-top:18px;margin-top:20px}
+#ideal-soty-workspace .sw-assistant-result p{margin:8px 0 14px;white-space:pre-line}
+#ideal-soty-workspace .sw-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 28px;border-top:1px solid var(--sw-line);font-size:12px;color:var(--sw-muted);flex-wrap:wrap}
+#ideal-soty-workspace .sw-dialog{color:var(--sw-fg);background:var(--sw-panel);border:1px solid var(--sw-line);border-radius:16px;padding:24px;width:min(440px,calc(100% - 24px));max-width:calc(100% - 24px)}
+#ideal-soty-workspace .sw-dialog::backdrop{background:color-mix(in srgb,var(--sw-fg) 28%,transparent)}
+#ideal-soty-workspace .sw-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+#ideal-soty-workspace .sw-dialog-heading>.sw-link-button{flex-shrink:0;white-space:nowrap}
+#ideal-soty-workspace .sw-project{display:flex;align-items:center;gap:12px;margin:12px 0 22px}
+#ideal-soty-workspace .sw-project p{color:var(--sw-muted);font-size:13px;margin-top:4px}
+#ideal-soty-workspace .sw-device{display:flex;align-items:center;gap:12px;padding:14px;background:var(--sw-soft);border-radius:10px}
+#ideal-soty-workspace .sw-device-dot{width:7px;height:7px;border-radius:50%;background:var(--sw-accent)}
+#ideal-soty-workspace .sw-dialog>.sw-button{margin-top:18px}
+@media(max-width:900px){#ideal-soty-workspace .sw-object-grid{grid-template-columns:minmax(0,1fr)}#ideal-soty-workspace .sw-layout.has-assistant{grid-template-columns:minmax(0,1fr) minmax(220px,270px)}}
+@media(max-width:680px){#ideal-soty-workspace .sw-header{padding:18px 16px 12px}#ideal-soty-workspace .sw-nav{padding:0 16px;gap:22px}#ideal-soty-workspace .sw-main{padding:22px 16px}#ideal-soty-workspace .sw-layout.has-assistant{grid-template-columns:minmax(0,1fr)}#ideal-soty-workspace .sw-assistant{border-left:0;border-top:1px solid var(--sw-line);padding:22px 16px}#ideal-soty-workspace .sw-footer{padding:12px 16px}#ideal-soty-workspace .sw-connection{padding:10px 16px}#ideal-soty-workspace .sw-board{grid-template-columns:minmax(0,1fr)}#ideal-soty-workspace .sw-object{padding-right:8px}#ideal-soty-workspace .sw-demo-bar{padding-right:92px;gap:6px}#ideal-soty-workspace .sw-demo-bar label{flex-wrap:wrap;gap:4px}#ideal-soty-workspace .sw-product{border-radius:14px}#ideal-soty-workspace h1{font-size:25px}#ideal-soty-workspace .sw-page-heading{margin-bottom:20px}#ideal-soty-workspace .sw-section-heading>span{max-width:100%}}
+@media(pointer:coarse){#ideal-soty-workspace button{min-height:44px}#ideal-soty-workspace .sw-avatar{width:44px;height:44px}#ideal-soty-workspace select{min-height:44px}}
+</style>
+<script>
+(()=>{
+  const root=document.getElementById('ideal-soty-workspace');
+  if(!root)return;
+  const byId=id=>root.querySelector('#'+id);
+  const names={planner:'Планировщик',document:'Документы',board:'Доска проекта',shopping:'Покупки'};
+  const state={view:'home',app:'planner',surface:'app',scenario:'work',added:false,assistant:false,theme:'system',visibility:{planner:'private',document:'private',board:'team',shopping:'private'},discussions:{planner:'',document:'',board:'',shopping:''},messages:{planner:[],document:[],board:[],shopping:[]},teamMessages:[],teamDraft:'',notes:{planner:'',document:'',board:'',shopping:''},tasks:[]};
+  let addOpener=null,settingsOpener=null,assistantOpener=null,settingsKind='profile';
+  const validView=value=>['home','app','messages','search'].includes(value);
+  const shorten=(value,max)=>typeof value==='string'?value.slice(0,max):'';
+  function applySaved(saved){
+    const value=saved?.modelContent,detail=saved?.privateContent;
+    if(value?.schema!=='soty.ideal-workspace.v1')return;
+    if(validView(value.view))state.view=value.view;
+    if(names[value.app])state.app=value.app;
+    if(['app','chat'].includes(value.surface))state.surface=value.surface;
+    if(['work','empty','offline'].includes(value.scenario))state.scenario=value.scenario;
+    state.added=value.added===true;state.assistant=value.assistant===true;
+    if(detail&&typeof detail==='object'){
+      for(const key of Object.keys(names)){state.notes[key]=shorten(detail.notes?.[key],2000);state.discussions[key]=shorten(detail.discussions?.[key],1000);}
+      state.teamDraft=shorten(detail.teamDraft,1000);
+      state.tasks=Array.isArray(detail.tasks)?detail.tasks.filter(v=>typeof v==='string'&&v.length<=160).slice(0,12):[];
+    }
+    if(state.app==='shopping'&&!state.added)state.view='home';
+  }
+  function persist(){
+    if(!window.openai?.setWidgetState)return;
+    window.openai.setWidgetState({modelContent:{schema:'soty.ideal-workspace.v1',view:state.view,app:state.app,surface:state.surface,scenario:state.scenario,added:state.added,assistant:state.assistant},privateContent:{notes:state.notes,discussions:state.discussions,teamDraft:state.teamDraft,tasks:state.tasks}}).catch(()=>{});
+  }
+  function status(text){byId('sw-status').textContent=text;}
+  function renderMessage(log,message){
+    const article=document.createElement('div');article.className='sw-message is-own';
+    const label=document.createElement('small');label.textContent=message.waiting?'Я · ожидает связи в примере':'Я · локальный пример';
+    const text=document.createElement('p');text.textContent=message.text;article.append(label,text);log.append(article);
+  }
+  function renderDiscussion(){
+    const log=byId('sw-discussion-log');log.querySelectorAll('.is-own').forEach(node=>node.remove());
+    for(const message of state.messages[state.app])renderMessage(log,message);
+    byId('sw-discussion-input').value=state.discussions[state.app];
+  }
+  function updateContext(){
+    const name=state.view==='app'?names[state.app]:state.view==='messages'?'Команда проекта':state.view==='search'?'Поиск':'Моё пространство';
+    byId('sw-assistant-title').textContent=name;
+    byId('sw-assistant-context').textContent='В контексте — '+name.toLocaleLowerCase('ru')+'. Открытый экран остаётся на месте.';
+  }
+  function renderView(focus=false){
+    for(const [view,id]of Object.entries({home:'sw-home',app:'sw-workspace',messages:'sw-messages',search:'sw-search'}))byId(id).hidden=state.view!==view;
+    root.querySelectorAll('[data-view]').forEach(button=>{if(button.dataset.view===state.view||state.view==='app'&&button.dataset.view==='home')button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});
+    byId('sw-empty').hidden=state.scenario!=='empty'||state.added;
+    byId('sw-home').querySelector('.sw-page-heading [data-add]').hidden=state.scenario==='empty'&&!state.added;
+    byId('sw-home-content').hidden=state.scenario==='empty';
+    byId('sw-added-card').hidden=!state.added;
+    byId('sw-offline').hidden=state.scenario!=='offline';
+    byId('sw-scenario').value=state.scenario;
+    byId('sw-app-title').textContent=names[state.app];
+    byId('sw-discussion-title').textContent='Обсуждение · '+names[state.app];
+    byId('sw-access-label').textContent=state.visibility[state.app]==='team'?'Общее дело · личные данные разделены':'Мои данные';
+    root.querySelectorAll('[data-app-panel]').forEach(panel=>panel.hidden=panel.dataset.appPanel!==state.app);
+    const chat=state.surface==='chat';byId('sw-app-panel').hidden=chat;byId('sw-chat-panel').hidden=!chat;
+    byId('sw-tab-app').setAttribute('aria-selected',String(!chat));byId('sw-tab-chat').setAttribute('aria-selected',String(chat));
+    byId('sw-assistant').hidden=!state.assistant;root.querySelector('.sw-layout').classList.toggle('has-assistant',state.assistant);
+    byId('sw-assistant-toggle').setAttribute('aria-expanded',String(state.assistant));
+    updateContext();renderDiscussion();updateAdd();
+    if(focus){if(state.view==='app')byId('sw-back').focus();else if(state.view==='search')byId('sw-search-input').focus();}
+  }
+  function openApp(app,surface='app'){if(!names[app]||app==='shopping'&&!state.added)return;state.app=app;state.view='app';state.surface=surface;renderView(true);persist();}
+  function showMain(view){state.view=view;renderView(view==='search');persist();}
+  function addTask(text){
+    const label=document.createElement('label');label.className='sw-check';
+    const checkbox=document.createElement('input');checkbox.type='checkbox';const span=document.createElement('span');span.textContent=text;
+    label.append(checkbox,span);byId('sw-task-list').append(label);
+  }
+  function openAdd(opener){addOpener=opener;updateAdd();byId('sw-add-dialog').showModal();}
+  function updateAdd(){
+    const offline=state.scenario==='offline';
+    byId('sw-device-state').textContent=offline?'Сейчас недоступен':'Подключён · проект готов';
+    byId('sw-add-confirm').disabled=offline;byId('sw-add-reconnect').hidden=!offline;
+    byId('sw-add-confirm').textContent=state.added?'Открыть приложение':'Добавить и открыть';
+    byId('sw-add-note').textContent=offline?'Проект подготовлен. Подключение продолжится, когда устройство будет доступно.':state.added?'Приложение уже в вашем пространстве. Повторная карточка не создаётся.':'Соты подключат проект и сразу откроют его в вашем профиле.';
+  }
+  function openSettings(kind,opener){
+    settingsKind=kind;settingsOpener=opener;byId('sw-profile-settings').hidden=kind!=='profile';byId('sw-app-settings-content').hidden=kind!=='app';
+    byId('sw-settings-title').textContent=kind==='profile'?'Мой профиль':'Доступ к приложению';
+    byId('sw-settings-app-name').textContent=names[state.app];byId('sw-visibility').value=state.visibility[state.app];
+    byId('sw-settings-dialog').showModal();
+  }
+  function setOnline(){
+    state.scenario='work';
+    for(const messages of Object.values(state.messages))for(const message of messages)message.waiting=false;
+    for(const message of state.teamMessages)message.waiting=false;
+    renderView();renderTeam();status('Связь восстановлена в примере');persist();
+  }
+  function renderTeam(){
+    const log=byId('sw-team-log');log.querySelectorAll('.is-own').forEach(node=>node.remove());
+    for(const message of state.teamMessages)renderMessage(log,message);
+  }
+  function showTeam(){state.view='messages';byId('sw-team-chat').hidden=false;renderView();byId('sw-team-input').focus();persist();}
+  function search(){
+    const query=byId('sw-search-input').value.toLocaleLowerCase('ru').trim(),results=byId('sw-search-results');results.replaceChildren();
+    for(const [key,name]of Object.entries(names)){
+      if(key==='shopping'&&!state.added||query&&!name.toLocaleLowerCase('ru').includes(query))continue;
+      const button=document.createElement('button');button.type='button';button.className='sw-thread cursor-interaction';button.textContent=name+' · Открыть приложение';button.addEventListener('click',()=>openApp(key));results.append(button);
+    }
+    if(!query||'команда проекта'.includes(query)){
+      const button=document.createElement('button');button.type='button';button.className='sw-thread cursor-interaction';button.textContent='Команда проекта · Написать';button.addEventListener('click',showTeam);results.append(button);
+    }
+    if(!results.children.length){const empty=document.createElement('p');empty.className='sw-hint';empty.textContent='Ничего не найдено. Попробуйте другое название.';results.append(empty);}
+  }
+  root.addEventListener('click',event=>{
+    const button=event.target.closest('button');if(!button||!root.contains(button))return;
+    if(button.dataset.view)showMain(button.dataset.view);
+    if(button.dataset.open)openApp(button.dataset.open);
+    if(button.dataset.discuss)openApp(button.dataset.discuss,'chat');
+    if(button.hasAttribute('data-add'))openAdd(button);
+    if(button.dataset.close)byId(button.dataset.close).close();
+  });
+  byId('sw-back').addEventListener('click',()=>{showMain('home');root.querySelector('[data-view=home]').focus();});
+  byId('sw-tab-app').addEventListener('click',()=>{state.surface='app';renderView();persist();});
+  byId('sw-tab-chat').addEventListener('click',()=>{state.surface='chat';renderView();persist();});
+  root.querySelector('.sw-app-tabs').addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    event.preventDefault();const app=event.key==='Home'||event.key!=='End'&&event.target.id==='sw-tab-chat';
+    const target=byId(app?'sw-tab-app':'sw-tab-chat');target.click();target.focus();
+  });
+  root.querySelectorAll('[data-draft]').forEach(input=>input.addEventListener('input',()=>{state.notes[input.dataset.draft]=input.value;status('Черновик сохранён в демонстрации');persist();}));
+  byId('sw-discussion-input').addEventListener('input',event=>{state.discussions[state.app]=event.target.value;persist();});
+  byId('sw-team-input').addEventListener('input',event=>{state.teamDraft=event.target.value;persist();});
+  byId('sw-task-input').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){event.preventDefault();byId('sw-task-form').querySelector('button').click();}});
+  for(const name of ['discussion','team','assistant']){
+    const input=byId('sw-'+name+'-input');input.setAttribute('aria-keyshortcuts','Control+Enter Meta+Enter');
+    input.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)&&!event.isComposing){event.preventDefault();byId('sw-'+name+'-form').querySelector('button').click();}});
+  }
+  byId('sw-task-form').querySelector('button').addEventListener('click',event=>{
+    event.preventDefault();const input=byId('sw-task-input'),text=input.value.trim();if(!text)return;
+    state.tasks.push(text);addTask(text);input.value='';status('Задача добавлена в примере');persist();input.focus();
+  });
+  byId('sw-discussion-form').querySelector('button').addEventListener('click',event=>{
+    event.preventDefault();const input=byId('sw-discussion-input'),text=input.value.trim();if(!text)return;
+    state.messages[state.app].push({text,waiting:state.scenario==='offline'});state.discussions[state.app]='';renderDiscussion();
+    status(state.scenario==='offline'?'Сообщение ждёт связи в примере':'Сообщение добавлено в локальный пример');input.focus();persist();
+  });
+  byId('sw-team-form').querySelector('button').addEventListener('click',event=>{
+    event.preventDefault();const input=byId('sw-team-input'),text=input.value.trim();if(!text)return;
+    state.teamMessages.push({text,waiting:state.scenario==='offline'});state.teamDraft='';input.value='';renderTeam();
+    status(state.scenario==='offline'?'Сообщение ждёт связи в примере':'Сообщение добавлено в локальный пример');input.focus();persist();
+  });
+  byId('sw-team-open').addEventListener('click',showTeam);byId('sw-team-thread').addEventListener('click',showTeam);
+  byId('sw-search-input').addEventListener('input',search);
+  byId('sw-assistant-toggle').addEventListener('click',event=>{
+    assistantOpener=event.currentTarget;state.assistant=!state.assistant;renderView();
+    if(state.assistant){byId('sw-assistant-input').focus();byId('sw-assistant').scrollIntoView({block:'nearest'});}persist();
+  });
+  byId('sw-assistant-close').addEventListener('click',()=>{state.assistant=false;renderView();assistantOpener?.focus();persist();});
+  byId('sw-assistant-form').querySelector('button').addEventListener('click',event=>{
+    event.preventDefault();const input=byId('sw-assistant-input');if(!input.value.trim()){input.focus();return;}
+    byId('sw-assistant-result').hidden=false;
+    byId('sw-assistant-response').textContent='Пример для '+(state.view==='app'?'«'+names[state.app]+'»':'текущего пространства')+':\n• Согласовать следующий шаг\n• Поделиться результатом с командой';
+    byId('sw-assistant-apply').disabled=false;status('Показан локальный пример результата помощника');
+  });
+  byId('sw-assistant-apply').addEventListener('click',event=>{
+    const tasks=['Согласовать следующий шаг','Поделиться результатом с командой'];
+    for(const text of tasks){state.tasks.push(text);addTask(text);}
+    event.currentTarget.disabled=true;status('Две задачи добавлены в план демонстрации');persist();
+  });
+  byId('sw-add-confirm').addEventListener('click',()=>{if(state.scenario==='offline')return;state.added=true;byId('sw-add-dialog').close();openApp('shopping');status('Покупки добавлены и открыты в примере');});
+  byId('sw-add-reconnect').addEventListener('click',()=>{setOnline();updateAdd();byId('sw-add-confirm').focus();});
+  byId('sw-add-dialog').addEventListener('close',()=>{if(state.view!=='app')addOpener?.focus();});
+  byId('sw-profile').addEventListener('click',event=>openSettings('profile',event.currentTarget));
+  byId('sw-app-settings').addEventListener('click',event=>openSettings('app',event.currentTarget));
+  byId('sw-settings-save').addEventListener('click',()=>{if(settingsKind==='app')state.visibility[state.app]=byId('sw-visibility').value;renderView();byId('sw-settings-dialog').close();status('Настройка изменена только в примере');persist();});
+  byId('sw-settings-dialog').addEventListener('close',()=>settingsOpener?.focus());
+  byId('sw-theme').addEventListener('change',event=>{state.theme=event.target.value;root.querySelector('.sw-product').style.colorScheme=state.theme==='system'?'light dark':state.theme;});
+  byId('sw-notifications').addEventListener('change',event=>status(event.target.checked?'Уведомления включены в примере':'Уведомления выключены в примере'));
+  byId('sw-scenario').addEventListener('change',event=>{state.scenario=event.target.value;state.view='home';renderView();status(state.scenario==='offline'?'Пример работы без сети':state.scenario==='empty'?'Пример нового пространства':'Рабочий пример');persist();});
+  byId('sw-reconnect').addEventListener('click',setOnline);
+  applySaved(window.openai?.widgetState);
+  for(const input of root.querySelectorAll('[data-draft]'))input.value=state.notes[input.dataset.draft];
+  byId('sw-team-input').value=state.teamDraft;for(const task of state.tasks)addTask(task);
+  search();renderView();
+  window.addEventListener('openai:set_globals',event=>{
+    const saved=event.detail?.globals?.widgetState;if(saved?.modelContent?.schema!=='soty.ideal-workspace.v1')return;
+    applySaved(saved);for(const input of root.querySelectorAll('[data-draft]'))input.value=state.notes[input.dataset.draft];byId('sw-team-input').value=state.teamDraft;renderView();
+  });
+})();
+</script>
+
+</body>
+</html>
