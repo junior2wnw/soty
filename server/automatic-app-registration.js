@@ -75,7 +75,7 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
       void reconcile(id).catch(() => {});
     }
   }
-  async function archive(actor, jobId) {
+  async function archive(actor, jobId, requireFeedbackPending = false) {
     if (closed || !actor || typeof jobId !== 'string' || !/^job_[a-f0-9]{32}$/u.test(jobId)) return { ok: false, error: 'app-archive-unavailable' };
     while (flights.has(jobId)) await flights.get(jobId).catch(() => {});
     const flight = (async () => {
@@ -84,26 +84,29 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
       if (previous) return { ok: true, state: 'archived', replayed: true, receipt: previous };
       const [job] = await store.automaticAppJobs(jobId);
       if (!current() || !job || job.ownerAccountId !== actor.accountId) return { ok: false, error: 'app-archive-unavailable' };
-      let confirmed;
+      let observation;
       try {
-        confirmed = connect.withCurrentContacts(actor, () => {
+        observation = connect.withCurrentContacts(actor, () => {
           const app = apps.creationJobApp(actor, jobId);
-          if (!app) return null;
-          if (app.state === 'revoked') return { state: 'revoked', appId: app.id };
+          if (!app) return { appExists: false };
+          if (app.state === 'revoked') return { appExists: true, confirmed: { state: 'revoked', appId: app.id } };
           if (!universal) throw Error('registration unavailable');
           const registration = universal.registration.execute({ op: 'apps.universal.get', actor,
             args: { appId: app.id, expectedAccountId: actor.accountId } }).registration;
-          return registration?.state === 'ready' && registration.feedback?.state === 'ready' ? { state: 'ready', appId: app.id } : null;
+          const confirmed = registration?.state === 'ready' && registration.feedback?.state === 'ready' ? { state: 'ready', appId: app.id } : null;
+          return { appExists: true, confirmed, feedbackPending: registration?.state === 'pending-feedback' && registration.feedback?.state === 'pending-feedback' };
         });
       } catch { return { ok: false, error: 'app-archive-unconfirmed' }; }
-      if (confirmed) {
-        if (!await store.confirmAutomaticAppJob(job, confirmed.state, current)) return { ok: false, error: 'app-archive-unconfirmed' };
-        pending.delete(jobId); problems.delete(jobId); return { ok: true, ...confirmed };
+      if (observation.confirmed) {
+        if (!await store.confirmAutomaticAppJob(job, observation.confirmed.state, current)) return { ok: false, error: 'app-archive-unconfirmed' };
+        pending.delete(jobId); problems.delete(jobId); return { ok: true, ...observation.confirmed };
       }
+      if (requireFeedbackPending && (!observation.feedbackPending || job.executionUncertain)) return { ok: false, error: 'app-archive-unavailable' };
       const original = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
       let originalActive = false;
       try { originalActive = connect.isActorActive(original) === true && apps.resolveOwnedDevice(original, job.deviceId, job.connectorId).linkId === job.linkId; } catch { /* Cannot restore a revoked authority. */ }
-      if (originalActive && !['conflict', 'capacity', 'access-lost'].includes(problems.get(jobId))) return { ok: false, error: 'app-archive-unavailable' };
+      const attentionWithoutApp = !job.executionUncertain && !observation.appExists && problems.get(jobId) === 'attention';
+      if (originalActive && !requireFeedbackPending && !attentionWithoutApp && !['conflict', 'capacity', 'access-lost'].includes(problems.get(jobId))) return { ok: false, error: 'app-archive-unavailable' };
       const result = await store.archiveAutomaticAppJob(job, actor, current);
       if (!result.ok) return result;
       pending.delete(jobId); problems.delete(jobId); return { ...result, state: 'archived' };
@@ -131,7 +134,9 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
         args: { appId: app.id, expectedAccountId: actor.accountId } }).registration; } catch { /* App launch does not depend on feedback. */ }
       const ready = value?.state === 'ready' && value.feedback?.state === 'ready';
       if (!ready && problems.get(job.id) === 'access-lost') return { state: 'access-lost', appId: app.id, appState: app.state };
-      return { state: 'ready', appId: app.id, appState: app.state, feedback: ready ? 'ready' : 'waiting' };
+      const canArchiveFeedback = !task?.autoRegistrationFinal && !job.cancelRequested && !job.executionUncertain
+        && value?.state === 'pending-feedback' && value.feedback?.state === 'pending-feedback';
+      return { state: 'ready', appId: app.id, appState: app.state, feedback: ready ? 'ready' : 'waiting', ...(canArchiveFeedback ? { canArchiveFeedback: true } : {}) };
     } catch { return { state: 'waiting' }; }
   }
   return { reconcile, recover, poll, retryPending, status, archive, archiveReceipt, close() { closed = true; pending.clear(); } };

@@ -10,8 +10,14 @@ interface HostDevice { hostDeviceId: string; connectorId: string; name: string; 
 interface Proposal { schema: 'soty.local-app.v1'; name: string; port: number; entryPath: string; sourceJobId: string }
 export interface AppBuilderTarget { hostDeviceId: string; connectorId: string; jobId: string; restrictedAuto?: 'pending' | 'archived' }
 type Pending = AppBuilderTarget;
-interface JobResult { job: { schema?: string; kind?: string; attempts?: number; id: string; deviceId: string; connectorId: string; status: string; cancelRequested?: boolean; executionUncertain?: boolean; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; task?: { text: string; autoRegister?: boolean; originalRequestId?: string }; autoRegistration?: { state: string; appId?: string; appState?: string }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
-interface AgentCapabilities { agentConfigured: boolean; automaticAppRegistration?: { schema?: string; available?: boolean; archive?: boolean; archiveCapacity?: boolean } }
+interface JobResult { job: { schema?: string; kind?: string; attempts?: number; id: string; deviceId: string; connectorId: string; status: string; cancelRequested?: boolean; executionUncertain?: boolean; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; task?: { text: string; autoRegister?: boolean; originalRequestId?: string }; autoRegistration?: { state: string; appId?: string; appState?: string; feedback?: string; canArchiveFeedback?: boolean }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
+interface AgentCapabilities { agentConfigured: boolean; automaticAppRegistration?: { schema?: string; available?: boolean; archive?: boolean; archiveCapacity?: boolean; archiveIncomplete?: boolean } }
+type ArchiveReceipt = { schema: string; jobId: string; requestId: string; archivedAt: number };
+function validArchiveReceipt(receipt: ArchiveReceipt | undefined, jobId: string): receipt is ArchiveReceipt {
+  return receipt?.schema === 'soty.app-auto-archive.v1' && receipt.jobId === jobId
+    && typeof receipt.requestId === 'string' && /^[A-Za-z0-9_:.\-]{3,160}$/u.test(receipt.requestId)
+    && Number.isSafeInteger(receipt.archivedAt) && receipt.archivedAt > 0;
+}
 export interface AppActionDependencies {
   readAgentCapabilities?: () => Promise<AgentCapabilities>;
   openRegisteredApp?: (appId: string, accountId: string, continueIf?: () => boolean) => Promise<void>;
@@ -167,7 +173,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
         cancelled: 'Задача отменена · изменения не откатываются', failed: 'Нужно проверить результат', succeeded: 'Выполнение завершено' } as Record<string, string>)[job.status] || 'Уточняем состояние';
     }
 
-    async function showAutomatic(result: JobResult, pending: Pending, autoOpen: boolean, followClaim: AssistantFocusClaim | null): Promise<void> {
+    async function showAutomatic(result: JobResult, pending: Pending, autoOpen: boolean, followClaim: AssistantFocusClaim | null, capability: Promise<AgentCapabilities>): Promise<void> {
       if (!await current()) return;
       const automatic = appBuilderAutomatic(result, pending), proposal = appBuilderProposal(result, pending);
       if (automatic.state !== 'ready' || !automatic.appId || !proposal) return;
@@ -187,6 +193,54 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const canContinue = () => !closed && document.visibilityState === 'visible' && document.hasFocus() && focus.isCurrent(automaticClaim);
       const open = button('Открыть приложение', 'external', 'sw-button-primary', () => { void openApp(false); });
       actions.append(open, button('Новая задача', 'plus', 'sw-button-quiet', () => newTask(pending))); focus.restore(claim, open);
+      if (result.autoRegistration?.feedback === 'waiting') {
+        const feedbackStatus = el('div', 'sx-agent-action-state'), feedbackNote = el('p', 'sw-muted', 'Обратная связь пока не подтверждена. Приложение можно открыть.');
+        feedbackStatus.append(feedbackNote); conversation.append(feedbackStatus);
+        if (result.autoRegistration.canArchiveFeedback === true) {
+          const explanation = el('p', 'sw-muted', 'Если остановить настройку, приложение и заявка сохранятся; автоматические попытки прекратятся.'); explanation.hidden = true; feedbackStatus.append(explanation);
+          let busy = false;
+          const stop = button('Остановить настройку обратной связи', 'close', 'sw-button-quiet', () => { void stopFeedback(); }); stop.hidden = true;
+          const receiptCheck = button('Проверить квитанцию', 'refresh', 'sw-button-quiet', () => { void readReceipt(); }); receiptCheck.hidden = true;
+          const recheck = button('Проверить состояние', 'refresh', 'sw-button-quiet', () => follow(pending)); recheck.hidden = true;
+          actions.append(stop, receiptCheck, recheck);
+          const showReceipt = (receipt: ArchiveReceipt | undefined) => {
+            if (!validArchiveReceipt(receipt, pending.jobId)) return false;
+            feedbackNote.textContent = `Автоматическое подключение остановлено. Эта операция не удаляет приложение и его данные. Состояние обратной связи проверьте отдельно. Номер исходного запроса: ${receipt.requestId}`;
+            explanation.hidden = stop.hidden = receiptCheck.hidden = recheck.hidden = true; return true;
+          };
+          async function stopFeedback(): Promise<void> {
+            if (busy) return; busy = true; stop.disabled = true;
+            try {
+              const value = await request<{ state: string; appId?: string; receipt?: ArchiveReceipt }>('apps.agent.archive', { jobId: pending.jobId, requireFeedbackPending: true });
+              if (!await current() || !feedbackNote.isConnected) return;
+              if (value.state === 'archived' && showReceipt(value.receipt)) return;
+              if (value.state === 'ready' && value.appId === appId) { feedbackNote.textContent = 'Обратная связь подключена.'; explanation.hidden = stop.hidden = true; return; }
+              if (value.state === 'revoked' && value.appId === appId) { feedbackNote.textContent = 'Карточка приложения отозвана.'; explanation.hidden = stop.hidden = open.hidden = true; return; }
+              throw Error('app_archive_unconfirmed');
+            } catch {
+              if (await current() && feedbackNote.isConnected) {
+                feedbackNote.textContent = 'Результат остановки не подтверждён. Проверьте квитанцию или состояние задачи.';
+                explanation.hidden = stop.hidden = true; receiptCheck.hidden = recheck.hidden = false;
+              }
+            } finally { busy = false; stop.disabled = false; }
+          }
+          async function readReceipt(): Promise<void> {
+            if (busy) return; busy = true; receiptCheck.disabled = true;
+            try {
+              const value = await request<{ state: string; receipt?: ArchiveReceipt }>('apps.agent.archiveReceipt', { jobId: pending.jobId });
+              if (!await current() || !feedbackNote.isConnected) return;
+              if (value.state === 'archived' && showReceipt(value.receipt)) return;
+              feedbackNote.textContent = 'Пока нет подтверждённой квитанции. Проверьте состояние задачи или повторите проверку позже.';
+            } catch { if (await current() && feedbackNote.isConnected) feedbackNote.textContent = 'Не удалось проверить квитанцию. Попробуйте позже.'; }
+            finally { busy = false; receiptCheck.disabled = false; }
+          }
+          void capability.then(async value => {
+            if (!await current() || !stop.isConnected) return;
+            const advertised = value.automaticAppRegistration;
+            if (advertised?.schema === 'soty.automatic-app-registration-capability.v1' && advertised.archive === true && advertised.archiveIncomplete === true) stop.hidden = explanation.hidden = false;
+          }).catch(() => {});
+        }
+      }
       automaticClaim = retainAutoOpen ? focus.capture() : null;
       async function openApp(automaticAttempt: boolean): Promise<void> {
         if (opening) return;
@@ -292,7 +346,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
       following = pending.jobId; if (timer) clearTimeout(timer);
       const saved = creation.read();
       let automaticJob = Boolean(restrictedAuto) || saved.schema === 2 && saved.accepted?.jobId === pending.jobId, protectedAutomatic = automaticJob, polling = false, archiving = false;
-      let archiveSupported = false, capacityArchiveSupported = false, archivePermitted = false, archiveReason = '', unknownArchive = false, receiptPossible = false;
+      let archiveSupported = false, capacityArchiveSupported = false, incompleteArchiveSupported = false, archivePermitted = false, archiveReason = '', unknownArchive = false, receiptPossible = false;
       const { conversation: activity, output, claim } = workspace();
       const progress = bubble('Задача принята', 'assistant'); progress.setAttribute('role', 'status'); progress.tabIndex = -1;
       const progressCopy = progress.querySelector('p')!;
@@ -312,11 +366,8 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const terminalText = el('pre'); terminalDetails.append(el('summary', '', 'Ответ задачи'), terminalText);
       const archiveReceipt = el('small', 'sw-muted'); archiveReceipt.hidden = true;
       const archivedMessage = 'Автоматическое добавление остановлено. Если карточка уже появилась, она и её данные не удалены; доступ зависит от устройства и ваших прав.';
-      type ArchiveReceipt = { schema: string; jobId: string; requestId: string; archivedAt: number };
       function showArchived(receipt: ArchiveReceipt | undefined): boolean {
-        if (receipt?.schema !== 'soty.app-auto-archive.v1' || receipt.jobId !== pending.jobId
-          || typeof receipt.requestId !== 'string' || !/^[A-Za-z0-9_:.\-]{3,160}$/u.test(receipt.requestId)
-          || !Number.isSafeInteger(receipt.archivedAt) || receipt.archivedAt <= 0) return false;
+        if (!validArchiveReceipt(receipt, pending.jobId)) return false;
         progressCopy.textContent = archivedMessage; output.querySelector('h2')!.textContent = archivedMessage;
         archiveReceipt.textContent = `Номер исходного запроса: ${receipt.requestId}`; archiveReceipt.hidden = false;
         archivePermitted = false; unknownArchive = false; receiptPossible = false;
@@ -348,7 +399,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
           .finally(() => { archiving = false; });
       });
       archive.hidden = true; archive.title = 'Прекратить автоматическое добавление; квитанция сохранится, ответ останется в обычной истории.';
-      const syncArchive = () => { archive.hidden = !archiveSupported || !archivePermitted || (archiveReason === 'capacity' && !capacityArchiveSupported) || unknownArchive; receiptCheck.hidden = !archiveSupported || !receiptPossible; };
+      const syncArchive = () => { archive.hidden = !archiveSupported || !archivePermitted || (archiveReason === 'capacity' && !capacityArchiveSupported) || (archiveReason === 'attention' && !incompleteArchiveSupported) || unknownArchive; receiptCheck.hidden = !archiveSupported || !receiptPossible; };
       const context = deviceContext(pending);
       activity.append(transcript, history, terminalDetails, archiveReceipt, el('small', 'sw-muted', 'Можно вернуться позже — задача сохранена.'), cancel, recheck, receiptCheck, archive, reset, context);
       placeholder(output, 'Создаём приложение', 'Состояние и ответ будут доступны здесь.'); focus.restore(claim, progress);
@@ -357,7 +408,8 @@ export function createAppBuilderAction(options: BuilderOptions) {
         .then(async response => { if (!response.ok) throw Error('capability_unavailable'); return await response.json() as AgentCapabilities; }));
       void capability.then(async value => { if (!await current() || version !== runVersion) return;
         archiveSupported = value.automaticAppRegistration?.schema === 'soty.automatic-app-registration-capability.v1' && value.automaticAppRegistration.archive === true;
-        capacityArchiveSupported = archiveSupported && value.automaticAppRegistration?.archiveCapacity === true; syncArchive(); })
+        capacityArchiveSupported = archiveSupported && value.automaticAppRegistration?.archiveCapacity === true;
+        incompleteArchiveSupported = archiveSupported && value.automaticAppRegistration?.archiveIncomplete === true; syncArchive(); })
         .catch(() => { /* Older or unavailable servers do not advertise this action. */ });
       void request<{ devices: HostDevice[] }>('apps.devices', {}).then(async result => {
         if (!await current()) return; devices = result.devices; context.replaceChildren(...Array.from(deviceContext(pending).childNodes));
@@ -408,7 +460,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
               // app is running. Give that existing poll a bounded chance to
               // open the app automatically, then offer the honest status.
               if (status.appState !== 'starting' || !autoOpen || (readyWaitingSince && Date.now() - readyWaitingSince >= 10_000)) {
-                await showAutomatic(result, pending, autoOpen, followClaim); return;
+                await showAutomatic(result, pending, autoOpen, followClaim, capability); return;
               }
               readyWaitingSince ||= Date.now();
               progressCopy.textContent = 'Приложение добавлено. Ждём запуска…';
@@ -430,7 +482,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
               progressCopy.textContent = message; output.querySelector('h2')!.textContent = message;
               cancel.hidden = true; reset.hidden = false;
               recheck.hidden = !terminalFailure && !['conflict', 'capacity', 'attention', 'access-lost', 'revoked', 'failed'].includes(status.state);
-              archivePermitted = ['conflict', 'capacity', 'access-lost'].includes(status.state); archiveReason = status.state; syncArchive();
+              archivePermitted = !terminalFailure && ['conflict', 'capacity', 'attention', 'access-lost'].includes(status.state); archiveReason = status.state; syncArchive();
               if (terminalFailure || ['access-lost', 'revoked', 'failed'].includes(status.state)) {
                 terminalText.textContent = result.job.result?.text || 'Ответ недоступен.'; terminalDetails.hidden = false; return;
               }

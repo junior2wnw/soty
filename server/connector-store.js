@@ -377,7 +377,8 @@ class ConnectorStore {
     if (!job || job.kind !== 'agent') return null;
     return { text: job.input.text, cwd: job.input.cwd, appCreation: job.input.output === 'local-app',
       ...(job.input.autoRegister === true ? { autoRegister: true } : {}),
-      ...(job.autoRegistrationFinal === 'archived' ? { autoRegistrationFinal: 'archived', originalRequestId: job.requestId } : {}),
+      ...(job.autoRegistrationFinal ? { autoRegistrationFinal: job.autoRegistrationFinal } : {}),
+      ...(job.autoRegistrationFinal === 'archived' ? { originalRequestId: job.requestId } : {}),
       canContinue: terminalStatuses.has(job.status) && job.executionUncertain !== true && job.input.output !== 'local-app' && Boolean(job.result?.sessionId) };
   }
 

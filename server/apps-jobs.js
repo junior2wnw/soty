@@ -24,9 +24,10 @@ export function createAppJobsExtension({ store, resolveOwnedDevice, actorActive,
         const { ok, ...value } = result; return value;
       }
       if (op === 'apps.agent.archive' || op === 'apps.agent.archiveReceipt') {
-        exact(args, ['expectedAccountId', 'jobId']);
+        exact(args, ['expectedAccountId', 'jobId', ...(op === 'apps.agent.archive' ? ['requireFeedbackPending'] : [])]);
+        if (args.requireFeedbackPending !== undefined) assert(args.requireFeedbackPending === true, 'invalid_arguments');
         assert(args.expectedAccountId === actor.accountId, 'authentication_required');
-        const result = await (op === 'apps.agent.archive' ? autoRegistrationArchive : autoRegistrationArchiveReceipt)(actor, id(args.jobId));
+        const result = await (op === 'apps.agent.archive' ? autoRegistrationArchive : autoRegistrationArchiveReceipt)(actor, id(args.jobId), args.requireFeedbackPending === true);
         assert(actorActive(actor), 'authentication_required');
         assert(result.ok, typeof result.error === 'string' ? result.error.replaceAll('-', '_') : 'app_archive_unavailable');
         const { ok, ...value } = result; return value;

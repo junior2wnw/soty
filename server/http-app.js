@@ -293,7 +293,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     resolveOwnedDevice: (actor, ids) => apps.resolveOwnedDevice(actor, ids.hostDeviceId, ids.connectorId),
     autoRegistrationAvailable: () => Boolean(automaticApps && universal && apps.configured),
     autoRegistrationStatus: (actor, job, task) => automaticApps?.status(actor, job, task) ?? { state: 'waiting' },
-    autoRegistrationArchive: (actor, jobId) => automaticApps?.archive(actor, jobId) ?? Promise.resolve({ ok: false, error: 'app-archive-unavailable' }),
+    autoRegistrationArchive: (actor, jobId, requireFeedbackPending) => automaticApps?.archive(actor, jobId, requireFeedbackPending) ?? Promise.resolve({ ok: false, error: 'app-archive-unavailable' }),
     autoRegistrationArchiveReceipt: (actor, jobId) => automaticApps?.archiveReceipt(actor, jobId) ?? Promise.resolve({ ok: false, error: 'app-archive-unavailable' }) });
   try {
     if (universalEnabled) universal = createUniversalApps({ dataDir, apps, reviews, actorActive: actor => connect?.isActorActive(actor) === true });
@@ -417,7 +417,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ configured: apps.configured, sourceEntryActivation: apps.configured === true, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human),
-      automaticAppRegistration: { schema: 'soty.automatic-app-registration-capability.v1', available: Boolean(automaticApps && universal && apps.configured), archive: Boolean(automaticApps), archiveCapacity: Boolean(automaticApps) },
+      automaticAppRegistration: { schema: 'soty.automatic-app-registration-capability.v1', available: Boolean(automaticApps && universal && apps.configured), archive: Boolean(automaticApps), archiveCapacity: Boolean(automaticApps), archiveIncomplete: Boolean(automaticApps && universal) },
       humanSignins: human?.signinCapabilities ?? { schema: 'soty.human-signins-capability.v1', available: false, sessions: false,
         rememberedConsents: false, checkRevoke: false, scopes: [], sourceRootSessions: false, maximumPageSize: 0 },
       personalAgent: personal.status(), nativeVoice: voice.publicMount(), voiceOrb: orbVoice.status(), notifications: { configured: push.status().configured } });

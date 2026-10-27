@@ -113,7 +113,7 @@ async function fixture(t) {
 test('capability gates a new auto intent while the original lost ACK replays on a temporarily disabled server', { timeout: 25000 }, async t => {
   const f = await fixture(t), capability = (await f.capabilities()).automaticAppRegistration;
   assert.equal(capability.schema, 'soty.automatic-app-registration-capability.v1'); assert.equal(capability.available, true);
-  assert.equal(capability.archive, true); assert.equal(capability.archiveCapacity, true);
+  assert.equal(capability.archive, true); assert.equal(capability.archiveCapacity, true); assert.equal(capability.archiveIncomplete, true);
   const args = { ...f.target, requestId: 'automatic-lost-ack', text: 'Создать список', cwd: '', autoRegister: true };
   f.loseNextCreateAck(); await assert.rejects(f.owner.extension('apps.agent.create', args));
   const jobs = f.service().locals.connectorService.store.state.jobs.filter(job => job.requestId === args.requestId);
@@ -291,6 +291,128 @@ test('capacity and unexpected failures are explicit and can recover without dupl
   }
 });
 
+test('an owner can stop an unexpected failure with no card; a lost response and restart cannot register it later', { timeout: 30000 }, async t => {
+  const f = await fixture(t), stranger = f.makeClient(), other = await stranger.bootstrap('Other owner');
+  const id = await f.create(), universal = f.service().locals.universalApps, actual = universal.registerCreationJob;
+  universal.registerCreationJob = () => { throw Object.assign(Error('synthetic failure'), { code: 'synthetic_unexpected_failure' }); };
+  try {
+    assert.equal((await f.submit(id)).ok, true); await until(async () => (await f.read(id)).autoRegistration?.state === 'attention');
+    const args = { expectedAccountId: f.account.accountId, jobId: id };
+    await assert.rejects(stranger.extension('apps.agent.archive', { expectedAccountId: other.accountId, jobId: id }), { code: 'app_archive_unavailable' });
+    f.loseNextArchiveAck(); await assert.rejects(f.owner.extension('apps.agent.archive', args));
+    const archived = await f.owner.extension('apps.agent.archiveReceipt', args); assert.equal(archived.state, 'archived');
+    assert.deepEqual((await f.owner.extension('apps.agent.archive', args)).receipt, archived.receipt);
+    assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, undefined);
+  } finally { universal.registerCreationJob = actual; }
+  await f.poll(); await f.restart(); await f.poll();
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 0);
+  assert.equal((await f.read(id)).autoRegistration.state, 'archived');
+  assert.equal((await f.owner.extension('apps.agent.archiveReceipt', { expectedAccountId: other.accountId, jobId: id }).catch(() => ({ state: 'denied' }))).state, 'denied');
+});
+
+test('an uncertain execution remains protected even when its status needs attention', { timeout: 25000 }, async t => {
+  const f = await fixture(t), id = await f.create(), store = f.service().locals.connectorService.store;
+  assert.equal((await store.finishJob(f.auth, id, f.result(id))).ok, true);
+  await store.mutate(() => { store.state.jobs.find(job => job.id === id).executionUncertain = true; });
+  await f.restart(); await until(async () => (await f.read(id)).autoRegistration?.state === 'attention');
+  const args = { expectedAccountId: f.account.accountId, jobId: id };
+  await assert.rejects(f.owner.extension('apps.agent.archive', args), { code: 'app_archive_unavailable' });
+  assert.equal((await f.owner.extension('apps.agent.archiveReceipt', args)).state, 'unconfirmed');
+  assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, true);
+});
+
+test('conditional feedback stop preserves the card and durable outbox across lost ACK, revocation and restart', { timeout: 30000 }, async t => {
+  const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId); const secondDevice = (await second.getLocalState()).deviceId;
+  const stranger = f.makeClient(), other = await stranger.bootstrap('Other owner'), id = await f.create();
+  const feedback = new DatabaseSync(join(f.dataDir, 'feedback', 'feedback.sqlite')); feedback.exec('BEGIN IMMEDIATE');
+  let archived, outboxBefore, registrationBefore;
+  try {
+    assert.equal((await f.submit(id)).ok, true);
+    const held = await until(async () => { const value = await f.read(id); return value.autoRegistration?.canArchiveFeedback === true && value; });
+    const appId = held.autoRegistration.appId; assert.equal(appId, `app-${id.slice(4)}`); assert.equal(held.autoRegistration.feedback, 'waiting');
+    registrationBefore = (await f.owner.extension('apps.universal.get', { appId, expectedAccountId: f.account.accountId })).registration;
+    assert.equal(registrationBefore.state, 'pending-feedback');
+    const registration = new DatabaseSync(join(f.dataDir, 'app-registration', 'registry.sqlite'), { readOnly: true });
+    try { outboxBefore = registration.prepare('SELECT provisioning_key,request_json FROM registration_feedback_outbox').get(); } finally { registration.close(); }
+    assert.ok(outboxBefore?.provisioning_key);
+    const args = { expectedAccountId: f.account.accountId, jobId: id, requireFeedbackPending: true };
+    await assert.rejects(stranger.extension('apps.agent.archive', { ...args, expectedAccountId: other.accountId }), { code: 'app_archive_unavailable' });
+    const store = f.service().locals.connectorService.store, actual = store.archiveAutomaticAppJob.bind(store);
+    let reached, release; const entered = new Promise(resolve => { reached = resolve; }), hold = new Promise(resolve => { release = resolve; });
+    store.archiveAutomaticAppJob = async (...values) => { reached(); await hold; return actual(...values); };
+    const denied = second.extension('apps.agent.archive', args);
+    try { await entered; await f.owner.revokeDevice(secondDevice); } finally { release(); }
+    await assert.rejects(denied); assert.equal(store.state.jobs.find(job => job.id === id).autoRegistrationFinal, undefined);
+    store.archiveAutomaticAppJob = actual; f.loseNextArchiveAck(); await assert.rejects(f.owner.extension('apps.agent.archive', args));
+    archived = await f.owner.extension('apps.agent.archiveReceipt', { expectedAccountId: f.account.accountId, jobId: id });
+    assert.equal(archived.state, 'archived'); assert.equal(archived.receipt.jobId, id);
+    assert.deepEqual((await f.owner.extension('apps.agent.archive', args)).receipt, archived.receipt);
+    assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, undefined);
+    assert.equal((await f.owner.extension('apps.list')).apps[0].id, appId);
+  } finally { feedback.exec('ROLLBACK'); feedback.close(); }
+  await f.poll(); await f.restart(); await f.poll();
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+  assert.deepEqual((await f.owner.extension('apps.agent.archiveReceipt', { expectedAccountId: f.account.accountId, jobId: id })).receipt, archived.receipt);
+  const registrationAfter = (await f.owner.extension('apps.universal.get', { appId: `app-${id.slice(4)}`, expectedAccountId: f.account.accountId })).registration;
+  assert.equal(registrationAfter.state, 'pending-feedback'); assert.equal(registrationAfter.feedback.provisioningKey, registrationBefore.feedback.provisioningKey);
+  const db = new DatabaseSync(join(f.dataDir, 'app-registration', 'registry.sqlite'), { readOnly: true });
+  try { assert.deepEqual(db.prepare('SELECT provisioning_key,request_json FROM registration_feedback_outbox').get(), outboxBefore); } finally { db.close(); }
+  const directory = dirname(f.service().locals.connectorService.store.filePath), oldDir = join(dirname(directory), 'feedback-old-reader'); await mkdir(oldDir);
+  for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
+    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+  await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
+  await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
+  try {
+    await old.ready; assert.equal((await old.automaticAppJobs(id)).length, 0); assert.equal(old.state.jobs.find(job => job.id === id).cancelRequested, true);
+    await old.mutate(() => old.expire(Date.now() + 8 * 24 * 60 * 60_000));
+    assert.equal(old.state.jobs.some(job => job.id === id), false); assert.equal((await old.poll(f.auth)).error, 'connector-auth-failed');
+  } finally { await old.close(); }
+  await f.restart({}, { announce: false });
+  assert.deepEqual((await f.owner.extension('apps.agent.archiveReceipt', { expectedAccountId: f.account.accountId, jobId: id })).receipt, archived.receipt);
+  assert.equal((await f.owner.extension('apps.list')).apps[0].id, `app-${id.slice(4)}`);
+  const rollbackRegistration = (await f.owner.extension('apps.universal.get', { appId: `app-${id.slice(4)}`, expectedAccountId: f.account.accountId })).registration;
+  assert.equal(rollbackRegistration.state, 'pending-feedback'); assert.equal(rollbackRegistration.feedback.provisioningKey, registrationBefore.feedback.provisioningKey);
+  const appId = `app-${id.slice(4)}`, resumed = await f.owner.extension('apps.universal.admit', {
+    expectedAccountId: f.account.accountId, appId, requestId: `initial.${appId}`, expectedRevision: 0,
+    proposal: { kind: 'author-draft', draft: { title: 'Список' } },
+  });
+  assert.equal(resumed.replayed, true); assert.equal(resumed.registration.state, 'ready'); assert.equal(resumed.registration.feedback.state, 'ready');
+});
+
+test('an existing card without a durable feedback intent cannot be conditionally archived', { timeout: 25000 }, async t => {
+  const f = await fixture(t), id = await f.create(), store = f.service().locals.connectorService.store;
+  assert.equal((await store.finishJob(f.auth, id, f.result(id))).ok, true);
+  const [job] = await store.automaticAppJobs(id), actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
+  const app = f.service().locals.connectService.withCurrentContacts(actor, () => f.service().locals.appsService.registerCreationJob(actor, job)).app;
+  const status = (await f.read(id)).autoRegistration; assert.equal(status.state, 'ready'); assert.equal(status.feedback, 'waiting');
+  assert.equal(status.canArchiveFeedback, undefined);
+  await assert.rejects(f.owner.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id, requireFeedbackPending: true }), { code: 'app_archive_unavailable' });
+  assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, true); assert.equal((await f.owner.extension('apps.list')).apps[0].id, app.id);
+  await f.restart(); await until(async () => (await f.read(id)).autoRegistration?.feedback === 'ready');
+});
+
+test('a missing pending-feedback outbox fails closed and leaves the reservation intact', { timeout: 25000 }, async t => {
+  const f = await fixture(t), id = await f.create(), feedback = new DatabaseSync(join(f.dataDir, 'feedback', 'feedback.sqlite'));
+  feedback.exec('BEGIN IMMEDIATE');
+  try {
+    assert.equal((await f.submit(id)).ok, true);
+    await until(async () => (await f.read(id)).autoRegistration?.canArchiveFeedback === true);
+    const db = new DatabaseSync(join(f.dataDir, 'app-registration', 'registry.sqlite'));
+    try {
+      // Simulate a damaged local fixture, bypassing the normal immutability trigger.
+      db.exec('DROP TRIGGER registration_feedback_outbox_no_delete');
+      assert.equal(db.prepare('DELETE FROM registration_feedback_outbox').run().changes, 1);
+    } finally { db.close(); }
+    const status = (await f.read(id)).autoRegistration; assert.equal(status.state, 'ready'); assert.equal(status.feedback, 'waiting');
+    assert.equal(status.canArchiveFeedback, undefined);
+    await assert.rejects(f.owner.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id, requireFeedbackPending: true }), { code: 'app_archive_unconfirmed' });
+    assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, true);
+    assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+  } finally { feedback.exec('ROLLBACK'); feedback.close(); }
+});
+
 test('restart finishes universal and feedback after the app transaction committed alone', { timeout: 25000 }, async t => {
   const f = await fixture(t), id = await f.create(), store = f.service().locals.connectorService.store;
   assert.equal((await store.finishJob(f.auth, id, f.result(id))).ok, true);
@@ -448,6 +570,8 @@ test('archiving a ready card returns the existing app without a new receipt or a
   const store = f.service().locals.connectorService.store, before = store.state.requests.length;
   const result = await f.owner.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id });
   assert.equal(result.state, 'ready'); assert.equal(result.appId, ready.autoRegistration.appId);
+  const conditional = await f.owner.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id, requireFeedbackPending: true });
+  assert.equal(conditional.state, 'ready'); assert.equal(conditional.appId, ready.autoRegistration.appId);
   assert.equal(store.state.requests.length, before); assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
 });
 

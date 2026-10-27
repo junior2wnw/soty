@@ -192,6 +192,13 @@ export function createUniversalRegistrationService({ databasePath, registryId, e
       'registration_storage_corrupt', 503);
     const current = row.authority_digest === context.authorityDigest;
     const plan = readJson(saved.plan_json), receipt = row.feedback_json ? readJson(row.feedback_json) : null;
+    if (current && row.status === 'pending-feedback') {
+      const outbox = db.prepare('SELECT provisioning_key,request_json FROM registration_feedback_outbox WHERE scope_key=? AND generation=?').get(row.scope_key, row.generation);
+      require(outbox && outbox.provisioning_key === plan?.feedbackIntent?.provisioningKey, 'registration_storage_corrupt', 503);
+      const request = readJson(outbox.request_json);
+      require(request.provisioningKey === outbox.provisioning_key && request.generation === row.generation
+        && request.authorityDigest === row.authority_digest && request.intentDigest === row.intent_digest, 'registration_storage_corrupt', 503);
+    }
     let feedbackCurrent = false;
     if (current && row.status === 'ready' && provider) {
       const outbox = db.prepare('SELECT request_json FROM registration_feedback_outbox WHERE scope_key=? AND generation=?').get(row.scope_key, row.generation);
