@@ -564,6 +564,40 @@ test('loss of the original actor after the app commit is reported without comple
   finally { feedback.close(); }
 });
 
+test('archiving after app commit keeps one launchable card and its persisted data without completing feedback', { timeout: 30000 }, async t => {
+  const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId);
+  const businessPath = join(f.dataDir, 'synthetic-business.sqlite'); let business = new DatabaseSync(businessPath);
+  business.exec("CREATE TABLE records (value TEXT NOT NULL); INSERT INTO records VALUES ('durable-personal-record')");
+  f.source.removeAllListeners('request'); f.source.on('request', (_req, res) => res.end(business.prepare('SELECT value FROM records').get().value));
+  try {
+    const id = await f.create(), store = f.service().locals.connectorService.store;
+    assert.equal((await store.finishJob(f.auth, id, f.result(id))).ok, true);
+    const [job] = await store.automaticAppJobs(id), actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
+    const partial = f.service().locals.connectService.withCurrentContacts(actor, () => f.service().locals.appsService.registerCreationJob(actor, job));
+    const appId = partial.app.id;
+    assert.equal((await second.extension('apps.universal.get', { appId, expectedAccountId: f.account.accountId })).registration, null);
+    await second.revokeDevice(f.account.deviceId); await f.restart();
+    await until(async () => (await f.read(id, second)).autoRegistration?.state === 'access-lost');
+    const archived = await second.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id });
+    assert.equal(archived.state, 'archived'); assert.equal(archived.receipt.requestId, job.requestId);
+    assert.equal((await second.extension('apps.list')).apps.length, 1); assert.equal((await second.extension('apps.list')).apps[0].id, appId);
+    business.close(); business = new DatabaseSync(businessPath);
+    assert.equal((await f.submit(id)).ok, true); await f.poll(); await f.restart();
+    assert.equal((await f.service().locals.connectorService.store.automaticAppJobs(id)).length, 0);
+    assert.equal((await second.extension('apps.list')).apps.length, 1); assert.equal((await second.extension('apps.list')).apps[0].id, appId);
+    assert.equal((await second.extension('apps.universal.get', { appId, expectedAccountId: f.account.accountId })).registration, null);
+    const launch = await until(async () => { try { return await second.extension('apps.launch', { appId }); } catch { return null; } });
+    const url = new URL(launch.launchUrl);
+    const boot = await appRequest(url, '/_soty/session', { method: 'POST', headers: { origin: url.origin, 'content-type': 'application/json' }, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
+    assert.equal(boot.status, 200);
+    const page = await appRequest(url, '/', { headers: { cookie: boot.headers['set-cookie'][0].split(';')[0] } });
+    assert.equal(page.status, 200); assert.equal(page.body, 'durable-personal-record');
+    assert.deepEqual((await second.extension('apps.agent.archiveReceipt', { expectedAccountId: f.account.accountId, jobId: id })).receipt, archived.receipt);
+  } finally { business.close(); }
+});
+
 test('a completed registration stays ready for the owner after the initiating device is revoked', { timeout: 25000 }, async t => {
   const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
   await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);

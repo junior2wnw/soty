@@ -311,7 +311,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const terminalDetails = el('details', 'sw-agent-details'); terminalDetails.hidden = true;
       const terminalText = el('pre'); terminalDetails.append(el('summary', '', 'Ответ задачи'), terminalText);
       const archiveReceipt = el('small', 'sw-muted'); archiveReceipt.hidden = true;
-      const archivedMessage = 'Автоматическое добавление остановлено. Квитанция сохранена; ответ доступен до очистки истории.';
+      const archivedMessage = 'Автоматическое добавление остановлено. Если карточка уже появилась, она и её данные не удалены; доступ зависит от устройства и ваших прав.';
       type ArchiveReceipt = { schema: string; jobId: string; requestId: string; archivedAt: number };
       function showArchived(receipt: ArchiveReceipt | undefined): boolean {
         if (receipt?.schema !== 'soty.app-auto-archive.v1' || receipt.jobId !== pending.jobId

@@ -53,6 +53,7 @@ run.onclick=async()=>{
     await fresh('attention');await until(()=>body().includes('Не удалось завершить подключение'));check(button('Проверить'),'unexpected failure hidden');
     await fresh('access-lost');await until(()=>body().includes('Доступ исходного устройства'));await until(()=>button('Остановить автодобавление'));check(button('Проверить'),'access loss recovery hidden');
     button('Остановить автодобавление').click();await until(()=>body().includes('Автоматическое добавление остановлено'));check(!button('Остановить автодобавление')&&archiveCalls===1&&body().includes('Номер исходного запроса: synthetic-original'),'archive not confirmed');
+    check(body().includes('карточка уже появилась')&&body().includes('данные не удалены')&&body().includes('доступ зависит от устройства и ваших прав'),'partial app outcome is unclear');
     await fresh('access-lost',{loseArchiveAck:true});await until(()=>button('Остановить автодобавление'));
     button('Остановить автодобавление').click();await until(()=>body().includes('Результат остановки не подтверждён'));
     check(!button('Остановить автодобавление')&&button('Проверить квитанцию')&&archiveCalls===2&&receiptCalls===0,'lost ACK was retried or declared successful');
