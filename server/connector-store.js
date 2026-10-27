@@ -650,15 +650,20 @@ class ConnectorStore {
 
   async poll(auth, waitMs = 0, signal, options = {}) {
     const observedVersion = this.routeVersion(safeLinkId(auth?.linkId), safeDeviceId(auth?.deviceId));
-    const first = await this.lease(auth, options);
+    const leaseOptions = signal ? { ...options, signal } : options;
+    const first = await this.lease(auth, leaseOptions);
     if (!first.ok || first.jobs.length > 0 || first.cancel.length > 0 || waitMs <= 0) return first;
     await this.waitForChange(safeLinkId(auth?.linkId), first.connector.deviceId, waitMs, signal, observedVersion);
-    return await this.lease(auth, options);
+    if (signal?.aborted) return { ok: false, error: 'connector-poll-aborted' };
+    return await this.lease(auth, leaseOptions);
   }
 
   async lease(auth, options = {}) {
     let observedKey = '', compatible = false, observedAt = 0;
     const result = await this.mutate(() => {
+      // A disconnected poll can wait behind other writes. Check inside the
+      // transaction, before leasing; a lease already committed stays uncertain.
+      if (options.signal?.aborted) return { ok: false, error: 'connector-poll-aborted' };
       const connector = this.authenticate(auth);
       if (!connector) return { ok: false, error: "connector-auth-failed" };
       const now = this.now();

@@ -172,7 +172,8 @@ function controllerAuth(req, body = {}) {
 
 function responseSignal(res) {
   const controller = new AbortController();
-  res.once("close", () => controller.abort());
+  if (res.destroyed) controller.abort();
+  else res.once("close", () => controller.abort());
   return controller.signal;
 }
 

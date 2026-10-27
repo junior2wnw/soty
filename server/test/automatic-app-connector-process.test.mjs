@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -37,9 +37,28 @@ test('actual old release cannot lease auto work after a stale new-process heartb
   app.use((req, _res, next) => { if (paused && req.path === '/api/connectors/register') { void registrationGate.then(next); return; } next(); });
   const { store } = attachConnectorApi(app, { dataDir, gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' },
     storeOptions: { automaticJobActive: () => true } });
+  let releaseNewWait, newWaitEntered, settleNewPoll, newSignal, oldResult; const newLeases = [];
+  const newWait = new Promise(done => { releaseNewWait = done; });
+  const waiting = new Promise(done => { newWaitEntered = done; });
+  const newPollSettled = new Promise(done => { settleNewPoll = done; });
+  const wait = store.waitForChange.bind(store), poll = store.poll.bind(store), lease = store.lease.bind(store);
+  store.waitForChange = async (...values) => {
+    if (!newSignal && values[3]) { newSignal = values[3]; newWaitEntered(); await newWait; }
+    return await wait(...values);
+  };
+  store.poll = async (...values) => {
+    try { const result = await poll(...values); if (newSignal && values[2] === newSignal) settleNewPoll(result); return result; }
+    catch (error) { if (newSignal && values[2] === newSignal) settleNewPoll({ ok: false, error: 'unexpected-poll-failure' }); throw error; }
+  };
+  store.lease = async (auth, options = {}) => {
+    const value = await lease(auth, options);
+    if (options.automaticOwnerGuard && value.ok) newLeases.push(value.jobs.map(job => job.id));
+    if (!options.automaticOwnerGuard && value.ok) oldResult = value;
+    return value;
+  };
   const server = createServer(app); await listen(server); const origin = `http://127.0.0.1:${server.address().port}`;
   t.after(async () => {
-    releaseRegistration();
+    releaseNewWait(); releaseRegistration();
     for (const child of [first, old]) if (child && child.exitCode === null && child.signalCode === null) {
       const exited = new Promise(done => child.once('exit', done)); child.kill(); await exited;
     }
@@ -63,17 +82,20 @@ test('actual old release cannot lease auto work after a stale new-process heartb
     assert.equal(first.exitCode, null, `new connector exited (${outputBytes} diagnostic bytes)`);
     return store.state?.connectors[0] && store.automaticPolls.size ? store.state.connectors[0] : null;
   });
+  await waiting;
   const firstExit = new Promise(done => first.once('exit', done)); first.kill(); await firstExit;
+  await waitFor(() => newSignal.aborted);
   assert.ok(host.capabilities.includes('soty.auto-owner-check.v1')); assert.equal(store.automaticPolls.size, 1);
   const access = requestId => ({ ownerAccountId: 'fixture-owner', sourceActorDeviceId: 'fixture-device', guard: () => true,
     connectorId: host.connectorId, expectedDeviceId: host.deviceId, requestId, requestIntent: digest(requestId) });
   const create = (requestId, automatic) => store.createJob({ linkId: host.linkId, deviceId: host.deviceId, kind: 'agent',
     input: { kind: 'agent', text: 'Synthetic task', output: 'local-app', ...(automatic ? { autoRegister: true } : {}) } }, access(requestId));
   const queued = await create('legacy-stale-heartbeat', true); assert.ok(queued.job?.id);
+  releaseNewWait(); const closedPoll = await newPollSettled;
+  assert.deepEqual(newLeases, [[]], 'the closed new-process poll must not perform another lease');
+  assert.equal(closedPoll.error, 'connector-poll-aborted');
+  assert.equal(store.state.jobs.find(job => job.id === queued.job.id).status, 'queued');
   paused = true;
-  let oldResult;
-  const lease = store.lease.bind(store);
-  store.lease = async (auth, options = {}) => { const value = await lease(auth, options); if (!options.automaticOwnerGuard && value.ok) oldResult = value; return value; };
   old = start(oldPath, oldPort);
   await waitFor(() => oldResult);
   assert.equal(oldResult.jobs.length, 0); assert.equal(store.state.jobs.find(job => job.id === queued.job.id).status, 'queued');
@@ -84,6 +106,38 @@ test('actual old release cannot lease auto work after a stale new-process heartb
   const manual = await create('legacy-manual', false); assert.ok(manual.job?.id);
   await waitFor(() => existsSync(marker)); assert.equal(await readFile(marker, 'utf8'), 'x');
   assert.equal(store.state.jobs.find(job => job.id === queued.job.id).status, 'queued');
+});
+
+test('an HTTP poll already closed before its handler cannot lease work', { timeout: 30000 }, async t => {
+  const parent = resolve(tmpdir()), root = await mkdtemp(join(parent, 'soty-auto-poll-closed-'));
+  let entered, finished; const atMiddleware = new Promise(done => { entered = done; }), handled = new Promise(done => { finished = done; });
+  const app = express();
+  app.use((req, res, next) => { if (req.path !== '/api/connectors/poll') return next(); res.once('close', next); entered(); });
+  const { store } = attachConnectorApi(app, { dataDir: join(root, 'data'), gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' },
+    storeOptions: { automaticJobActive: () => true } });
+  const server = createServer(app); await listen(server);
+  t.after(async () => {
+    server.closeAllConnections(); await new Promise(done => server.close(done)); await store.close();
+    assert.equal(dirname(resolve(root)), parent); assert.match(basename(root), /^soty-auto-poll-closed-/u);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+  const token = 'fixture-token-' + 'x'.repeat(40), host = { linkId: 'closed-poll-link-12345678901234567890', deviceId: 'closed-host', connectorId: 'closed-connector' };
+  const auth = { ...host, token };
+  assert.equal((await store.register({ ...host, scope: 'CurrentUser', capabilities: ['agent','soty.auto-owner-check.v1'], agent: { id:'opencode', provider:'gonka', available:true } }, token)).ok, true);
+  assert.equal((await store.poll(auth, 0, undefined, { automaticOwnerGuard:true })).ok, true);
+  const requestId = 'closed-before-handler';
+  const created = await store.createJob({ linkId:host.linkId, deviceId:host.deviceId, kind:'agent', input:{ kind:'agent', text:'Synthetic task', output:'local-app', autoRegister:true } },
+    { ownerAccountId:'fixture-owner', sourceActorDeviceId:'fixture-device', guard:()=>true, connectorId:host.connectorId, expectedDeviceId:host.deviceId, requestId, requestIntent:digest(requestId) });
+  assert.ok(created.job?.id);
+  const poll = store.poll.bind(store);
+  store.poll = async (...args) => { const alreadyAborted = args[2].aborted; const result = await poll(...args); finished({ alreadyAborted, result }); return result; };
+  const params = new URLSearchParams({ ...host, autoOwnerGuard:'1' });
+  const client = request(`http://127.0.0.1:${server.address().port}/api/connectors/poll?${params}`, { headers:{ authorization:'Bearer '+token } });
+  client.on('error', () => {}); client.end(); await atMiddleware; client.destroy();
+  const observed = await handled;
+  assert.equal(store.state.jobs.find(job => job.id === created.job.id).status, 'queued');
+  assert.equal(observed.alreadyAborted, true); assert.equal(observed.result.error, 'connector-poll-aborted');
+  const fresh = await poll(auth, 0, undefined, { automaticOwnerGuard:true }); assert.deepEqual(fresh.jobs.map(job => job.id), [created.job.id]);
 });
 async function listen(server) { await new Promise((done, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', done); }); }
 async function unusedPort() { const server = createServer(); await listen(server); const port = server.address().port; await new Promise(done => server.close(done)); return port; }

@@ -39,6 +39,52 @@ async function persistedBytes(directory) {
   }));
 }
 
+test('an already closed poll leaves the job queued for a fresh connector poll', async t => {
+  const f = await fixture(t), job = await f.create('poll-already-closed', true); assert.ok(job.job?.id);
+  const controller = new AbortController(); controller.abort();
+  const closed = await f.store.poll(f.connector, 0, controller.signal, { automaticOwnerGuard: true });
+  assert.equal(f.store.state.jobs.find(item => item.id === job.job.id).status, 'queued');
+  assert.equal(closed.error, 'connector-poll-aborted');
+  const fresh = await f.store.poll(f.connector, 0, undefined, { automaticOwnerGuard: true });
+  assert.deepEqual(fresh.jobs.map(item => item.id), [job.job.id]);
+  assert.equal(f.store.state.jobs.find(item => item.id === job.job.id).attempts, 1);
+});
+
+test('closing while a resumed poll waits for the write queue cannot lease the job', async t => {
+  const f = await fixture(t), controller = new AbortController(); let enterWait, releaseWait, secondLease, releaseWrite;
+  const waiting = new Promise(done => { enterWait = done; }), heldWait = new Promise(done => { releaseWait = done; });
+  const enqueued = new Promise(done => { secondLease = done; }), heldWrite = new Promise(done => { releaseWrite = done; });
+  const wait = f.store.waitForChange.bind(f.store), lease = f.store.lease.bind(f.store); let count = 0;
+  f.store.waitForChange = async (...args) => { enterWait(); await heldWait; return await wait(...args); };
+  f.store.lease = (...args) => { const result = lease(...args); if (++count === 2) secondLease(); return result; };
+  try {
+    const pending = f.store.poll(f.connector, 25000, controller.signal, { automaticOwnerGuard: true }); await waiting;
+    const job = await f.create('poll-write-queue', true); assert.ok(job.job?.id); await f.store.writeQueue;
+    f.store.writeQueue = f.store.writeQueue.then(() => heldWrite); releaseWait(); await enqueued;
+    controller.abort(); releaseWrite(); const closed = await pending;
+    assert.equal(f.store.state.jobs.find(item => item.id === job.job.id).status, 'queued');
+    assert.equal(closed.error, 'connector-poll-aborted');
+    const fresh = await f.store.poll(f.connector, 0, undefined, { automaticOwnerGuard: true });
+    assert.deepEqual(fresh.jobs.map(item => item.id), [job.job.id]);
+    assert.equal(f.store.state.jobs.find(item => item.id === job.job.id).attempts, 1);
+  } finally { releaseWait(); releaseWrite(); }
+});
+
+test('disconnect after the lease commit does not undo or replay that committed lease', async t => {
+  const f = await fixture(t), job = await f.create('poll-committed', true); assert.ok(job.job?.id);
+  const controller = new AbortController(); let committed, release;
+  const atCommit = new Promise(done => { committed = done; }), held = new Promise(done => { release = done; });
+  const call = f.store.persistence.call.bind(f.store.persistence);
+  f.store.persistence.call = async (...args) => { const result = await call(...args); if (args[0] === 'commit') { committed(); await held; } return result; };
+  try {
+    const pending = f.store.poll(f.connector, 0, controller.signal, { automaticOwnerGuard: true }); await atCommit;
+    controller.abort(); release(); const result = await pending;
+    assert.deepEqual(result.jobs.map(item => item.id), [job.job.id]);
+    const stored = f.store.state.jobs.find(item => item.id === job.job.id); assert.equal(stored.status, 'leased'); assert.equal(stored.attempts, 1);
+    const fresh = await f.store.poll(f.connector, 0, undefined, { automaticOwnerGuard: true }); assert.deepEqual(fresh.jobs, []);
+  } finally { release(); f.store.persistence.call = call; }
+});
+
 test('read-only registry reads v1, protected v2 and v1 again without changing data or exposing unrelated results', async t => {
   const f = await fixture(t), ordinary = await f.create('manual-task');
   assert.equal(ordinary.ok, true); assert.equal((await f.store.lease(f.connector)).jobs[0].id, ordinary.job.id);
