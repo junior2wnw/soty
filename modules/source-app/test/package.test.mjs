@@ -22,10 +22,10 @@ test('portable server/browser bundles load outside Root checkout with pinned pro
     const imports=[...bundle.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]\.\/server\.mjs['"]/gu)];assert.equal(imports.length,1);
     assert.deepEqual(imports[0][1].split(',').map(value=>value.trim().split(/\s+/u)[0]),['__sourceSdkOrdinaryAppServer']);
   }
-  const script = `import {STANDARD_SELECTED_SOURCE,createSourceNativeAuthorityPort,isSourceNativeAuthorityPort,createSqliteRelayIdentity,createFeedbackProcessorEngine,createFeedbackJobEnforcer} from ${JSON.stringify(pathToFileURL(join(directory, 'server.mjs')).href)};
+  const script = `import {STANDARD_SELECTED_SOURCE,STANDARD_SELECTED_SOURCE_V2,createSourceNativeAuthorityPort,isSourceNativeAuthorityPort,createSqliteRelayIdentity,createFeedbackProcessorEngine,createFeedbackJobEnforcer} from ${JSON.stringify(pathToFileURL(join(directory, 'server.mjs')).href)};
     import {createRelayIdentityFetch,createSotyAppWork} from ${JSON.stringify(pathToFileURL(join(directory, 'browser.mjs')).href)};
     import{createOrdinaryAppServer}from${JSON.stringify(pathToFileURL(join(directory, 'example.mjs')).href)};
-    import{createServer}from'node:http';import{randomBytes}from'node:crypto';
+    import{createServer}from'node:http';import{randomBytes}from'node:crypto';import{mkdir,writeFile}from'node:fs/promises';import{join}from'node:path';
     const p=createSourceNativeAuthorityPort({capture:async()=>({}),withCurrent:(_p,_s,f)=>f()});
     if(!isSourceNativeAuthorityPort(p))throw new Error('brand');
     const reserve=createServer();await new Promise(done=>reserve.listen(0,'127.0.0.1',done));const port=reserve.address().port;await new Promise(done=>reserve.close(done));
@@ -64,7 +64,22 @@ test('portable server/browser bundles load outside Root checkout with pinned pro
     let refused=false;try{await createOrdinaryAppServer({...options,databasePath:${JSON.stringify(join(directory, 'foreign.sqlite'))},feedbackProcessing:{...processing,engines:[foreignEngine]}});}catch(error){refused=error.code==='source_feedback_engine_unapproved';}
     if(!refused)throw Error('foreign engine accepted');
     refused=false;try{await createOrdinaryAppServer({...options,databasePath:${JSON.stringify(join(directory, 'forged.sqlite'))},feedbackProcessing:{...processing,enforcer:{...enforcer}}});}catch(error){refused=error.code==='source_feedback_processor_not_ready';}
-    if(!refused)throw Error('forged enforcer accepted');process.stdout.write(JSON.stringify(STANDARD_SELECTED_SOURCE));`;
+    if(!refused)throw Error('forged enforcer accepted');
+    const install=await import(${JSON.stringify(pathToFileURL(join(directory, 'install.mjs')).href)}),installDir=${JSON.stringify(join(directory,'install-fixture'))};
+    await mkdir(installDir);await mkdir(join(installDir,'secrets'),{mode:0o700});await mkdir(join(installDir,'data'),{mode:0o700});
+    for(const name of ['cipher.key','transport.key','client.key'])await writeFile(join(installDir,'secrets',name),randomBytes(32).toString('base64url')+'\\n',{mode:0o600});
+    const installProfile={...profile,sourceProfile:STANDARD_SELECTED_SOURCE_V2,issuer:'https://soty.example.test/human-identity',
+      embedOrigin:'https://'+appId+'.soty.example.test',nativeOrigin:'https://native.example.test',parentOrigin:'https://soty.example.test'};
+    const config={schema:'soty.ordinary-source.operator.v1',profile:installProfile,connectorPort:49424,listener:{host:'127.0.0.1',port},
+      storage:{directory:join(installDir,'data'),keyId:'synthetic',cipherKeyFile:'cipher.key'},rp:{clientSecretFile:'client.key',transportKeyFile:'transport.key'},
+      native:{realmId:'synthetic',resourceTitle:'Synthetic Native resource'},policy:{newEmptyGuest:false,linkedLogin:false}};
+    const configPath=join(installDir,'operator.json');await writeFile(configPath,JSON.stringify(config),{mode:0o600});
+    let init;const log=console.log;console.log=value=>{init=JSON.parse(value);};try{await install.sourceInstallMain(['init','--config',configPath]);}finally{console.log=log;}
+    if(!init?.initialized)throw Error('portable install init failed');
+    const handle=await install.loadSourceOperatorConfiguration(configPath);let installed;
+    try{installed=await install.startInstalledSource(handle);if(installed.server.address().port!==port)throw Error('portable install did not start');}
+    finally{if(installed)await installed.close();install.disposeSourceOperatorConfiguration(handle);}
+    process.stdout.write(JSON.stringify(STANDARD_SELECTED_SOURCE));`;
   const result = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = ''; child.stdout.on('data', part => { out += part; }); child.stderr.on('data', part => { err += part; }); child.on('error', reject);
