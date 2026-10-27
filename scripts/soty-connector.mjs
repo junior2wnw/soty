@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from 'node:events';
-import { createHash, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify as verifySignature } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
@@ -14,7 +14,6 @@ import { createTrafficFabric, trafficFabricSchema } from "./agent-modules/traffi
 import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema } from "./agent-modules/traffic-core.mjs";
 import { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease } from "./agent-modules/transit-client.mjs";
 import { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
-import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
 import { createLocalAppsRuntime, normalizeLocalAppManifest, prepareLocalAppWorkspace, probeLocalApp, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
 import { createPreparedProjectBrowser } from "./agent-modules/prepared-projects.mjs";
 import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
@@ -22,7 +21,7 @@ import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
 import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.14";
+const connectorVersion = "1.4.15";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -39,8 +38,6 @@ const configuredPort = safeInteger(arg("--port") || env("SOTY_CONNECTOR_PORT", "
 // as an old "automatic" value and converge to the browser-facing stable port.
 const port = companion ? configuredPort : (configuredPort || 49_424);
 const updateManifestUrl = arg("--update-url") || env("SOTY_CONNECTOR_UPDATE_URL", "SOTY_AGENT_UPDATE_URL") || "https://4-2.xn--p1ai/agent/manifest.json";
-const spreadExBaseUrl = normalizeSpreadExBaseUrl(env("SOTY_SPREADEX_BASE_URL")) || "https://miniapp.spreadex.me";
-const spreadExReleasePublicKey = env("SOTY_SPREADEX_ML_RELEASE_PUBLIC_KEY");
 const autoUpdate = env("SOTY_CONNECTOR_AUTO_UPDATE", "SOTY_AGENT_AUTO_UPDATE") === "1" || (managed && env("SOTY_CONNECTOR_AUTO_UPDATE", "SOTY_AGENT_AUTO_UPDATE") !== "0");
 const requestedShell = arg("--shell") || env("SOTY_CONNECTOR_SHELL", "SOTY_AGENT_SHELL");
 const updateConfirmMs = safeInteger(env("SOTY_CONNECTOR_UPDATE_CONFIRM_MS"), 1_000, 60_000, 15_000);
@@ -76,8 +73,6 @@ const localJobReceipts = durableResults ? createLocalJobReceipts({
 }, { root: join(jobRoot, 'native-results-v1'), binding: { linkId, deviceId, connectorId, relayBaseUrl } }) : null;
 const openCodeRoot = join(connectorDir, "opencode-runtime");
 const openCodeStateRoot = join(connectorDir, "opencode-state");
-const spreadExMlRoot = join(connectorDir, "spreadex-ml");
-const spreadExMlSecretsPath = join(connectorDir, "spreadex-ml-secrets.json");
 let shuttingDown = false;
 let agentCache = { at: 0, value: null };
 let openCodeInstallPromise = null;
@@ -125,7 +120,6 @@ const trafficFabric = createTrafficFabric({
 let trafficFabricState = trafficFabric.normalizeState(persisted.trafficFabric);
 let trafficCoreSettings = normalizeBridgeSettings(refreshTrafficVpnSettings(persisted.trafficCoreSettings));
 let trafficCoreEnabled = persisted.trafficCoreEnabled === true;
-let spreadExMlState = persisted.spreadexMl && typeof persisted.spreadexMl === "object" ? persisted.spreadexMl : {};
 const trafficCoreDependencies = {
   exists: existsSync,
   mkdir: async (target) => await mkdir(target, { recursive: true }),
@@ -182,51 +176,6 @@ const transitClient = createTransitClientRuntime({
   wait: sleep,
   onceExit: child => child.exitCode !== null || child.signalCode ? Promise.resolve() : new Promise(resolveExit => child.once('exit', resolveExit)),
 });
-const spreadExMl = createSpreadExMlIntegration({
-  exists: existsSync,
-  mkdir: async (target) => await mkdir(target, { recursive: true }),
-  remove: async (target) => await rm(target, { recursive: true, force: true }),
-  rename: async (from, to, replace = false) => {
-    if (replace) await rm(to, { recursive: true, force: true });
-    await rename(from, to);
-  },
-  writeFile: async (target, value) => await writeFile(target, value, { mode: 0o600 }),
-  readJson: async (target) => JSON.parse(await readFile(target, "utf8")),
-  chmod,
-  join,
-  download: downloadSpreadExMlBytes,
-  extract: extractSpreadExMlArchive,
-  sha256,
-  verifyRelease: verifySpreadExMlRelease,
-  runFile: async (file, args, timeoutMs, input, cwd) => await runChild(file, args, { cwd, timeoutMs, input }),
-  createWorker: createSpreadExJsonlWorker,
-  request: spreadExJson,
-  saveState: async (value) => {
-    spreadExMlState = value;
-    await saveConfig();
-  },
-  saveSecrets: saveSpreadExMlSecrets,
-  now: () => new Date().toISOString(),
-  randomId: randomUUID,
-  setTimer: (callback, delay) => {
-    const timer = setTimeout(callback, delay);
-    timer.unref?.();
-    return timer;
-  },
-  clearTimer: clearTimeout,
-  ...(typeof globalThis.WebSocket === "function" ? { createWebSocket: (url) => new globalThis.WebSocket(url) } : {})
-}, {
-  rootDir: spreadExMlRoot,
-  baseUrl: spreadExBaseUrl,
-  manifestUrl: updateManifestUrl,
-  platformKey: `${process.platform}-${process.arch}`,
-  runtimeVersion: connectorVersion,
-  deviceId,
-  deviceNick,
-  state: spreadExMlState,
-  secrets: loadSpreadExMlSecrets()
-});
-
 if (process.argv[2] === 'transit-prepare') {
   process.stdout.write(`${JSON.stringify({ ok: true, runtime: await transitClient.prepare() })}\n`);
 } else if (process.argv[2] === 'transit-stop') {
@@ -247,7 +196,6 @@ async function startConnector() {
   await ensureManagedRunner().catch((error) => {
     updateState.lastError = `runner: ${safeError(error)}`;
   });
-  await spreadExMl.initialize().catch(() => undefined);
   const server = createServer((request, response) => {
     let url;
     try { url = new URL(request.url || "/", "http://127.0.0.1"); }
@@ -256,7 +204,7 @@ async function startConnector() {
       return;
     }
     void handleHttp(request, response, url).catch((error) => {
-      if (!response.headersSent) sendJson(response, 500, corsHeaders(request, url.pathname.startsWith("/integrations/spreadex/v1")), { ok: false, error: safeError(error) });
+      if (!response.headersSent) sendJson(response, 500, corsHeaders(request), { ok: false, error: safeError(error) });
       else response.end();
     });
   });
@@ -279,13 +227,11 @@ async function startConnector() {
   void connectorLoop();
   scheduleUpdate();
   scheduleUserCompanion();
-  spreadExMl.start();
 
   const stop = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     activeJob?.controller.abort();
-    spreadExMl.stop();
     localApps.stop();
     await trafficCoreRuntime.stop().catch(() => undefined);
     await transitClient.stop().catch(() => undefined);
@@ -318,10 +264,9 @@ async function handleHttp(request, response, url) {
     } catch { sendJson(response, 409, headers, { ok: false, error: 'apps_connector_offline' }); }
     return;
   }
-  const spreadExRoute = url.pathname.startsWith("/integrations/spreadex/v1");
-  const headers = corsHeaders(request, spreadExRoute);
+  const headers = corsHeaders(request);
   const origin = String(request.headers.origin || "");
-  if (!originAllowed(origin, url.pathname)) {
+  if (!originAllowed(origin)) {
     sendJson(response, 403, headers, { ok: false, error: "origin-not-allowed" });
     return;
   }
@@ -341,47 +286,6 @@ async function handleHttp(request, response, url) {
   }
   if ((url.pathname === "/connector/bind" || url.pathname === "/agent/relay") && request.method === "POST") {
     await handleBind(request, response, headers, origin);
-    return;
-  }
-  if ((url.pathname === "/integrations/spreadex/v1/status" || url.pathname === "/integrations/spreadex/v1/health") && request.method === "GET") {
-    sendJson(response, 200, headers, spreadExMl.status());
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/settings" && request.method === "GET") {
-    sendJson(response, 200, headers, spreadExMl.settings());
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/settings" && request.method === "POST") {
-    try {
-      const result = await spreadExMl.updateSettings(await readJsonBody(request, 32_000));
-      sendJson(response, 200, headers, result);
-    } catch (error) {
-      sendJson(response, 400, headers, { ok: false, schema: spreadExMlSchema, error: safeError(error) });
-    }
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/pair" && request.method === "POST") {
-    try {
-      const body = await readJsonBody(request, 16_000);
-      const result = await spreadExMl.pair(body.code || body.pairCode || body.pair_code);
-      void checkForUpdate();
-      sendJson(response, 200, headers, result);
-    } catch (error) {
-      sendJson(response, 400, headers, { ok: false, schema: spreadExMlSchema, error: safeError(error) });
-    }
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/unpair" && request.method === "POST") {
-    sendJson(response, 200, headers, await spreadExMl.unpair());
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/predict" && request.method === "POST") {
-    try {
-      const result = await spreadExMl.predict(await readJsonBody(request, 256_000));
-      sendJson(response, 200, headers, result);
-    } catch (error) {
-      sendJson(response, 503, headers, { ok: false, schema: spreadExMlSchema, error: safeError(error) });
-    }
     return;
   }
   if (url.pathname === "/operator/traffic/fabric" && request.method === "GET") {
@@ -490,7 +394,6 @@ async function health() {
       currentVersion: connectorVersion,
       ...updateState
     },
-    integrations: { spreadex: spreadExMl.status() },
     agent,
     registration: { connected: Boolean(lastRegisteredAt && !registrationError), lastRegisteredAt, error: registrationError },
     activeJob: activeJob ? { id: activeJob.id, kind: activeJob.kind, startedAt: activeJob.startedAt } : null
@@ -516,7 +419,7 @@ async function registerConnector(forceAgent = false) {
         version: connectorVersion,
         platform: `${process.platform}-${process.arch}`,
         scope,
-        capabilities: ["agent", "command", "script", "events", "cancel", "traffic", "spreadex-ml", "local-apps", "soty.auto-owner-check.v1"],
+        capabilities: ["agent", "command", "script", "events", "cancel", "traffic", "local-apps", "soty.auto-owner-check.v1"],
         agent: await detectAgent(forceAgent)
       }
     });
@@ -866,87 +769,6 @@ function runChild(command, args, options) {
       child.stdin.end(options.input, "utf8");
     }
   });
-}
-
-function createSpreadExJsonlWorker(command, args, cwd) {
-  const child = spawn(command, args, {
-    cwd,
-    env: childEnv(),
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  const pending = new Map();
-  let buffer = "";
-  let stopped = false;
-  let stderr = "";
-
-  const fail = (error) => {
-    if (stopped) return;
-    stopped = true;
-    const reason = error instanceof Error ? error : new Error(String(error || "spreadex-ml-worker-exited"));
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(reason);
-    }
-    pending.clear();
-  };
-
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk.toString("utf8");
-    if (buffer.length > 4_000_000) {
-      fail(new Error("spreadex-ml-worker-output-too-large"));
-      killProcessTree(child);
-      return;
-    }
-    for (;;) {
-      const newline = buffer.indexOf("\n");
-      if (newline < 0) break;
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      if (!line) continue;
-      const message = parseJson(line);
-      const id = safeId(message?.id, 180);
-      const entry = id ? pending.get(id) : null;
-      if (!entry) continue;
-      pending.delete(id);
-      clearTimeout(entry.timer);
-      if (message.ok === false) entry.reject(new Error(safeText(message.error, 240) || "spreadex-ml-worker-rejected"));
-      else entry.resolve(message);
-    }
-  });
-  child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk.toString("utf8"), 16_000); });
-  child.once("error", (error) => fail(error));
-  child.once("close", (code) => fail(new Error(`spreadex-ml-worker-exited:${code ?? "signal"}:${stderr.slice(-200)}`)));
-
-  return {
-    request(method, params, timeoutMs) {
-      if (stopped || child.exitCode != null) return Promise.reject(new Error("spreadex-ml-worker-not-running"));
-      const id = `ml-${randomUUID()}`;
-      const line = `${JSON.stringify({ id, method, params })}\n`;
-      if (line.length > 2_000_000) return Promise.reject(new Error("spreadex-ml-worker-request-too-large"));
-      return new Promise((resolveRequest, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error("spreadex-ml-worker-timeout"));
-          killProcessTree(child);
-        }, safeInteger(timeoutMs, 500, 30_000, 5_000));
-        timer.unref?.();
-        pending.set(id, { resolve: resolveRequest, reject, timer });
-        child.stdin.write(line, "utf8", (error) => {
-          if (!error) return;
-          const entry = pending.get(id);
-          if (!entry) return;
-          pending.delete(id);
-          clearTimeout(entry.timer);
-          reject(error);
-        });
-      });
-    },
-    stop() {
-      fail(new Error("spreadex-ml-worker-stopped"));
-      killProcessTree(child);
-    }
-  };
 }
 
 async function probeCommand(command, args) {
@@ -1591,83 +1413,6 @@ async function extractTrafficCoreArchive(archivePath, destination) {
   }
 }
 
-async function downloadSpreadExMlBytes(url, maxBytes) {
-  const response = await fetch(url, { cache: "no-store", redirect: "follow", signal: AbortSignal.timeout(180_000) });
-  if (!response.ok) throw new Error(`spreadex-ml-http-${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > maxBytes) throw new Error("spreadex-ml-size");
-  return bytes;
-}
-
-async function extractSpreadExMlArchive(archivePath, destination, archive) {
-  if (archive === "zip") {
-    await extractTrafficCoreArchive(archivePath, destination);
-    return;
-  }
-  if (archive === "tar.gz") {
-    execFileSync("tar", ["-xzf", archivePath, "-C", destination], { timeout: 180_000, windowsHide: true, stdio: "ignore" });
-    return;
-  }
-  throw new Error("spreadex-ml-archive-unsupported");
-}
-
-function verifySpreadExMlRelease(payload, signature) {
-  if (!spreadExReleasePublicKey) return false;
-  try {
-    const keyText = spreadExReleasePublicKey.includes("BEGIN PUBLIC KEY")
-      ? spreadExReleasePublicKey.replace(/\\n/gu, "\n")
-      : createPublicKey({ key: Buffer.from(spreadExReleasePublicKey, "base64"), format: "der", type: "spki" });
-    const key = typeof keyText === "string" ? createPublicKey(keyText) : keyText;
-    const bytes = /^[A-Za-z0-9_-]+$/u.test(signature)
-      ? Buffer.from(signature, "base64url")
-      : Buffer.from(signature, "base64");
-    return verifySignature(null, Buffer.from(payload, "utf8"), key, bytes);
-  } catch {
-    return false;
-  }
-}
-
-async function spreadExJson(url, options = {}) {
-  if (!sameOrigin(url, spreadExBaseUrl)) throw new Error("spreadex-origin-mismatch");
-  const response = await fetch(url, {
-    method: options.method || "GET",
-    cache: "no-store",
-    redirect: "error",
-    headers: {
-      ...(options.headers || {}),
-      ...(options.body ? { "Content-Type": "application/json" } : {})
-    },
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
-    signal: AbortSignal.timeout(options.timeoutMs || 20_000)
-  });
-  const value = await response.json().catch(() => ({}));
-  return response.ok && value && typeof value === "object"
-    ? { ...value, ok: value.ok !== false }
-    : { ok: false, error: `spreadex-http-${response.status}` };
-}
-
-function loadSpreadExMlSecrets() {
-  try {
-    const value = JSON.parse(readFileSync(spreadExMlSecretsPath, "utf8").replace(/^\uFEFF/u, ""));
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
-
-async function saveSpreadExMlSecrets(value) {
-  await mkdir(connectorDir, { recursive: true });
-  if (!value?.deviceToken) {
-    await rm(spreadExMlSecretsPath, { force: true });
-    return;
-  }
-  const nextPath = `${spreadExMlSecretsPath}.next`;
-  await writeFile(nextPath, `${JSON.stringify({ schema: spreadExMlSchema, deviceToken: value.deviceToken }, null, 2)}\n`, { mode: 0o600 });
-  await chmod(nextPath, 0o600).catch(() => undefined);
-  await rename(nextPath, spreadExMlSecretsPath);
-  await protectSecretFile(spreadExMlSecretsPath);
-}
-
 async function protectSecretFile(path) {
   await chmod(path, 0o600).catch(() => undefined);
   if (process.platform !== "win32") return;
@@ -1784,7 +1529,6 @@ async function checkForUpdate() {
       throw new Error("manifest-invalid");
     }
     updateState.latestVersion = manifest.version;
-    await spreadExMl.syncRelease(manifest.spreadexMl).catch(() => undefined);
     const comparison = compareVersion(manifest.version, connectorVersion);
     if (comparison < 0) {
       updateState.lastResult = "ahead-of-channel";
@@ -1995,7 +1739,7 @@ async function saveConfig() {
     trafficCoreSettings,
     trafficCoreEnabled,
     ...(transitControlHash ? { transitControlHash } : {}),
-    spreadexMl: spreadExMlState
+    ...(Object.hasOwn(persisted, "spreadexMl") ? { spreadexMl: persisted.spreadexMl } : {})
   };
   await mkdir(connectorDir, { recursive: true });
   await writeFile(configPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
@@ -2031,11 +1775,10 @@ function readJsonBody(request, maxBytes) {
   });
 }
 
-function corsHeaders(request, exactOriginOnly = false) {
+function corsHeaders(request) {
   const origin = String(request.headers.origin || "");
-  const exactOriginAllowed = !exactOriginOnly || spreadExOriginAllowed(origin, spreadExBaseUrl, [relayBaseUrl, originOf(updateManifestUrl)]);
   return {
-    ...(origin && exactOriginAllowed ? { "Access-Control-Allow-Origin": origin } : exactOriginOnly ? {} : { "Access-Control-Allow-Origin": "*" }),
+    ...(origin ? { "Access-Control-Allow-Origin": origin } : { "Access-Control-Allow-Origin": "*" }),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Private-Network": "true",
@@ -2050,12 +1793,9 @@ function sendJson(response, status, headers, body) {
   response.end(JSON.stringify(body));
 }
 
-function originAllowed(origin, pathname = "") {
+function originAllowed(origin) {
   if (!origin) return true;
   if (isLocalOrigin(origin)) return true;
-  if (pathname.startsWith("/integrations/spreadex/v1")) {
-    return spreadExOriginAllowed(origin, spreadExBaseUrl, [relayBaseUrl, originOf(updateManifestUrl)]);
-  }
   return productionShellOriginAllowed(origin, relayBaseUrl) || sameOrigin(origin, originOf(updateManifestUrl));
 }
 
@@ -2214,7 +1954,6 @@ function redactSecrets(value) {
   for (const secret of [connectorToken]) {
     if (typeof secret === "string" && secret.length >= 8) text = text.replaceAll(secret, "<redacted>");
   }
-  try { text = spreadExMl.redact(text); } catch { /* Integration may still be initializing. */ }
   return text;
 }
 

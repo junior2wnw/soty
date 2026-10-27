@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from 'node:events';
-import { createHash, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify as verifySignature } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
@@ -2441,944 +2441,6 @@ function release(asset, sha256, executable) {
 
 return { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor };
 })();
-// bundled connector module: ./agent-modules/spreadex-ml.mjs
-const { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } = (() => {
-const spreadExMlSchema = "soty.spreadex-ml.v1";
-const spreadExMlReleaseSchema = "soty.spreadex-ml.release.v1";
-
-const profiles = new Set(["careful", "balanced", "opportunity"]);
-const modes = new Set(["off", "assistant", "gate"]);
-const requiredDeviceScopes = ["heartbeat", "predictions", "settings:read"];
-
-function createSpreadExMlIntegration(deps, options = {}) {
-  const required = [
-    "exists", "mkdir", "remove", "rename", "writeFile", "readJson", "chmod", "join", "download", "extract",
-    "sha256", "verifyRelease", "runFile", "createWorker", "request", "saveState", "saveSecrets", "now", "randomId"
-  ];
-  for (const name of required) {
-    if (typeof deps[name] !== "function") throw new Error(`spreadex-ml dependency required: ${name}`);
-  }
-
-  const platformKey = cleanPlatformKey(options.platformKey);
-  const rootDir = String(options.rootDir || "");
-  const baseUrl = normalizeSpreadExBaseUrl(options.baseUrl);
-  const manifestUrl = normalizeManifestUrl(options.manifestUrl);
-  if (!rootDir || !platformKey || !baseUrl || !manifestUrl) throw new Error("invalid-spreadex-ml-options");
-
-  let state = normalizeSpreadExState(options.state);
-  let secrets = normalizeSpreadExSecrets(options.secrets);
-  let active = null;
-  let phase = "unavailable";
-  let lastError = "component-not-installed";
-  let pairedAt = secrets.deviceToken ? state.pairedAt : "";
-  let lastHeartbeatAt = "";
-  let connection = "disconnected";
-  let stopped = false;
-  let heartbeatTimer = null;
-  let socketTimer = null;
-  let socket = null;
-  let socketFailures = 0;
-  let worker = null;
-  let workerPhase = "stopped";
-  let allowedModels = [];
-  let taskProcessing = null;
-  const queuedTasks = [];
-  const completedTasks = new Map();
-  const pendingPredictions = new Map();
-  let updatePromise = null;
-  let pairPromise = null;
-
-  return {
-    async initialize() {
-      await deps.mkdir(rootDir);
-      const recovered = await recoverActive();
-      if (!recovered) {
-        phase = "unavailable";
-        lastError = "component-not-installed";
-      }
-      return this.status();
-    },
-
-    status() {
-      const componentAvailable = Boolean(active && phase === "ready");
-      return {
-        ok: true,
-        schema: spreadExMlSchema,
-        paired: Boolean(secrets.deviceToken),
-        pairedAt: secrets.deviceToken ? pairedAt : "",
-        deviceId: secrets.deviceToken ? state.deviceId : "",
-        scopes: secrets.deviceToken ? state.scopes : [],
-        baseOrigin: new URL(baseUrl).origin,
-        connection,
-        lastHeartbeatAt,
-        worker: workerPhase,
-        modelAllowed: activeAllowed(),
-        allowedModels,
-        settings: publicSettings(state.settings),
-        component: {
-          available: componentAvailable,
-          phase,
-          version: active?.version || "",
-          modelVersion: active?.modelVersion || "",
-          featureSchema: active?.featureSchema || "",
-          platform: active?.platform || platformKey,
-          installedAt: active?.installedAt || "",
-          lastError
-        },
-        ready: Boolean(secrets.deviceToken && state.settings.mode !== "off" && componentAvailable && activeAllowed())
-      };
-    },
-
-    settings() {
-      return { ok: true, schema: spreadExMlSchema, settings: publicSettings(state.settings) };
-    },
-
-    async updateSettings(value, source = "local") {
-      const next = normalizeSpreadExSettings(value, state.settings);
-      next.device_id = state.deviceId;
-      const requestedRevision = safeRevision(value?.revision);
-      if (source === "remote" && requestedRevision && requestedRevision < state.settings.revision) return this.settings();
-      next.revision = requestedRevision || state.settings.revision + 1;
-      state = { ...state, settings: next };
-      await deps.saveState(state);
-      return this.settings();
-    },
-
-    async pair(pairCode) {
-      if (pairPromise) return await pairPromise;
-      pairPromise = performPair(pairCode).finally(() => { pairPromise = null; });
-      return await pairPromise;
-    },
-
-    async unpair() {
-      closeSocket();
-      secrets = {};
-      state = { ...state, deviceId: "", pairedAt: "", websocketUrl: "", scopes: [] };
-      allowedModels = [];
-      pairedAt = "";
-      connection = "disconnected";
-      lastHeartbeatAt = "";
-      await deps.saveSecrets(secrets);
-      await deps.saveState(state);
-      return this.status();
-    },
-
-    async syncRelease(release) {
-      if (updatePromise) return await updatePromise;
-      updatePromise = installRelease(release).finally(() => { updatePromise = null; });
-      return await updatePromise;
-    },
-
-    async predict(value) {
-      if (!active || phase !== "ready") throw new Error("spreadex-ml-unavailable");
-      if (state.settings.mode === "off") throw new Error("spreadex-ml-disabled");
-      if (!activeAllowed()) throw new Error("spreadex-ml-model-not-allowed");
-      const input = normalizePredictionInput(value);
-      if (!input) throw new Error("invalid-prediction-input");
-      await requestWorker("observe", {
-        request: { request_id: input.requestId, observed_at_ms: Date.now() },
-        route: input.features
-      }, 3_000);
-      const response = await requestWorker("predict_batch", { requests: [{ request_id: input.requestId }] }, 5_000);
-      const parsed = workerPredictions(response).find((item) => item.requestId === input.requestId || item.request_id === input.requestId);
-      if (!parsed || parsed.ok === false || !Number.isFinite(parsed.probability) || parsed.probability < 0 || parsed.probability > 1) {
-        throw new Error("spreadex-ml-invalid-prediction");
-      }
-      return {
-        ok: true,
-        schema: spreadExMlSchema,
-        requestId: input.requestId,
-        probability: parsed.probability,
-        decision: cleanDecision(parsed.decision),
-        reasons: cleanReasons(parsed.reasons),
-        modelVersion: active.modelVersion,
-        featureSchema: active.featureSchema,
-        expiresAtMs: safeExpiresAt(parsed.expiresAtMs),
-        outOfDistribution: parsed.outOfDistribution === true
-      };
-    },
-
-    async processTasks(value) {
-      return await processPredictionTasks(Array.isArray(value) ? value : []);
-    },
-
-    start() {
-      stopped = false;
-      scheduleHeartbeat(0);
-      scheduleSocket(0);
-    },
-
-    stop() {
-      stopped = true;
-      if (heartbeatTimer) deps.clearTimer?.(heartbeatTimer);
-      if (socketTimer) deps.clearTimer?.(socketTimer);
-      heartbeatTimer = null;
-      socketTimer = null;
-      closeSocket();
-      stopWorker();
-    },
-
-    redact(value) {
-      let text = String(value || "");
-      if (secrets.deviceToken && secrets.deviceToken.length >= 8) text = text.replaceAll(secrets.deviceToken, "<redacted>");
-      return text;
-    }
-  };
-
-  async function performPair(rawCode) {
-    const pairCode = cleanPairCode(rawCode);
-    if (!pairCode) throw new Error("invalid-pair-code");
-    const result = await deps.request(new URL("/api/ml/agent/enroll", baseUrl).toString(), {
-      method: "POST",
-      body: {
-        code: pairCode,
-        name: options.deviceNick,
-        device_name: options.deviceNick,
-        agent_version: options.runtimeVersion,
-        device_id: state.deviceId || options.deviceId,
-        device_nick: options.deviceNick,
-        platform: platformKey,
-        runtime_version: options.runtimeVersion,
-        capabilities: ["lightgbm", "settings", "health", "predictions"]
-      },
-      timeoutMs: 20_000
-    });
-    const deviceToken = cleanDeviceToken(result?.device_token || result?.token);
-    const nextDeviceId = cleanId(result?.device?.id || result?.device_id || state.deviceId || options.deviceId, 180);
-    const scopes = cleanScopes(result?.scopes);
-    if (!result?.ok || !deviceToken || !nextDeviceId || !exactScopes(scopes, requiredDeviceScopes)) throw new Error("spreadex-pair-rejected");
-    const nextPairedAt = deps.now();
-    const nextSecrets = { deviceToken };
-    const nextState = {
-      ...state,
-      deviceId: nextDeviceId,
-      scopes,
-      pairedAt: nextPairedAt,
-      websocketUrl: normalizeWebSocketUrl(result.websocket_url, baseUrl),
-      settings: normalizeSpreadExSettings({ ...(result.settings || state.settings), device_id: nextDeviceId }, state.settings)
-    };
-    await deps.saveSecrets(nextSecrets);
-    try {
-      await deps.saveState(nextState);
-    } catch (error) {
-      await deps.saveSecrets(secrets).catch(() => undefined);
-      throw error;
-    }
-    secrets = nextSecrets;
-    state = nextState;
-    allowedModels = normalizeAllowedModels(result.allowed_models);
-    pairedAt = nextPairedAt;
-    scheduleHeartbeat(0);
-    scheduleSocket(0);
-    return { ok: true, schema: spreadExMlSchema, status: publicPairStatus() };
-  }
-
-  async function installRelease(rawRelease) {
-    const release = normalizeSpreadExRelease(rawRelease, platformKey, manifestUrl);
-    if (!release) {
-      if (!active) {
-        phase = "unavailable";
-        lastError = rawRelease?.available === false ? "component-not-published" : "component-release-invalid";
-      }
-      return { ok: false, schema: spreadExMlSchema, error: lastError };
-    }
-    if (!deps.verifyRelease(release.signedPayload, release.signature)) {
-      if (!active) phase = "unavailable";
-      lastError = "component-signature-invalid";
-      return { ok: false, schema: spreadExMlSchema, error: lastError };
-    }
-    if (active?.archiveSha256 === release.sha256 && active?.version === release.version) return { ok: true, schema: spreadExMlSchema, component: publicComponent() };
-
-    phase = "installing";
-    lastError = "";
-    const releasesDir = deps.join(rootDir, "releases");
-    const releaseId = `${release.version}-${release.sha256.slice(0, 12)}-${platformKey}`;
-    const installDir = deps.join(releasesDir, releaseId);
-    const stageDir = `${installDir}.stage-${deps.randomId()}`;
-    const displacedDir = `${installDir}.rollback-${deps.randomId()}`;
-    const archivePath = deps.join(rootDir, `${releaseId}.${deps.randomId()}${release.archive === "zip" ? ".zip" : ".tar.gz"}`);
-    let displaced = false;
-    const previous = active;
-    try {
-      await deps.mkdir(releasesDir);
-      await deps.remove(stageDir);
-      await deps.mkdir(stageDir);
-      const bytes = await deps.download(release.url, release.maxBytes);
-      if (deps.sha256(bytes) !== release.sha256) throw new Error("component-sha256-mismatch");
-      await deps.writeFile(archivePath, bytes);
-      await deps.extract(archivePath, stageDir, release.archive);
-      const executable = deps.join(stageDir, release.executable);
-      if (!deps.exists(executable)) throw new Error("component-executable-missing");
-      await deps.chmod(executable, 0o755).catch(() => undefined);
-      const selfTest = parseWorkerJson(await deps.runFile(executable, release.selfTestArgs, 20_000, undefined, stageDir));
-      if (!validSelfTest(selfTest, release)) throw new Error("component-self-test-failed");
-      const receipt = {
-        schema: spreadExMlSchema,
-        version: release.version,
-        modelVersion: release.modelVersion,
-        featureSchema: release.featureSchema,
-        platform: platformKey,
-        archiveSha256: release.sha256,
-        executable: release.executable,
-        selfTestArgs: release.selfTestArgs,
-        workerArgs: release.workerArgs,
-        predictArgs: release.predictArgs,
-        installedAt: deps.now()
-      };
-      await deps.writeFile(deps.join(stageDir, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`);
-      if (deps.exists(installDir)) {
-        await deps.rename(installDir, displacedDir);
-        displaced = true;
-      }
-      await deps.rename(stageDir, installDir);
-      const activated = { ...receipt, executable: deps.join(installDir, release.executable), installDir };
-      await writeActiveReceipt(activated, previous);
-      active = activated;
-      stopWorker();
-      phase = "ready";
-      lastError = "";
-      if (displaced) await deps.remove(displacedDir).catch(() => undefined);
-      return { ok: true, schema: spreadExMlSchema, component: publicComponent() };
-    } catch (error) {
-      lastError = cleanError(error);
-      phase = active ? "ready" : "unavailable";
-      if (displaced && !deps.exists(installDir) && deps.exists(displacedDir)) await deps.rename(displacedDir, installDir).catch(() => undefined);
-      return { ok: false, schema: spreadExMlSchema, error: lastError, rolledBack: Boolean(previous) };
-    } finally {
-      await deps.remove(stageDir).catch(() => undefined);
-      await deps.remove(displacedDir).catch(() => undefined);
-      await deps.remove(archivePath).catch(() => undefined);
-    }
-  }
-
-  async function recoverActive() {
-    const current = await deps.readJson(deps.join(rootDir, "active.json")).catch(() => null);
-    const recovered = await validateReceipt(current);
-    if (recovered) {
-      active = recovered;
-      phase = "ready";
-      lastError = "";
-      return true;
-    }
-    const previous = await deps.readJson(deps.join(rootDir, "previous.json")).catch(() => null);
-    const rollback = await validateReceipt(previous);
-    if (!rollback) return false;
-    await writeActiveReceipt(rollback, null);
-    active = rollback;
-    phase = "ready";
-    lastError = "";
-    return true;
-  }
-
-  async function validateReceipt(value) {
-    if (!validReceipt(value, platformKey)) return null;
-    const installDir = deps.join(rootDir, "releases", value.releaseId || `${value.version}-${value.archiveSha256.slice(0, 12)}-${platformKey}`);
-    const executable = deps.join(installDir, value.executable);
-    if (!deps.exists(executable)) return null;
-    const result = parseWorkerJson(await deps.runFile(executable, cleanArgs(value.selfTestArgs, ["--self-test"]), 20_000, undefined, installDir).catch(() => null));
-    if (!result?.ok || result.featureSchema !== value.featureSchema || result.modelVersion !== value.modelVersion) return null;
-    return { ...value, executable, installDir };
-  }
-
-  async function writeActiveReceipt(next, previous) {
-    const releaseId = next.installDir ? String(next.installDir).split(/[\\/]/u).pop() : next.releaseId;
-    const receipt = { ...next, releaseId, executable: String(next.executable).split(/[\\/]/u).pop(), installDir: undefined };
-    if (previous) {
-      const previousReleaseId = String(previous.installDir || "").split(/[\\/]/u).pop() || previous.releaseId;
-      const previousReceipt = { ...previous, releaseId: previousReleaseId, executable: String(previous.executable).split(/[\\/]/u).pop(), installDir: undefined };
-      await atomicJson(deps.join(rootDir, "previous.json"), previousReceipt);
-    }
-    await atomicJson(deps.join(rootDir, "active.json"), receipt);
-  }
-
-  async function atomicJson(path, value) {
-    const next = `${path}.${deps.randomId()}.next`;
-    await deps.writeFile(next, `${JSON.stringify(value, null, 2)}\n`);
-    await deps.rename(next, path, true);
-  }
-
-  function scheduleHeartbeat(delay = 30_000) {
-    if (stopped || !secrets.deviceToken || typeof deps.setTimer !== "function") return;
-    if (heartbeatTimer) deps.clearTimer?.(heartbeatTimer);
-    heartbeatTimer = deps.setTimer(() => void heartbeat(), delay);
-  }
-
-  async function heartbeat() {
-    heartbeatTimer = null;
-    if (stopped || !secrets.deviceToken) return;
-    try {
-      const status = publicStatusForRemote();
-      const result = await authenticatedRequest("/api/ml/agent/heartbeat", { method: "POST", body: status, timeoutMs: 15_000 });
-      if (!result?.ok) throw new Error("spreadex-heartbeat-rejected");
-      lastHeartbeatAt = deps.now();
-      connection = socket ? "connected" : "heartbeat";
-      if (result.settings) await applyRemoteSettings(result.settings);
-      allowedModels = normalizeAllowedModels(result.allowed_models);
-      if (Array.isArray(result.prediction_tasks) && result.prediction_tasks.length) void processPredictionTasks(result.prediction_tasks).catch(() => undefined);
-    } catch {
-      connection = socket ? "connected" : "disconnected";
-    } finally {
-      scheduleHeartbeat(2_000);
-    }
-  }
-
-  function scheduleSocket(delay) {
-    if (stopped || !secrets.deviceToken || !state.websocketUrl || typeof deps.createWebSocket !== "function" || typeof deps.setTimer !== "function") return;
-    if (socket || socketTimer) return;
-    socketTimer = deps.setTimer(() => {
-      socketTimer = null;
-      openSocket();
-    }, delay);
-  }
-
-  function openSocket() {
-    if (stopped || socket || !secrets.deviceToken || !state.websocketUrl) return;
-    let candidate;
-    try { candidate = deps.createWebSocket(state.websocketUrl); }
-    catch { scheduleSocket(backoff(++socketFailures)); return; }
-    socket = candidate;
-    connection = "connecting";
-    candidate.addEventListener("open", () => {
-      if (socket !== candidate) return;
-      socketFailures = 0;
-      connection = "connected";
-      candidate.send(JSON.stringify({ type: "authenticate", token: secrets.deviceToken, device_id: state.deviceId }));
-    });
-    candidate.addEventListener("message", (event) => void handleSocketMessage(String(event.data || "")));
-    candidate.addEventListener("close", () => socketClosed(candidate));
-    candidate.addEventListener("error", () => socketClosed(candidate));
-  }
-
-  function socketClosed(candidate) {
-    if (socket !== candidate) return;
-    try { candidate.close(); } catch { /* Already closed. */ }
-    socket = null;
-    connection = "disconnected";
-    scheduleSocket(backoff(++socketFailures));
-  }
-
-  function closeSocket() {
-    const current = socket;
-    socket = null;
-    if (current) try { current.close(); } catch { /* Already closed. */ }
-  }
-
-  async function handleSocketMessage(text) {
-    const message = parseJson(text);
-    if (!message || typeof message !== "object") return;
-    if (message.type === "settings" && message.settings) {
-      await applyRemoteSettings(message.settings).catch(() => undefined);
-      return;
-    }
-    if (message.type === "ping") {
-      if (socket) socket.send(JSON.stringify({ type: "pong", at: deps.now() }));
-      return;
-    }
-    if (message.type !== "predict") return;
-    void processPredictionTasks([message]).catch(() => undefined);
-  }
-
-  async function processPredictionTasks(rawTasks) {
-    queuedTasks.push(...rawTasks.slice(0, 32));
-    if (taskProcessing) return await taskProcessing;
-    taskProcessing = (async () => {
-      while (queuedTasks.length) await processPredictionTaskBatch(queuedTasks.splice(0, 32));
-    })().finally(() => { taskProcessing = null; });
-    return await taskProcessing;
-  }
-
-  async function processPredictionTaskBatch(rawTasks) {
-    pruneTaskCaches();
-    const tasks = rawTasks.map(normalizeRemoteTask).filter((task) => task && (!task.targetDeviceId || task.targetDeviceId === state.deviceId)).slice(0, 32);
-    const nowMs = Date.now();
-    const fresh = tasks.filter((task) => !completedTasks.has(task.key));
-    if (!fresh.length) return;
-    const isCurrent = (task) => task.expiresAtMs > nowMs && task.observedAtMs + (task.maxAgeMs || state.settings.max_prediction_age_ms) > nowMs;
-    const needScoring = fresh.filter((task) => !pendingPredictions.has(task.key) && isCurrent(task));
-    for (const task of fresh.filter((item) => !pendingPredictions.has(item.key) && !isCurrent(item))) {
-      pendingPredictions.set(task.key, failedPrediction(task, task.expiresAtMs <= nowMs ? "prediction-task-expired" : "prediction-snapshot-stale"));
-    }
-
-    if (needScoring.length) {
-      if (!active || phase !== "ready" || state.settings.mode === "off" || !activeAllowed()) {
-        const error = !active || phase !== "ready"
-          ? "spreadex-ml-unavailable"
-          : state.settings.mode === "off" ? "spreadex-ml-disabled" : "model-not-allowed";
-        for (const task of needScoring) pendingPredictions.set(task.key, failedPrediction(task, error));
-      } else {
-        try {
-          await Promise.all(needScoring.map((task) => requestWorker("observe", {
-            request: {
-              request_id: task.requestId,
-              route_id: task.routeId,
-              snapshot_id: task.snapshotId,
-              observed_at_ms: task.observedAtMs,
-              expires_at_ms: task.expiresAtMs,
-              max_age_ms: task.maxAgeMs || state.settings.max_prediction_age_ms,
-              notional_usd: task.notionalUsd,
-              profile: task.profile,
-              min_probability: task.minProbability
-            },
-            route: task.snapshot
-          }, 5_000)));
-          const response = await requestWorker("predict_batch", {
-            requests: needScoring.map((task) => ({
-              request_id: task.requestId,
-              route_id: task.routeId,
-              snapshot_id: task.snapshotId,
-              profile: task.profile,
-              min_probability: task.minProbability,
-              max_age_ms: task.maxAgeMs || state.settings.max_prediction_age_ms,
-              notional_usd: task.notionalUsd,
-              expires_at_ms: task.expiresAtMs
-            }))
-          }, 8_000);
-          const byRequest = new Map(workerPredictions(response).map((item) => [cleanId(item.request_id || item.requestId, 160), item]));
-          for (const task of needScoring) {
-            const prediction = byRequest.get(task.requestId);
-            pendingPredictions.set(task.key, validRemotePrediction(prediction, task)
-              ? successfulPrediction(task, prediction, active)
-              : failedPrediction(task, "spreadex-ml-invalid-prediction"));
-          }
-        } catch (error) {
-          for (const task of needScoring) pendingPredictions.set(task.key, failedPrediction(task, cleanError(error)));
-        }
-      }
-    }
-
-    const predictions = fresh.map((task) => pendingPredictions.get(task.key)).filter(Boolean);
-    if (!predictions.length) return;
-    const result = await authenticatedRequest("/api/ml/agent/predictions", {
-      method: "POST",
-      body: { schema: "spreadex.ml.v1", predictions },
-      timeoutMs: 15_000
-    });
-    if (!result?.ok) throw new Error("spreadex-predictions-rejected");
-    for (const task of fresh) {
-      if (!pendingPredictions.has(task.key)) continue;
-      completedTasks.set(task.key, Math.max(Date.now() + 60_000, task.expiresAtMs + 60_000));
-      pendingPredictions.delete(task.key);
-    }
-  }
-
-  async function requestWorker(method, params, timeoutMs) {
-    if (!active || phase !== "ready") throw new Error("spreadex-ml-unavailable");
-    if (!worker) {
-      workerPhase = "starting";
-      try {
-        worker = deps.createWorker(active.executable, active.workerArgs || ["--jsonl"], active.installDir);
-        workerPhase = "running";
-      } catch (error) {
-        workerPhase = "error";
-        throw error;
-      }
-    }
-    try {
-      return await worker.request(method, params, timeoutMs);
-    } catch (error) {
-      stopWorker();
-      workerPhase = "error";
-      throw new Error(cleanError(error) || "spreadex-ml-worker-failed");
-    }
-  }
-
-  function stopWorker() {
-    const current = worker;
-    worker = null;
-    if (current) try { current.stop(); } catch { /* Already stopped. */ }
-    if (workerPhase !== "error") workerPhase = "stopped";
-  }
-
-  function pruneTaskCaches() {
-    const now = Date.now();
-    for (const [key, expiresAt] of completedTasks) if (expiresAt <= now) completedTasks.delete(key);
-    for (const [key, value] of pendingPredictions) if (Number(value?.expires_at_ms || 0) + 60_000 <= now) pendingPredictions.delete(key);
-  }
-
-  async function authenticatedRequest(pathname, request) {
-    if (!secrets.deviceToken) throw new Error("spreadex-not-paired");
-    return await deps.request(new URL(pathname, baseUrl).toString(), {
-      ...request,
-      headers: { Authorization: `Bearer ${secrets.deviceToken}` }
-    });
-  }
-
-  async function applyRemoteSettings(value) {
-    const revision = safeRevision(value?.revision);
-    if (revision && revision <= state.settings.revision) return;
-    const next = normalizeSpreadExSettings(value, state.settings);
-    next.device_id = state.deviceId;
-    next.revision = revision || state.settings.revision + 1;
-    state = { ...state, settings: next };
-    await deps.saveState(state);
-  }
-
-  function publicStatusForRemote() {
-    const status = publicComponent();
-    return {
-      schema: spreadExMlSchema,
-      device_id: state.deviceId,
-      runtime_version: options.runtimeVersion,
-      platform: platformKey,
-      settings_revision: state.settings.revision,
-      component: status
-    };
-  }
-
-  function activeAllowed() {
-    return Boolean(active && allowedModels.some((item) => item.model_version === active.modelVersion && item.feature_schema === active.featureSchema));
-  }
-
-  function publicPairStatus() {
-    return { paired: Boolean(secrets.deviceToken), pairedAt, deviceId: state.deviceId, scopes: state.scopes, baseOrigin: new URL(baseUrl).origin };
-  }
-
-  function publicComponent() {
-    return { available: Boolean(active && phase === "ready"), phase, version: active?.version || "", modelVersion: active?.modelVersion || "", featureSchema: active?.featureSchema || "", lastError };
-  }
-}
-
-function normalizeSpreadExBaseUrl(value) {
-  try {
-    const url = new URL(String(value || ""));
-    const local = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
-    if (url.protocol !== "https:" && !(local && url.protocol === "http:")) return "";
-    url.username = "";
-    url.password = "";
-    url.search = "";
-    url.hash = "";
-    return url.toString().replace(/\/+$/u, "");
-  } catch { return ""; }
-}
-
-function spreadExOriginAllowed(origin, spreadExBaseUrl, sotyOrigins = []) {
-  if (!origin) return true;
-  let actual;
-  try { actual = new URL(origin).origin; } catch { return false; }
-  if (["http://localhost", "http://127.0.0.1", "http://[::1]"].includes(actual)) return true;
-  const allowed = [spreadExBaseUrl, ...sotyOrigins].map((item) => {
-    try { return new URL(item).origin; } catch { return ""; }
-  }).filter(Boolean);
-  return allowed.includes(actual);
-}
-
-function normalizeSpreadExSettings(value, fallback = {}) {
-  const base = publicSettings(fallback);
-  const requestedMode = value?.mode === "advisory" ? "assistant" : value?.mode;
-  const requestedProfile = value?.profile === "cautious" ? "careful" : value?.profile;
-  const mode = modes.has(requestedMode) ? requestedMode : base.mode;
-  const profile = profiles.has(requestedProfile) ? requestedProfile : base.profile;
-  const minProbability = boundedNumber(value?.min_probability ?? value?.minimumConfidence ?? value?.minimum_confidence, 0.5, 0.99, base.min_probability);
-  const effectiveMinProbability = boundedNumber(value?.effective_min_probability, 0.5, 0.99, minProbability);
-  const maxPredictionAgeMs = boundedInteger(value?.max_prediction_age_ms, 500, 60_000, base.max_prediction_age_ms);
-  const deviceId = cleanId(value?.device_id || value?.deviceId, 180) || base.device_id;
-  return {
-    mode,
-    profile,
-    min_probability: minProbability,
-    effective_min_probability: effectiveMinProbability,
-    max_prediction_age_ms: maxPredictionAgeMs,
-    device_id: deviceId,
-    revision: safeRevision(value?.revision) || base.revision
-  };
-}
-
-function canonicalSpreadExRelease(value) {
-  return JSON.stringify(sortObject(stripSignature(value)));
-}
-
-function normalizeSpreadExRelease(value, platformKey, manifestUrl) {
-  if (!value || value.schema !== spreadExMlReleaseSchema || value.available === false) return null;
-  const version = cleanVersion(value.version);
-  const modelVersion = cleanId(value.modelVersion, 160);
-  const featureSchema = cleanId(value.featureSchema, 160);
-  const signature = cleanSignature(value.signature);
-  const platform = value.platforms?.[platformKey];
-  const sha256 = String(platform?.sha256 || "").toLowerCase();
-  const executable = cleanRelativePath(platform?.executable);
-  const archive = cleanArchive(platform?.archive || platform?.url);
-  const selfTestArgs = cleanArgs(platform?.selfTestArgs, ["--self-test"]);
-  const predictArgs = cleanArgs(platform?.predictArgs, ["--predict-json"]);
-  const workerArgs = cleanArgs(platform?.workerArgs, ["--jsonl"]);
-  let url = "";
-  try {
-    const parsed = new URL(String(platform?.url || ""), manifestUrl);
-    if (parsed.protocol === "https:" || (["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname) && parsed.protocol === "http:")) url = parsed.toString();
-  } catch { /* Invalid artifact URL. */ }
-  if (!version || !modelVersion || !featureSchema || !signature || !platform || !url || !/^[a-f0-9]{64}$/u.test(sha256) || !executable || !archive) return null;
-  return {
-    version, modelVersion, featureSchema, signature, url, sha256, executable, archive, selfTestArgs, predictArgs, workerArgs,
-    maxBytes: boundedInteger(platform.maxBytes, 1_024, 500 * 1024 * 1024, 250 * 1024 * 1024),
-    signedPayload: canonicalSpreadExRelease(value)
-  };
-}
-
-function normalizeSpreadExState(value) {
-  const deviceId = cleanId(value?.deviceId, 180);
-  const settings = normalizeSpreadExSettings(value?.settings);
-  settings.device_id = deviceId;
-  return {
-    deviceId,
-    scopes: cleanScopes(value?.scopes),
-    pairedAt: cleanDate(value?.pairedAt),
-    websocketUrl: String(value?.websocketUrl || ""),
-    settings
-  };
-}
-
-function normalizeSpreadExSecrets(value) {
-  const deviceToken = cleanDeviceToken(value?.deviceToken);
-  return deviceToken ? { deviceToken } : {};
-}
-
-function publicSettings(value) {
-  const requestedMode = value?.mode === "advisory" ? "assistant" : value?.mode;
-  const requestedProfile = value?.profile === "cautious" ? "careful" : value?.profile;
-  const minProbability = boundedNumber(value?.min_probability ?? value?.minimumConfidence, 0.5, 0.99, 0.78);
-  return {
-    mode: modes.has(requestedMode) ? requestedMode : "off",
-    profile: profiles.has(requestedProfile) ? requestedProfile : "balanced",
-    min_probability: minProbability,
-    effective_min_probability: boundedNumber(value?.effective_min_probability, 0.5, 0.99, minProbability),
-    max_prediction_age_ms: boundedInteger(value?.max_prediction_age_ms, 500, 60_000, 2_500),
-    device_id: cleanId(value?.device_id || value?.deviceId, 180),
-    revision: safeRevision(value?.revision)
-  };
-}
-
-function normalizePredictionInput(value) {
-  const requestId = cleanId(value?.request_id || value?.requestId, 160);
-  const features = value?.features;
-  if (!requestId || !features || typeof features !== "object" || Array.isArray(features)) return null;
-  const json = JSON.stringify(features);
-  if (json.length > 256_000) return null;
-  return { requestId, features };
-}
-
-function normalizeRemoteTask(value) {
-  const requestId = cleanId(value?.request_id || value?.requestId, 160);
-  const routeId = cleanId(value?.route_id || value?.routeId, 200);
-  const snapshotId = cleanId(value?.snapshot_id || value?.snapshotId, 200);
-  const observedAtMs = boundedInteger(value?.observed_at_ms ?? value?.observed_at ?? value?.observedAt, 1, Number.MAX_SAFE_INTEGER, 0);
-  const expiresAtMs = boundedInteger(value?.expires_at_ms ?? value?.expires_at ?? value?.expiresAt, 1, Number.MAX_SAFE_INTEGER, 0);
-  const requestedProfile = value?.profile === "cautious" ? "careful" : value?.profile;
-  const profile = profiles.has(requestedProfile) ? requestedProfile : "balanced";
-  const minProbability = boundedNumber(value?.min_probability ?? value?.minProbability, 0.5, 0.99, 0.78);
-  const targetDeviceId = cleanId(value?.target_device_id || value?.targetDeviceId, 180);
-  const maxAgeMs = boundedInteger(value?.max_age_ms, 500, 60_000, 0);
-  const notionalUsd = boundedNumber(value?.notional_usd, 0.01, 1_000_000_000, 0);
-  const snapshot = value?.snapshot;
-  if (!requestId || !routeId || !snapshotId || !observedAtMs || !expiresAtMs || expiresAtMs <= observedAtMs || !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
-  if (JSON.stringify(snapshot).length > 256_000) return null;
-  return { key: `${requestId}:${snapshotId}`, requestId, routeId, snapshotId, observedAtMs, expiresAtMs, profile, minProbability, targetDeviceId, maxAgeMs, notionalUsd, snapshot };
-}
-
-function workerPredictions(value) {
-  const payload = value?.result && typeof value.result === "object" ? value.result : value;
-  if (Array.isArray(payload?.predictions)) return payload.predictions.filter((item) => item && typeof item === "object");
-  if (payload && typeof payload === "object" && Number.isFinite(payload.probability)) return [payload];
-  return [];
-}
-
-function validRemotePrediction(value, task) {
-  if (!value || value.ok === false) return false;
-  const requestId = cleanId(value.request_id || value.requestId, 160);
-  const probability = Number(value.probability);
-  return requestId === task.requestId && Number.isFinite(probability) && probability >= 0 && probability <= 1;
-}
-
-function successfulPrediction(task, value, component) {
-  const probability = Number(value.probability);
-  return {
-    request_id: task.requestId,
-    route_id: task.routeId,
-    snapshot_id: task.snapshotId,
-    ok: true,
-    probability,
-    decision: cleanDecision(value.decision || (probability >= task.minProbability ? "allow" : "deny")),
-    reasons: cleanReasons(value.reasons),
-    model_version: component.modelVersion,
-    feature_schema: component.featureSchema,
-    scored_at_ms: Date.now(),
-    expires_at_ms: Math.min(task.expiresAtMs, safeExpiresAt(value.expires_at_ms || value.expiresAtMs)),
-    out_of_distribution: value.out_of_distribution === true || value.outOfDistribution === true
-  };
-}
-
-function failedPrediction(task, error) {
-  return {
-    request_id: task.requestId,
-    route_id: task.routeId,
-    snapshot_id: task.snapshotId,
-    ok: false,
-    error: cleanError(error),
-    scored_at_ms: Date.now(),
-    expires_at_ms: task.expiresAtMs
-  };
-}
-
-function validSelfTest(result, release) {
-  return result?.ok === true && result.featureSchema === release.featureSchema && result.modelVersion === release.modelVersion;
-}
-
-function validReceipt(value, platformKey) {
-  return value?.schema === spreadExMlSchema && cleanVersion(value.version) && cleanId(value.modelVersion, 160) && cleanId(value.featureSchema, 160)
-    && value.platform === platformKey && /^[a-f0-9]{64}$/u.test(String(value.archiveSha256 || "")) && cleanRelativePath(value.executable);
-}
-
-function parseWorkerJson(value) {
-  if (value && typeof value === "object" && Number.isInteger(value.exitCode)) {
-    if (value.exitCode !== 0) return null;
-    value = value.stdout;
-  }
-  if (value && typeof value === "object") return value;
-  return parseJson(String(value || "").trim().split(/\r?\n/u).filter(Boolean).at(-1));
-}
-
-function parseJson(value) {
-  try { return JSON.parse(value); } catch { return null; }
-}
-
-function stripSignature(value) {
-  if (Array.isArray(value)) return value.map(stripSignature);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "signature").map(([key, item]) => [key, stripSignature(item)]));
-}
-
-function sortObject(value) {
-  if (Array.isArray(value)) return value.map(sortObject);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortObject(value[key])]));
-}
-
-function normalizeManifestUrl(value) {
-  try {
-    const url = new URL(String(value || ""));
-    return url.protocol === "https:" || (["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname) && url.protocol === "http:") ? url.toString() : "";
-  } catch { return ""; }
-}
-
-function normalizeWebSocketUrl(value, baseUrl) {
-  if (!value) return "";
-  try {
-    const url = new URL(String(value), baseUrl);
-    const base = new URL(baseUrl);
-    const local = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(base.hostname);
-    if (url.host !== base.host || (url.protocol !== "wss:" && !(local && url.protocol === "ws:"))) return "";
-    url.username = "";
-    url.password = "";
-    return url.toString();
-  } catch { return ""; }
-}
-
-function cleanPairCode(value) {
-  const text = String(value || "").trim();
-  return /^[A-Za-z0-9_-]{8,192}$/u.test(text) ? text : "";
-}
-
-function cleanDeviceToken(value) {
-  const text = String(value || "").trim();
-  return /^[\x21-\x7E]{32,2048}$/u.test(text) && !/[\s"'\\]/u.test(text) ? text : "";
-}
-
-function cleanSignature(value) {
-  const text = String(value || "").trim();
-  return /^[A-Za-z0-9_+/=-]{64,512}$/u.test(text) ? text : "";
-}
-
-function cleanPlatformKey(value) {
-  const text = String(value || "").trim();
-  return /^(?:win32|linux|darwin)-(?:x64|arm64)$/u.test(text) ? text : "";
-}
-
-function cleanVersion(value) {
-  const text = String(value || "").trim();
-  return /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/u.test(text) ? text : "";
-}
-
-function cleanId(value, max) {
-  const text = String(value || "").trim().slice(0, max);
-  return /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/u.test(text) ? text : "";
-}
-
-function cleanRelativePath(value) {
-  const text = String(value || "").trim();
-  return /^[A-Za-z0-9][A-Za-z0-9_.\/-]{0,200}$/u.test(text) && !text.includes("..") && !text.startsWith("/") ? text : "";
-}
-
-function cleanArchive(value) {
-  const text = String(value || "").split(/[?#]/u)[0].toLowerCase();
-  if (text.endsWith(".zip")) return "zip";
-  if (text.endsWith(".tar.gz") || text.endsWith(".tgz")) return "tar.gz";
-  return "";
-}
-
-function cleanArgs(value, fallback) {
-  if (!Array.isArray(value)) return fallback;
-  const args = value.map((item) => String(item || "").trim()).filter((item) => item && item.length <= 120 && !/[\r\n\0]/u.test(item)).slice(0, 12);
-  return args.length ? args : fallback;
-}
-
-function cleanDecision(value) {
-  if (value === "deny") return "block";
-  return ["allow", "block"].includes(value) ? value : "block";
-}
-
-function cleanReasons(value) {
-  return (Array.isArray(value) ? value : []).map((item) => String(item || "").replace(/[\r\n\t]+/gu, " ").trim().slice(0, 180)).filter(Boolean).slice(0, 5);
-}
-
-function cleanScopes(value) {
-  return [...new Set((Array.isArray(value) ? value : []).map((item) => String(item || "").trim()).filter((item) => /^[a-z][a-z0-9:-]{0,63}$/u.test(item)))].sort();
-}
-
-function normalizeAllowedModels(value) {
-  return (Array.isArray(value) ? value : []).map((item) => ({
-    model_version: cleanId(item?.model_version, 160),
-    feature_schema: cleanId(item?.feature_schema, 160)
-  })).filter((item) => item.model_version && item.feature_schema).slice(0, 64);
-}
-
-function exactScopes(actual, expected) {
-  const required = [...expected].sort();
-  return actual.length === required.length && actual.every((item, index) => item === required[index]);
-}
-
-function cleanDate(value) {
-  const text = String(value || "");
-  return /^\d{4}-\d{2}-\d{2}T/u.test(text) && Number.isFinite(Date.parse(text)) ? new Date(text).toISOString() : "";
-}
-
-function safeRevision(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : 0;
-}
-
-function safeExpiresAt(value) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number > Date.now() && number <= Date.now() + 60_000 ? number : Date.now() + 2_000;
-}
-
-function boundedNumber(value, min, max, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= min && number <= max ? number : fallback;
-}
-
-function boundedInteger(value, min, max, fallback) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= min && number <= max ? number : fallback;
-}
-
-function cleanError(error) {
-  return String(error instanceof Error ? error.message : error || "spreadex-ml-error").replace(/[\r\n]+/gu, " ").slice(0, 240);
-}
-
-function backoff(failures) {
-  return Math.min(60_000, 1_000 * 2 ** Math.min(failures, 6));
-}
-
-return { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed };
-})();
 // bundled connector module: ./agent-modules/local-apps.mjs
 const { createLocalAppsRuntime, normalizeLocalAppManifest, prepareLocalAppWorkspace, probeLocalApp, readLocalAppProposal } = (() => {
 const localAppsSchema = 'soty.apps-channel.v1';
@@ -4270,7 +3332,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.14";
+const connectorVersion = "1.4.15";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -4287,8 +3349,6 @@ const configuredPort = safeInteger(arg("--port") || env("SOTY_CONNECTOR_PORT", "
 // as an old "automatic" value and converge to the browser-facing stable port.
 const port = companion ? configuredPort : (configuredPort || 49_424);
 const updateManifestUrl = arg("--update-url") || env("SOTY_CONNECTOR_UPDATE_URL", "SOTY_AGENT_UPDATE_URL") || "https://4-2.xn--p1ai/agent/manifest.json";
-const spreadExBaseUrl = normalizeSpreadExBaseUrl(env("SOTY_SPREADEX_BASE_URL")) || "https://miniapp.spreadex.me";
-const spreadExReleasePublicKey = env("SOTY_SPREADEX_ML_RELEASE_PUBLIC_KEY");
 const autoUpdate = env("SOTY_CONNECTOR_AUTO_UPDATE", "SOTY_AGENT_AUTO_UPDATE") === "1" || (managed && env("SOTY_CONNECTOR_AUTO_UPDATE", "SOTY_AGENT_AUTO_UPDATE") !== "0");
 const requestedShell = arg("--shell") || env("SOTY_CONNECTOR_SHELL", "SOTY_AGENT_SHELL");
 const updateConfirmMs = safeInteger(env("SOTY_CONNECTOR_UPDATE_CONFIRM_MS"), 1_000, 60_000, 15_000);
@@ -4324,8 +3384,6 @@ const localJobReceipts = durableResults ? createLocalJobReceipts({
 }, { root: join(jobRoot, 'native-results-v1'), binding: { linkId, deviceId, connectorId, relayBaseUrl } }) : null;
 const openCodeRoot = join(connectorDir, "opencode-runtime");
 const openCodeStateRoot = join(connectorDir, "opencode-state");
-const spreadExMlRoot = join(connectorDir, "spreadex-ml");
-const spreadExMlSecretsPath = join(connectorDir, "spreadex-ml-secrets.json");
 let shuttingDown = false;
 let agentCache = { at: 0, value: null };
 let openCodeInstallPromise = null;
@@ -4373,7 +3431,6 @@ const trafficFabric = createTrafficFabric({
 let trafficFabricState = trafficFabric.normalizeState(persisted.trafficFabric);
 let trafficCoreSettings = normalizeBridgeSettings(refreshTrafficVpnSettings(persisted.trafficCoreSettings));
 let trafficCoreEnabled = persisted.trafficCoreEnabled === true;
-let spreadExMlState = persisted.spreadexMl && typeof persisted.spreadexMl === "object" ? persisted.spreadexMl : {};
 const trafficCoreDependencies = {
   exists: existsSync,
   mkdir: async (target) => await mkdir(target, { recursive: true }),
@@ -4430,51 +3487,6 @@ const transitClient = createTransitClientRuntime({
   wait: sleep,
   onceExit: child => child.exitCode !== null || child.signalCode ? Promise.resolve() : new Promise(resolveExit => child.once('exit', resolveExit)),
 });
-const spreadExMl = createSpreadExMlIntegration({
-  exists: existsSync,
-  mkdir: async (target) => await mkdir(target, { recursive: true }),
-  remove: async (target) => await rm(target, { recursive: true, force: true }),
-  rename: async (from, to, replace = false) => {
-    if (replace) await rm(to, { recursive: true, force: true });
-    await rename(from, to);
-  },
-  writeFile: async (target, value) => await writeFile(target, value, { mode: 0o600 }),
-  readJson: async (target) => JSON.parse(await readFile(target, "utf8")),
-  chmod,
-  join,
-  download: downloadSpreadExMlBytes,
-  extract: extractSpreadExMlArchive,
-  sha256,
-  verifyRelease: verifySpreadExMlRelease,
-  runFile: async (file, args, timeoutMs, input, cwd) => await runChild(file, args, { cwd, timeoutMs, input }),
-  createWorker: createSpreadExJsonlWorker,
-  request: spreadExJson,
-  saveState: async (value) => {
-    spreadExMlState = value;
-    await saveConfig();
-  },
-  saveSecrets: saveSpreadExMlSecrets,
-  now: () => new Date().toISOString(),
-  randomId: randomUUID,
-  setTimer: (callback, delay) => {
-    const timer = setTimeout(callback, delay);
-    timer.unref?.();
-    return timer;
-  },
-  clearTimer: clearTimeout,
-  ...(typeof globalThis.WebSocket === "function" ? { createWebSocket: (url) => new globalThis.WebSocket(url) } : {})
-}, {
-  rootDir: spreadExMlRoot,
-  baseUrl: spreadExBaseUrl,
-  manifestUrl: updateManifestUrl,
-  platformKey: `${process.platform}-${process.arch}`,
-  runtimeVersion: connectorVersion,
-  deviceId,
-  deviceNick,
-  state: spreadExMlState,
-  secrets: loadSpreadExMlSecrets()
-});
-
 if (process.argv[2] === 'transit-prepare') {
   process.stdout.write(`${JSON.stringify({ ok: true, runtime: await transitClient.prepare() })}\n`);
 } else if (process.argv[2] === 'transit-stop') {
@@ -4495,7 +3507,6 @@ async function startConnector() {
   await ensureManagedRunner().catch((error) => {
     updateState.lastError = `runner: ${safeError(error)}`;
   });
-  await spreadExMl.initialize().catch(() => undefined);
   const server = createServer((request, response) => {
     let url;
     try { url = new URL(request.url || "/", "http://127.0.0.1"); }
@@ -4504,7 +3515,7 @@ async function startConnector() {
       return;
     }
     void handleHttp(request, response, url).catch((error) => {
-      if (!response.headersSent) sendJson(response, 500, corsHeaders(request, url.pathname.startsWith("/integrations/spreadex/v1")), { ok: false, error: safeError(error) });
+      if (!response.headersSent) sendJson(response, 500, corsHeaders(request), { ok: false, error: safeError(error) });
       else response.end();
     });
   });
@@ -4527,13 +3538,11 @@ async function startConnector() {
   void connectorLoop();
   scheduleUpdate();
   scheduleUserCompanion();
-  spreadExMl.start();
 
   const stop = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     activeJob?.controller.abort();
-    spreadExMl.stop();
     localApps.stop();
     await trafficCoreRuntime.stop().catch(() => undefined);
     await transitClient.stop().catch(() => undefined);
@@ -4566,10 +3575,9 @@ async function handleHttp(request, response, url) {
     } catch { sendJson(response, 409, headers, { ok: false, error: 'apps_connector_offline' }); }
     return;
   }
-  const spreadExRoute = url.pathname.startsWith("/integrations/spreadex/v1");
-  const headers = corsHeaders(request, spreadExRoute);
+  const headers = corsHeaders(request);
   const origin = String(request.headers.origin || "");
-  if (!originAllowed(origin, url.pathname)) {
+  if (!originAllowed(origin)) {
     sendJson(response, 403, headers, { ok: false, error: "origin-not-allowed" });
     return;
   }
@@ -4589,47 +3597,6 @@ async function handleHttp(request, response, url) {
   }
   if ((url.pathname === "/connector/bind" || url.pathname === "/agent/relay") && request.method === "POST") {
     await handleBind(request, response, headers, origin);
-    return;
-  }
-  if ((url.pathname === "/integrations/spreadex/v1/status" || url.pathname === "/integrations/spreadex/v1/health") && request.method === "GET") {
-    sendJson(response, 200, headers, spreadExMl.status());
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/settings" && request.method === "GET") {
-    sendJson(response, 200, headers, spreadExMl.settings());
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/settings" && request.method === "POST") {
-    try {
-      const result = await spreadExMl.updateSettings(await readJsonBody(request, 32_000));
-      sendJson(response, 200, headers, result);
-    } catch (error) {
-      sendJson(response, 400, headers, { ok: false, schema: spreadExMlSchema, error: safeError(error) });
-    }
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/pair" && request.method === "POST") {
-    try {
-      const body = await readJsonBody(request, 16_000);
-      const result = await spreadExMl.pair(body.code || body.pairCode || body.pair_code);
-      void checkForUpdate();
-      sendJson(response, 200, headers, result);
-    } catch (error) {
-      sendJson(response, 400, headers, { ok: false, schema: spreadExMlSchema, error: safeError(error) });
-    }
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/unpair" && request.method === "POST") {
-    sendJson(response, 200, headers, await spreadExMl.unpair());
-    return;
-  }
-  if (url.pathname === "/integrations/spreadex/v1/predict" && request.method === "POST") {
-    try {
-      const result = await spreadExMl.predict(await readJsonBody(request, 256_000));
-      sendJson(response, 200, headers, result);
-    } catch (error) {
-      sendJson(response, 503, headers, { ok: false, schema: spreadExMlSchema, error: safeError(error) });
-    }
     return;
   }
   if (url.pathname === "/operator/traffic/fabric" && request.method === "GET") {
@@ -4738,7 +3705,6 @@ async function health() {
       currentVersion: connectorVersion,
       ...updateState
     },
-    integrations: { spreadex: spreadExMl.status() },
     agent,
     registration: { connected: Boolean(lastRegisteredAt && !registrationError), lastRegisteredAt, error: registrationError },
     activeJob: activeJob ? { id: activeJob.id, kind: activeJob.kind, startedAt: activeJob.startedAt } : null
@@ -4764,7 +3730,7 @@ async function registerConnector(forceAgent = false) {
         version: connectorVersion,
         platform: `${process.platform}-${process.arch}`,
         scope,
-        capabilities: ["agent", "command", "script", "events", "cancel", "traffic", "spreadex-ml", "local-apps", "soty.auto-owner-check.v1"],
+        capabilities: ["agent", "command", "script", "events", "cancel", "traffic", "local-apps", "soty.auto-owner-check.v1"],
         agent: await detectAgent(forceAgent)
       }
     });
@@ -5114,87 +4080,6 @@ function runChild(command, args, options) {
       child.stdin.end(options.input, "utf8");
     }
   });
-}
-
-function createSpreadExJsonlWorker(command, args, cwd) {
-  const child = spawn(command, args, {
-    cwd,
-    env: childEnv(),
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  const pending = new Map();
-  let buffer = "";
-  let stopped = false;
-  let stderr = "";
-
-  const fail = (error) => {
-    if (stopped) return;
-    stopped = true;
-    const reason = error instanceof Error ? error : new Error(String(error || "spreadex-ml-worker-exited"));
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(reason);
-    }
-    pending.clear();
-  };
-
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk.toString("utf8");
-    if (buffer.length > 4_000_000) {
-      fail(new Error("spreadex-ml-worker-output-too-large"));
-      killProcessTree(child);
-      return;
-    }
-    for (;;) {
-      const newline = buffer.indexOf("\n");
-      if (newline < 0) break;
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      if (!line) continue;
-      const message = parseJson(line);
-      const id = safeId(message?.id, 180);
-      const entry = id ? pending.get(id) : null;
-      if (!entry) continue;
-      pending.delete(id);
-      clearTimeout(entry.timer);
-      if (message.ok === false) entry.reject(new Error(safeText(message.error, 240) || "spreadex-ml-worker-rejected"));
-      else entry.resolve(message);
-    }
-  });
-  child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk.toString("utf8"), 16_000); });
-  child.once("error", (error) => fail(error));
-  child.once("close", (code) => fail(new Error(`spreadex-ml-worker-exited:${code ?? "signal"}:${stderr.slice(-200)}`)));
-
-  return {
-    request(method, params, timeoutMs) {
-      if (stopped || child.exitCode != null) return Promise.reject(new Error("spreadex-ml-worker-not-running"));
-      const id = `ml-${randomUUID()}`;
-      const line = `${JSON.stringify({ id, method, params })}\n`;
-      if (line.length > 2_000_000) return Promise.reject(new Error("spreadex-ml-worker-request-too-large"));
-      return new Promise((resolveRequest, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error("spreadex-ml-worker-timeout"));
-          killProcessTree(child);
-        }, safeInteger(timeoutMs, 500, 30_000, 5_000));
-        timer.unref?.();
-        pending.set(id, { resolve: resolveRequest, reject, timer });
-        child.stdin.write(line, "utf8", (error) => {
-          if (!error) return;
-          const entry = pending.get(id);
-          if (!entry) return;
-          pending.delete(id);
-          clearTimeout(entry.timer);
-          reject(error);
-        });
-      });
-    },
-    stop() {
-      fail(new Error("spreadex-ml-worker-stopped"));
-      killProcessTree(child);
-    }
-  };
 }
 
 async function probeCommand(command, args) {
@@ -5839,83 +4724,6 @@ async function extractTrafficCoreArchive(archivePath, destination) {
   }
 }
 
-async function downloadSpreadExMlBytes(url, maxBytes) {
-  const response = await fetch(url, { cache: "no-store", redirect: "follow", signal: AbortSignal.timeout(180_000) });
-  if (!response.ok) throw new Error(`spreadex-ml-http-${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > maxBytes) throw new Error("spreadex-ml-size");
-  return bytes;
-}
-
-async function extractSpreadExMlArchive(archivePath, destination, archive) {
-  if (archive === "zip") {
-    await extractTrafficCoreArchive(archivePath, destination);
-    return;
-  }
-  if (archive === "tar.gz") {
-    execFileSync("tar", ["-xzf", archivePath, "-C", destination], { timeout: 180_000, windowsHide: true, stdio: "ignore" });
-    return;
-  }
-  throw new Error("spreadex-ml-archive-unsupported");
-}
-
-function verifySpreadExMlRelease(payload, signature) {
-  if (!spreadExReleasePublicKey) return false;
-  try {
-    const keyText = spreadExReleasePublicKey.includes("BEGIN PUBLIC KEY")
-      ? spreadExReleasePublicKey.replace(/\\n/gu, "\n")
-      : createPublicKey({ key: Buffer.from(spreadExReleasePublicKey, "base64"), format: "der", type: "spki" });
-    const key = typeof keyText === "string" ? createPublicKey(keyText) : keyText;
-    const bytes = /^[A-Za-z0-9_-]+$/u.test(signature)
-      ? Buffer.from(signature, "base64url")
-      : Buffer.from(signature, "base64");
-    return verifySignature(null, Buffer.from(payload, "utf8"), key, bytes);
-  } catch {
-    return false;
-  }
-}
-
-async function spreadExJson(url, options = {}) {
-  if (!sameOrigin(url, spreadExBaseUrl)) throw new Error("spreadex-origin-mismatch");
-  const response = await fetch(url, {
-    method: options.method || "GET",
-    cache: "no-store",
-    redirect: "error",
-    headers: {
-      ...(options.headers || {}),
-      ...(options.body ? { "Content-Type": "application/json" } : {})
-    },
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
-    signal: AbortSignal.timeout(options.timeoutMs || 20_000)
-  });
-  const value = await response.json().catch(() => ({}));
-  return response.ok && value && typeof value === "object"
-    ? { ...value, ok: value.ok !== false }
-    : { ok: false, error: `spreadex-http-${response.status}` };
-}
-
-function loadSpreadExMlSecrets() {
-  try {
-    const value = JSON.parse(readFileSync(spreadExMlSecretsPath, "utf8").replace(/^\uFEFF/u, ""));
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
-
-async function saveSpreadExMlSecrets(value) {
-  await mkdir(connectorDir, { recursive: true });
-  if (!value?.deviceToken) {
-    await rm(spreadExMlSecretsPath, { force: true });
-    return;
-  }
-  const nextPath = `${spreadExMlSecretsPath}.next`;
-  await writeFile(nextPath, `${JSON.stringify({ schema: spreadExMlSchema, deviceToken: value.deviceToken }, null, 2)}\n`, { mode: 0o600 });
-  await chmod(nextPath, 0o600).catch(() => undefined);
-  await rename(nextPath, spreadExMlSecretsPath);
-  await protectSecretFile(spreadExMlSecretsPath);
-}
-
 async function protectSecretFile(path) {
   await chmod(path, 0o600).catch(() => undefined);
   if (process.platform !== "win32") return;
@@ -6032,7 +4840,6 @@ async function checkForUpdate() {
       throw new Error("manifest-invalid");
     }
     updateState.latestVersion = manifest.version;
-    await spreadExMl.syncRelease(manifest.spreadexMl).catch(() => undefined);
     const comparison = compareVersion(manifest.version, connectorVersion);
     if (comparison < 0) {
       updateState.lastResult = "ahead-of-channel";
@@ -6243,7 +5050,7 @@ async function saveConfig() {
     trafficCoreSettings,
     trafficCoreEnabled,
     ...(transitControlHash ? { transitControlHash } : {}),
-    spreadexMl: spreadExMlState
+    ...(Object.hasOwn(persisted, "spreadexMl") ? { spreadexMl: persisted.spreadexMl } : {})
   };
   await mkdir(connectorDir, { recursive: true });
   await writeFile(configPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
@@ -6279,11 +5086,10 @@ function readJsonBody(request, maxBytes) {
   });
 }
 
-function corsHeaders(request, exactOriginOnly = false) {
+function corsHeaders(request) {
   const origin = String(request.headers.origin || "");
-  const exactOriginAllowed = !exactOriginOnly || spreadExOriginAllowed(origin, spreadExBaseUrl, [relayBaseUrl, originOf(updateManifestUrl)]);
   return {
-    ...(origin && exactOriginAllowed ? { "Access-Control-Allow-Origin": origin } : exactOriginOnly ? {} : { "Access-Control-Allow-Origin": "*" }),
+    ...(origin ? { "Access-Control-Allow-Origin": origin } : { "Access-Control-Allow-Origin": "*" }),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Private-Network": "true",
@@ -6298,12 +5104,9 @@ function sendJson(response, status, headers, body) {
   response.end(JSON.stringify(body));
 }
 
-function originAllowed(origin, pathname = "") {
+function originAllowed(origin) {
   if (!origin) return true;
   if (isLocalOrigin(origin)) return true;
-  if (pathname.startsWith("/integrations/spreadex/v1")) {
-    return spreadExOriginAllowed(origin, spreadExBaseUrl, [relayBaseUrl, originOf(updateManifestUrl)]);
-  }
   return productionShellOriginAllowed(origin, relayBaseUrl) || sameOrigin(origin, originOf(updateManifestUrl));
 }
 
@@ -6462,7 +5265,6 @@ function redactSecrets(value) {
   for (const secret of [connectorToken]) {
     if (typeof secret === "string" && secret.length >= 8) text = text.replaceAll(secret, "<redacted>");
   }
-  try { text = spreadExMl.redact(text); } catch { /* Integration may still be initializing. */ }
   return text;
 }
 

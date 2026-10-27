@@ -85,7 +85,7 @@ async function fixture(t, connectorFile = 'scripts/soty-connector.mjs', { manife
   const childEnv = { ...inherited,
     TEMP: root, TMP: root, USERPROFILE: root, APPDATA: join(root, 'appdata'), LOCALAPPDATA: join(root, 'localappdata'),
     SOTY_CONNECTOR_DATA_DIR: connectorDir, SOTY_CONNECTOR_PORT: String(connectorPort), SOTY_CONNECTOR_SERVER_URL: f.origin,
-    SOTY_SPREADEX_BASE_URL: f.origin, SOTY_CONNECTOR_UPDATE_URL: `${f.origin}/agent/manifest.json`,
+    SOTY_CONNECTOR_UPDATE_URL: `${f.origin}/agent/manifest.json`,
     SOTY_CONNECTOR_LINK_ID: 'prepared_agent_real_link_123456789012345', SOTY_CONNECTOR_DEVICE_ID: 'prepared_agent_host',
     SOTY_CONNECTOR_SCOPE: 'Dev', SOTY_CONNECTOR_AUTO_UPDATE: '0', SOTY_CONNECTOR_MANAGED: '0', SOTY_OPENCODE_PATH: join(root, 'no-agent'),
   };

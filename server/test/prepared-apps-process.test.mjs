@@ -56,7 +56,7 @@ for (const [kind, file] of [['source', 'scripts/soty-connector.mjs'], ['release'
     child = spawn(process.execPath, [join(repo, file)], { cwd: connectorDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...inherited,
       TEMP: root, TMP: root, USERPROFILE: root, APPDATA: join(root, 'appdata'), LOCALAPPDATA: join(root, 'localappdata'),
       SOTY_CONNECTOR_DATA_DIR: connectorDir, SOTY_CONNECTOR_PORT: String(port), SOTY_CONNECTOR_SERVER_URL: origin,
-      SOTY_SPREADEX_BASE_URL: origin, SOTY_CONNECTOR_UPDATE_URL: `${origin}/agent/manifest.json`,
+      SOTY_CONNECTOR_UPDATE_URL: `${origin}/agent/manifest.json`,
       SOTY_CONNECTOR_LINK_ID: 'prepared_real_process_link_123456789012345', SOTY_CONNECTOR_DEVICE_ID: 'prepared_real_host',
       SOTY_CONNECTOR_SCOPE: 'Dev', SOTY_CONNECTOR_AUTO_UPDATE: '0', SOTY_CONNECTOR_MANAGED: '0', SOTY_OPENCODE_PATH: join(root, 'no-agent') } });
     for (const stream of [child.stdout, child.stderr]) stream.on('data', value => { outputBytes += value.length; });

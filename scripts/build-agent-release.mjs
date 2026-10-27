@@ -19,7 +19,6 @@ const compatibilityOutput = join(outputDir, "soty-agent.mjs");
 const manifestPath = join(outputDir, "manifest.json");
 const windowsMachineCmdPath = join(outputDir, "install-windows-machine.cmd");
 const windowsReinstallDir = join(outputDir, "windows-reinstall");
-const spreadExMlReleasePath = join(root, "release", "spreadex-ml.json");
 
 const trafficCore = {
   schema: "soty.traffic-core.release.v1",
@@ -78,7 +77,6 @@ await writeFile(compatibilityOutput, bundled, { mode: 0o755 });
 await chmod(compatibilityOutput, 0o755).catch(() => undefined);
 await updateWindowsMachineInstallerRevision(version);
 const windowsReinstall = await publishWindowsReinstallScripts();
-const spreadexMl = await buildSpreadExMlRelease();
 
 const manifest = {
   schema: "soty.connector.release.v1",
@@ -106,7 +104,6 @@ const manifest = {
     runtime: openCodeReleaseManifest
   },
   trafficCore,
-  spreadexMl,
   windowsReinstall,
   transitClient: {
     schema: 'soty.transit-client.release.v1', engine: 'sing-box', version: transitClientWindowsRelease.version,
@@ -188,35 +185,6 @@ async function publishWindowsReinstallScripts() {
     scripts.push({ name, url: `/agent/windows-reinstall/${fileName}`, sha256: sha256(bytes), bytes: bytes.length });
   }
   return { scriptsBaseUrl: "/agent/windows-reinstall/", scripts };
-}
-
-async function buildSpreadExMlRelease() {
-  if (!existsSync(spreadExMlReleasePath)) {
-    return {
-      schema: "soty.spreadex-ml.release.v1",
-      available: false,
-      reason: "platform-worker-not-published",
-      featureSchema: "spreadex.ml.features.v1",
-      signatureRequired: true,
-      signatureAlgorithm: "Ed25519",
-      publicKeyId: "spreadex-ml-release-v1",
-      platforms: {}
-    };
-  }
-  const value = JSON.parse(await readFile(spreadExMlReleasePath, "utf8"));
-  if (value?.schema !== "soty.spreadex-ml.release.v1" || value.available !== true) throw new Error("Invalid SpreadEx ML release schema");
-  if (!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/u.test(String(value.version || ""))) throw new Error("Invalid SpreadEx ML release version");
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/u.test(String(value.modelVersion || ""))) throw new Error("Invalid SpreadEx ML model version");
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/u.test(String(value.featureSchema || ""))) throw new Error("Invalid SpreadEx ML feature schema");
-  if (!/^[A-Za-z0-9_+/=-]{64,512}$/u.test(String(value.signature || ""))) throw new Error("SpreadEx ML release must have an Ed25519 signature");
-  const platforms = value.platforms && typeof value.platforms === "object" ? value.platforms : {};
-  if (!Object.keys(platforms).length) throw new Error("SpreadEx ML release has no platforms");
-  for (const [platform, asset] of Object.entries(platforms)) {
-    if (!/^(?:win32|linux|darwin)-(?:x64|arm64)$/u.test(platform)) throw new Error(`Invalid SpreadEx ML platform: ${platform}`);
-    if (typeof asset?.url !== "string" || !asset.url || !/^[a-f0-9]{64}$/u.test(String(asset.sha256 || "").toLowerCase())) throw new Error(`Invalid SpreadEx ML asset: ${platform}`);
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.\/-]{0,200}$/u.test(String(asset.executable || "")) || String(asset.executable).includes("..")) throw new Error(`Invalid SpreadEx ML executable: ${platform}`);
-  }
-  return value;
 }
 
 function sha256(value) {

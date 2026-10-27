@@ -79,17 +79,9 @@ try {
   assert.equal(connectorHealth.package?.agent?.id, "opencode");
   assert.equal(connectorHealth.update?.enabled, false);
   assert.equal(connectorHealth.update?.lastResult, "disabled");
-  const spreadExStatusUrl = `http://127.0.0.1:${connectorPort}/integrations/spreadex/v1/status`;
-  const directSpreadExStatus = await fetch(spreadExStatusUrl);
-  assert.equal(directSpreadExStatus.status, 200);
-  assert.equal(directSpreadExStatus.headers.get("access-control-allow-origin"), null);
-  assert.equal((await directSpreadExStatus.json()).component.available, false);
-  const browserSpreadExStatus = await fetch(spreadExStatusUrl, { headers: { Origin: "https://miniapp.spreadex.me" } });
-  assert.equal(browserSpreadExStatus.status, 200);
-  assert.equal(browserSpreadExStatus.headers.get("access-control-allow-origin"), "https://miniapp.spreadex.me");
-  const rejectedSpreadExOrigin = await fetch(spreadExStatusUrl, { headers: { Origin: "https://miniapp.spreadex.me.evil.test" } });
-  assert.equal(rejectedSpreadExOrigin.status, 403);
-  assert.equal(rejectedSpreadExOrigin.headers.get("access-control-allow-origin"), null);
+  const retiredStatus = await fetch(`http://127.0.0.1:${connectorPort}/integrations/spreadex/v1/status`);
+  assert.equal(retiredStatus.status, 404);
+  assert.equal(Object.hasOwn(connectorHealth, "integrations"), false);
   await waitJson(`${baseUrl}/api/connectors/status?linkId=${linkId}`, (value) => value.connected === true);
 
   if (process.platform === "win32") {

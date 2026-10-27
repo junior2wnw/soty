@@ -51,7 +51,7 @@ test('actual old release cannot lease auto work after a stale new-process heartb
     const child = spawn(process.execPath, [path], { cwd: runtime, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...inherited,
       TEMP: root, TMP: root, USERPROFILE: root, APPDATA: join(root, 'appdata'), LOCALAPPDATA: join(root, 'localappdata'),
       SOTY_FIXTURE_MARKER: marker, SOTY_OPENCODE_PATH: executable, SOTY_CONNECTOR_DATA_DIR: runtime,
-      SOTY_CONNECTOR_PORT: String(port), SOTY_CONNECTOR_SERVER_URL: origin, SOTY_SPREADEX_BASE_URL: origin,
+      SOTY_CONNECTOR_PORT: String(port), SOTY_CONNECTOR_SERVER_URL: origin,
       SOTY_CONNECTOR_LINK_ID: 'auto_owner_legacy_link_123456789012345', SOTY_CONNECTOR_DEVICE_ID: 'auto_owner_host',
       SOTY_CONNECTOR_SCOPE: 'Dev', SOTY_CONNECTOR_AUTO_UPDATE: '0', SOTY_CONNECTOR_MANAGED: '0' } });
     for (const stream of [child.stdout, child.stderr]) stream.on('data', value => { outputBytes += value.length; });
@@ -134,7 +134,7 @@ test(`actual ${kind} connector checks current owner immediately before spawning 
     cwd: runtime, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...inherited,
       TEMP: root, TMP: root, USERPROFILE: root, APPDATA: join(root, 'appdata'), LOCALAPPDATA: join(root, 'localappdata'),
       SOTY_FIXTURE_MARKER: marker, SOTY_OPENCODE_PATH: executable, SOTY_CONNECTOR_DATA_DIR: runtime,
-      SOTY_CONNECTOR_PORT: String(localPort), SOTY_CONNECTOR_SERVER_URL: origin, SOTY_SPREADEX_BASE_URL: origin,
+      SOTY_CONNECTOR_PORT: String(localPort), SOTY_CONNECTOR_SERVER_URL: origin,
       SOTY_CONNECTOR_LINK_ID: 'auto_owner_process_link_123456789012345', SOTY_CONNECTOR_DEVICE_ID: 'auto_owner_host',
       SOTY_CONNECTOR_SCOPE: 'Dev', SOTY_CONNECTOR_AUTO_UPDATE: '0', SOTY_CONNECTOR_MANAGED: '0' },
   });

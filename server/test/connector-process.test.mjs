@@ -7,7 +7,7 @@ import vm from 'node:vm';
 // CLI's startup/config/network side effects. No copied runner implementation.
 const source = await readFile(new URL('../../scripts/soty-connector.mjs', import.meta.url), 'utf8');
 const start = source.indexOf('function runChild(command, args, options) {');
-const end = source.indexOf('\nfunction createSpreadExJsonlWorker(', start);
+const end = source.indexOf('\nasync function probeCommand(', start);
 assert.ok(start > 0 && end > start);
 const actualFunctionSource = source.slice(start, end);
 const defer = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
