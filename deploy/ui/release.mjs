@@ -3,7 +3,7 @@ import { lstatSync, readdirSync, readFileSync, mkdirSync, writeFileSync, realpat
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {SOURCE_SDK_INDEX,SOURCE_SDK_LIMITS,sourceSdkArchiveName} from '../../modules/source-app/package-contract.mjs';
-import {readSourceSdkArchive,verifySourceSdkIndex} from '../../modules/source-app/public-release.mjs';
+import {readSourceSdkArchive,verifySourceSdkIndex,verifySourceSdkRetention} from '../../modules/source-app/public-release.mjs';
 import {parseSourceJson} from '../../modules/source-app/shared/strict-json.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -51,7 +51,7 @@ function validateRelease(release) {
 }
 
 function readDist(directory) {
-  const root = path.resolve(directory), files = new Map();let sdkArchives=0;
+  const root = path.resolve(directory), files = new Map();let sdkArchives=0,sdkBytes=0;
   if (realpathSync(root) !== root) fail('ui_dist_symlink');
   function visit(relative = '') {
     for (const entry of readdirSync(path.join(root, relative), { withFileTypes: true })) {
@@ -64,9 +64,9 @@ function readDist(directory) {
       if (!stat.isFile() || stat.isSymbolicLink()) fail('ui_dist_not_regular');
       if (stat.size > 16 * 1024 * 1024 || files.size >= 4096) fail('ui_dist_limit');
       if (sourceSdkArchiveName(name) && stat.size > SOURCE_SDK_LIMITS.archiveBytes || name === SOURCE_SDK_INDEX && stat.size > 4096) fail('ui_dist_limit');
+      if (sourceSdkArchiveName(name)) {sdkBytes+=stat.size;verifySourceSdkRetention(++sdkArchives,sdkBytes);}
       const bytes = readFileSync(file), sha256 = hash(bytes);
       if (sourceSdkArchiveName(name)) {
-        if (++sdkArchives>SOURCE_SDK_LIMITS.archives) fail('ui_dist_limit');
         if (name !== `sdk/source-app/${sha256}.tgz`) fail('ui_sdk_hash_name_mismatch');
         readSourceSdkArchive(bytes);
       }
@@ -92,6 +92,8 @@ export function createUiRelease(dist, retained = []) {
     if (files.has(name) && files.get(name).sha256 !== file.sha256) fail('ui_immutable_url_conflict');
     files.set(name, file);
   }
+  const sdkFiles=[...files].filter(([name])=>sourceSdkArchiveName(name));
+  verifySourceSdkRetention(sdkFiles.length,sdkFiles.reduce((sum,[,file])=>sum+file.bytes.length,0));
   const requireUrl = url => {
     if (typeof url !== 'string' || !/^\/[A-Za-z0-9_./-]*$/u.test(url) || !files.has(url === '/' ? 'index.html' : url.slice(1))) fail('ui_reference_not_in_release');
   };

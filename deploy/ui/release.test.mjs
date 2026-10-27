@@ -6,7 +6,8 @@ import path from 'node:path';
 import { createUiRelease, writeUiRelease, createCaddyOverlay, verifyStructuralDelta, PUBLIC_SKILL_FILES } from './release.mjs';
 import { fixtureDist } from './test-support.mjs';
 import {sdkFormatFixture} from '../../modules/source-app/test/support/public-release.mjs';
-import {sourceSdkReleaseIndex} from '../../modules/source-app/public-release.mjs';
+import {sourceSdkReleaseIndex,sourceSdkHash} from '../../modules/source-app/public-release.mjs';
+import {SOURCE_SDK_LIMITS} from '../../modules/source-app/package-contract.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 
 function fixture(t) {
@@ -41,6 +42,36 @@ test('finite SDK index and hash-named capsule publish through the existing UI re
   const privatePath=path.join(f.dist,'sdk/source-app/operator.json');writeFileSync(privatePath,'synthetic-private');
   assert.throws(()=>createUiRelease(f.dist),{code:'ui_sdk_entry_denied'});assert.equal(readFileSync(privatePath,'utf8'),'synthetic-private');rmSync(privatePath);
   writeFileSync(path.join(f.dist,name),'changed immutable bytes');assert.throws(()=>createUiRelease(f.dist),{code:'ui_sdk_hash_name_mismatch'});
+});
+
+test('retained SDK union counts unique immutable URLs and refuses the next archive before a manifest',async t=>{
+  const f=fixture(t),sdk=await sdkFormatFixture(f.root),old=fixtureDist(path.join(f.root,'old-sdk'));
+  // Format-only capsules keep this inventory-bound test small; they are not runnable SDKs.
+  const provenance=JSON.parse(sdk.files.get('dist/provenance.json'));
+  for(const name of ['server.mjs','browser.mjs','example.mjs','install.mjs']){
+    const bytes=Buffer.from('// Synthetic format-only runtime\n');sdk.files.set('dist/'+name,bytes);
+    provenance.outputs.find(item=>item.path===name).sha256=sourceSdkHash(bytes);
+  }
+  sdk.files.set('dist/provenance.json',sdk.json(provenance));
+  const sample=sdk.archive(),half=SOURCE_SDK_LIMITS.archives/2;
+  assert.ok(sample.length*(SOURCE_SDK_LIMITS.archives+1)<SOURCE_SDK_LIMITS.retainedBytes);
+  await mkdir(path.join(f.dist,'sdk/source-app'),{recursive:true});await mkdir(path.join(old,'sdk/source-app'),{recursive:true});
+  let first,current;
+  for(let i=0;i<=SOURCE_SDK_LIMITS.archives;i++){
+    // Gzip MTIME changes the transport hash while retaining a valid identical capsule.
+    const archive=Buffer.from(sample);archive.writeUInt32LE(i+1,4);
+    const index=sourceSdkReleaseIndex(archive),name=index.artifact.url.slice(1);
+    if(i===0)first={archive,name};
+    if(i===half-1)current=index;
+    if(i===SOURCE_SDK_LIMITS.archives){
+      await writeFile(path.join(f.dist,'sdk/source-app/index.json'),sdk.json(current));
+      await writeFile(path.join(old,first.name),first.archive);
+      const release=createUiRelease(f.dist,[old]);
+      assert.equal(release.manifest.filter(file=>file.name.endsWith('.tgz')).length,SOURCE_SDK_LIMITS.archives);
+    }
+    await writeFile(path.join(i<half?f.dist:old,name),archive);
+  }
+  assert.throws(()=>createUiRelease(f.dist,[old]),{code:'source_sdk_public_capacity'});
 });
 
 test('SDK metadata cannot point outside the finite archive URL, omit its capsule or publish a symlink',async t=>{
