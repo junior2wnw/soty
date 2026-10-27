@@ -602,6 +602,10 @@ test('another account cannot archive a job; its owner can finish after a legacy 
 
 test('concurrent jobs, rejections and prepared requests cannot consume a protected receipt slot', { timeout: 30000 }, async t => {
   const f = await fixture(t), store = f.service().locals.connectorService.store;
+  async function enroll(label) { const client = f.makeClient(), enrollment = await client.startEnrollment(label);
+    await f.owner.approveEnrollment(enrollment.requestId); const preview = await client.previewEnrollment(enrollment.requestId);
+    await client.finishEnrollment(enrollment.requestId, preview.account.accountId); return client; }
+  const second = await enroll('Second device'), third = await enroll('Third device');
   await f.owner.extension('apps.register', { ...f.target, name: 'Existing', port: f.source.address().port, entryPath: '/', grants: {} });
   const base = store.state.requests.length; store.maxRequestRecords = base + 3;
   const id = await f.create(); assert.equal((await f.submit(id)).ok, true);
@@ -611,11 +615,19 @@ test('concurrent jobs, rejections and prepared requests cannot consume a protect
   const manual = { ...f.target, requestId: 'manual-race', text: 'Manual fixture', cwd: '' };
   const rejected = { ...f.target, expectedAccountId: f.account.accountId, requestId: 'rejected-race', text: 'Continue fixture', cwd: '',
     conversationId: 'fixture-conversation', previousJobId: 'job_missing123' };
-  await Promise.allSettled([
+  // These are independent signed clients. Hold all three at their actual
+  // ledger-entry points so the test exercises competing server admissions.
+  const methods = ['reservePreparedRequest', 'createJob', 'rejectOwnedRequest'], originals = new Map(); let arrived = 0, release;
+  const hold = new Promise(resolve => { release = resolve; });
+  for (const name of methods) { const original = store[name].bind(store); originals.set(name, original);
+    store[name] = async (...values) => { arrived++; await hold; return original(...values); }; }
+  const work = Promise.allSettled([
     f.owner.extension('apps.prepared.create', prepared),
-    f.owner.extension('apps.agent.create', manual),
-    f.owner.extension('apps.assistant.send', rejected),
+    second.extension('apps.agent.create', manual),
+    third.extension('apps.assistant.send', rejected),
   ]);
+  try { await until(() => arrived === 3); } finally { release(); }
+  await work; for (const name of methods) store[name] = originals.get(name);
   assert.equal(store.state.requests.length, base + 2, 'only one nonreserved record may be accepted');
   assert.equal(store.state.jobs.find(job => job.id === id).autoRegistrationFinal, undefined);
   const result = await f.owner.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id });
@@ -679,15 +691,23 @@ test('an automatic request without room for its own future receipt is durably re
 
 test('parallel automatic admissions reserve the last receipt once and replay both outcomes after restart', { timeout: 30000 }, async t => {
   const f = await fixture(t); await f.owner.extension('apps.register', { ...f.target, name: 'Existing', port: f.source.address().port, entryPath: '/', grants: {} });
+  const second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId);
   let store = f.service().locals.connectorService.store; const cap = store.state.requests.length + 3; store.maxRequestRecords = cap;
   const args = requestId => ({ ...f.target, requestId, text: 'Parallel fixture', cwd: '', autoRegister: true });
-  const ids = ['parallel-one', 'parallel-two'], values = await Promise.all(ids.map(id => f.owner.extension('apps.agent.create', args(id))));
+  const original = store.createJob.bind(store); let arrived = 0, release; const hold = new Promise(resolve => { release = resolve; });
+  store.createJob = async (...values) => { arrived++; await hold; return original(...values); };
+  const ids = ['parallel-one', 'parallel-two'], clients = [f.owner, second];
+  const work = Promise.all(ids.map((id, index) => clients[index].extension('apps.agent.create', args(id))));
+  try { await until(() => arrived === 2); } finally { release(); }
+  const values = await work; store.createJob = original;
   const accepted = values.findIndex(value => value.job?.id), denied = values.findIndex(value => value.admission?.reason === 'app_auto_capacity');
   assert.notEqual(accepted, -1); assert.notEqual(denied, -1); assert.notEqual(accepted, denied);
   const id = values[accepted].job.id; assert.equal(store.state.requests.length, cap - 1);
   await f.restart(); store = f.service().locals.connectorService.store; store.maxRequestRecords = cap;
-  assert.equal((await f.owner.extension('apps.agent.create', args(ids[accepted]))).job.id, id);
-  assert.deepEqual((await f.owner.extension('apps.agent.create', args(ids[denied]))).admission, values[denied].admission);
+  assert.equal((await clients[accepted].extension('apps.agent.create', args(ids[accepted]))).job.id, id);
+  assert.deepEqual((await clients[denied].extension('apps.agent.create', args(ids[denied]))).admission, values[denied].admission);
   assert.equal((await store.finishJob(f.auth, id, f.result(id))).ok, true); await f.restart();
   store = f.service().locals.connectorService.store; store.maxRequestRecords = cap;
   await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
