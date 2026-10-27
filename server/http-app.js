@@ -418,7 +418,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ configured: apps.configured, sourceEntryActivation: apps.configured === true, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human),
-      automaticAppRegistration: { schema: 'soty.automatic-app-registration-capability.v1', available: Boolean(automaticApps && universal && apps.configured), archive: Boolean(automaticApps) },
+      automaticAppRegistration: { schema: 'soty.automatic-app-registration-capability.v1', available: Boolean(automaticApps && universal && apps.configured), archive: Boolean(automaticApps), archiveCapacity: Boolean(automaticApps) },
       humanSignins: human?.signinCapabilities ?? { schema: 'soty.human-signins-capability.v1', available: false, sessions: false,
         rememberedConsents: false, checkRevoke: false, scopes: [], sourceRootSessions: false, maximumPageSize: 0 },
       personalAgent: personal.status(), nativeVoice: voice.publicMount(), voiceOrb: orbVoice.status(), notifications: { configured: push.status().configured } });

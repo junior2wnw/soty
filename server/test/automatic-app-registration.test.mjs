@@ -113,7 +113,7 @@ async function fixture(t) {
 test('capability gates a new auto intent while the original lost ACK replays on a temporarily disabled server', { timeout: 25000 }, async t => {
   const f = await fixture(t), capability = (await f.capabilities()).automaticAppRegistration;
   assert.equal(capability.schema, 'soty.automatic-app-registration-capability.v1'); assert.equal(capability.available, true);
-  assert.equal(capability.archive, true);
+  assert.equal(capability.archive, true); assert.equal(capability.archiveCapacity, true);
   const args = { ...f.target, requestId: 'automatic-lost-ack', text: 'Создать список', cwd: '', autoRegister: true };
   f.loseNextCreateAck(); await assert.rejects(f.owner.extension('apps.agent.create', args));
   const jobs = f.service().locals.connectorService.store.state.jobs.filter(job => job.requestId === args.requestId);
@@ -473,6 +473,54 @@ test('another account cannot archive a job; a full receipt ledger fails closed w
   assert.equal(store.state.requests.length, count); assert.equal(store.state.jobs.find(job => job.id === id).autoRegistrationFinal, undefined);
   const db = new DatabaseSync(join(dirname(store.filePath), 'connector-store.sqlite'), { readOnly: true });
   try { assert.equal(db.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v2'); } finally { db.close(); }
+});
+
+test('the owner can stop a job at the real app limit and recover one receipt after a lost response and rollback', { timeout: 120000 }, async t => {
+  const f = await fixture(t), stranger = f.makeClient(), other = await stranger.bootstrap('Other owner');
+  let created = 0;
+  for (let port = 25000; created < 100; port++) {
+    if (port === f.source.address().port || port === 49424) continue;
+    const result = await f.owner.extension('apps.register', { ...f.target, name: `Fixture ${created}`, port, entryPath: '/', grants: {} });
+    assert.ok(result.app.id); created++;
+  }
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 100);
+  const id = await f.create(); assert.equal((await f.submit(id)).ok, true);
+  await until(async () => (await f.read(id)).autoRegistration?.state === 'capacity');
+  assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, true);
+  await f.restart(); await until(async () => (await f.read(id)).autoRegistration?.state === 'capacity');
+  const args = { expectedAccountId: f.account.accountId, jobId: id }, otherArgs = { expectedAccountId: other.accountId, jobId: id };
+  await assert.rejects(stranger.extension('apps.agent.archive', otherArgs), { code: 'app_archive_unavailable' });
+  assert.equal((await stranger.extension('apps.agent.archiveReceipt', otherArgs)).state, 'unconfirmed');
+  f.loseNextArchiveAck(); await assert.rejects(f.owner.extension('apps.agent.archive', args));
+  const archived = await f.owner.extension('apps.agent.archiveReceipt', args);
+  assert.equal(archived.state, 'archived'); assert.equal(archived.receipt.jobId, id); assert.equal(archived.receipt.requestId, 'auto-request-1');
+  const [first, second] = await Promise.all([f.owner.extension('apps.agent.archive', args), f.owner.extension('apps.agent.archive', args)]);
+  assert.equal(first.replayed, true); assert.equal(second.replayed, true);
+  assert.deepEqual(first.receipt, archived.receipt); assert.deepEqual(second.receipt, archived.receipt);
+  const store = f.service().locals.connectorService.store;
+  assert.equal(store.state.requests.filter(row => row.autoArchive?.jobId === id).length, 1);
+  assert.equal(store.state.jobs.find(job => job.id === id).cancelRequested, true);
+  assert.equal(store.state.jobs.find(job => job.id === id).autoRegistrationFinal, 'archived');
+  assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, undefined);
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 100);
+  assert.equal((await stranger.extension('apps.agent.archiveReceipt', otherArgs)).state, 'unconfirmed');
+  const directory = dirname(store.filePath), oldDir = join(dirname(directory), 'capacity-old-reader'); await mkdir(oldDir);
+  for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
+    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+  await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
+  await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
+  try {
+    await old.ready; assert.equal((await old.automaticAppJobs(id)).length, 0);
+    assert.equal(old.state.jobs.find(job => job.id === id).cancelRequested, true);
+    await old.mutate(() => old.expire(Date.now() + 8 * 24 * 60 * 60_000));
+    assert.equal(old.state.jobs.some(job => job.id === id), false);
+    assert.equal((await old.poll(f.auth)).error, 'connector-auth-failed');
+  } finally { await old.close(); }
+  await f.restart({}, { announce: false });
+  assert.deepEqual((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt, archived.receipt);
+  assert.deepEqual((await f.owner.extension('apps.agent.archive', args)).receipt, archived.receipt);
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 100);
+  assert.equal((await stranger.extension('apps.agent.archiveReceipt', otherArgs)).state, 'unconfirmed');
 });
 
 test('the previous reader cannot resume an archived job, and its historical receipt survives rollback', { timeout: 30000 }, async t => {

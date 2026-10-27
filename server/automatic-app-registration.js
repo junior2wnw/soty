@@ -103,7 +103,7 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
       const original = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
       let originalActive = false;
       try { originalActive = connect.isActorActive(original) === true && apps.resolveOwnedDevice(original, job.deviceId, job.connectorId).linkId === job.linkId; } catch { /* Cannot restore a revoked authority. */ }
-      if (originalActive && !['conflict', 'access-lost'].includes(problems.get(jobId))) return { ok: false, error: 'app-archive-unavailable' };
+      if (originalActive && !['conflict', 'capacity', 'access-lost'].includes(problems.get(jobId))) return { ok: false, error: 'app-archive-unavailable' };
       const result = await store.archiveAutomaticAppJob(job, actor, current);
       if (!result.ok) return result;
       pending.delete(jobId); problems.delete(jobId); return { ...result, state: 'archived' };

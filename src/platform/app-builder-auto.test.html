@@ -12,7 +12,7 @@ async function until(predicate){for(let n=0;n<600;n++){if(predicate())return;awa
 const token='1234567890abcdef1234567890abcdef',jobId='job_'+token,appId='app-'+token;
 const target={hostDeviceId:'qa-host',connectorId:'qa-connector',jobId};
 const proposal={schema:'soty.local-app.v1',name:'Приложение',port:5111,entryPath:'/',sourceJobId:jobId};
-let accountId,actions,status,missingTask=false,cancelled=false,legacyServer=false,loseArchiveAck=false,restrictedAuto='',opened=[],registerCalls=0,archiveCalls=0,receiptCalls=0;
+let accountId,actions,status,missingTask=false,cancelled=false,legacyServer=false,legacyCapacity=false,capabilityDelay=0,loseArchiveAck=false,restrictedAuto='',opened=[],registerCalls=0,archiveCalls=0,receiptCalls=0;
 const accounts=[];
 const client={async getLocalState(){return {accountId};},async extension(op,args,context){
   check(context.expectedAccountId===accountId,'account mismatch');
@@ -31,11 +31,11 @@ const client={async getLocalState(){return {accountId};},async extension(op,args
 const button=label=>[...document.querySelectorAll('dialog[open] button')].find(item=>item.textContent.trim()===label&&!item.hidden);
 const body=()=>document.querySelector('dialog[open]')?.textContent||'';
 async function fresh(next,options={}){
-  actions?.destroy();accountId='qa_status_'+crypto.randomUUID();accounts.push(accountId);status=next;missingTask=Boolean(options.missingTask);cancelled=Boolean(options.cancelled);legacyServer=Boolean(options.legacyServer);loseArchiveAck=Boolean(options.loseArchiveAck);restrictedAuto=options.restrictedAuto||'';
+  actions?.destroy();accountId='qa_status_'+crypto.randomUUID();accounts.push(accountId);status=next;missingTask=Boolean(options.missingTask);cancelled=Boolean(options.cancelled);legacyServer=Boolean(options.legacyServer);legacyCapacity=Boolean(options.legacyCapacity);capabilityDelay=options.capabilityDelay||0;loseArchiveAck=Boolean(options.loseArchiveAck);restrictedAuto=options.restrictedAuto||'';
   const state=createAppCreateState({accountId,storage:localStorage,locks:navigator.locks});
   const intent=await state.prepare({expectedAccountId:accountId,hostDeviceId:target.hostDeviceId,connectorId:target.connectorId,text:'Создать',cwd:'',autoRegister:true});
   await state.acknowledge(intent.payload,target);
-  actions=createAppActions(client,async()=>{},undefined,{readAgentCapabilities:async()=>({agentConfigured:true,automaticAppRegistration:{schema:'soty.automatic-app-registration-capability.v1',available:true,...(!legacyServer?{archive:true}:{})}}),openRegisteredApp:async(id,expected)=>{check(expected===accountId,'account changed');opened.push(id);}});
+  actions=createAppActions(client,async()=>{},undefined,{readAgentCapabilities:async()=>{if(capabilityDelay)await wait(capabilityDelay);return {agentConfigured:true,automaticAppRegistration:{schema:'soty.automatic-app-registration-capability.v1',available:true,...(!legacyServer?{archive:true,...(!legacyCapacity?{archiveCapacity:true}:{})}:{})}};},openRegisteredApp:async(id,expected)=>{check(expected===accountId,'account changed');opened.push(id);}});
   await actions.agentCreate(undefined,restrictedAuto?{...target,restrictedAuto}:undefined);
 }
 const run=document.querySelector('#run'),proof=document.querySelector('#proof');
@@ -77,6 +77,16 @@ run.onclick=async()=>{
     await fresh('failed');await until(()=>body().includes('Не удалось создать приложение'));check(body().includes('Ответ задачи'),'failure lacks result');
     await fresh('waiting',{missingTask:true});await until(()=>body().includes('Ждём подтверждения от Сот'));check(!button('Проверить подключение'),'old backend triggered legacy fallback');
     await fresh('waiting',{cancelled:true});await until(()=>body().includes('Остановка запрошена'));check(body().includes('Ответ задачи'),'cancellation lacks answer');
+    await fresh('capacity',{legacyCapacity:true});await until(()=>body().includes('предел приложений в аккаунте'));await wait(200);check(!button('Остановить автодобавление'),'old server offered an unsupported capacity archive');
+    await fresh('conflict',{legacyCapacity:true});await until(()=>button('Остановить автодобавление'));
+    const beforeCapacityArchive=archiveCalls;await fresh('capacity',{capabilityDelay:500});await until(()=>body().includes('предел приложений в аккаунте'));check(!button('Остановить автодобавление'),'archive appeared before the capability');await until(()=>button('Остановить автодобавление'));
+    button('Остановить автодобавление').click();await until(()=>body().includes('Автоматическое добавление остановлено'));
+    check(archiveCalls===beforeCapacityArchive+1&&body().includes('Номер исходного запроса: synthetic-original')&&body().includes('карточка уже появилась')&&body().includes('данные не удалены'),'capacity archive was not confirmed safely');
+    await fresh('capacity',{loseArchiveAck:true});await until(()=>button('Остановить автодобавление'));
+    button('Остановить автодобавление').click();await until(()=>body().includes('Результат остановки не подтверждён'));
+    check(archiveCalls===beforeCapacityArchive+2&&!button('Остановить автодобавление')&&button('Проверить квитанцию'),'capacity lost ACK was retried or declared successful');
+    button('Проверить квитанцию').click();await until(()=>body().includes('Номер исходного запроса: synthetic-original'));
+    check(archiveCalls===beforeCapacityArchive+2,'capacity receipt check repeated the mutation');
     check(registerCalls===0&&opened.length===1,'unexpected browser registration or navigation');
     proof.dataset.testStatus='passed';proof.textContent='PASS: статусы, утрата ответа, чтение квитанции, недоступное устройство, старая версия и отсутствие повторной регистрации.';
   }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
