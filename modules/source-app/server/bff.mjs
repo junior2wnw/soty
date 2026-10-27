@@ -12,6 +12,9 @@ import { createFeedbackJobAuthorityProof } from './feedback-job-authority.mjs';
 import { sourceVerifiedOperation } from './operation-observer.mjs';
 import { fields, check, digest, nonce, opaque, requestId, jsonCopy, deepFreeze, syncResult, SourceAppError } from './wire.mjs';
 
+// Only the validated receipt path may emit the typed unobserved signal.
+class ValidatedReceiptUnknown extends SourceAppError {}
+
 const COOKIE = 'soty_rp_session', LINK = 'soty_rp_link';
 const cookie = (req, name) => {
   const header = String(req.headers.cookie || '');
@@ -470,10 +473,19 @@ export function createSourceAppBff(options) {
       if (contract.kind === 'soty.workspace.v1') finalWorkspaceContext(current.authority,
         args.contextRef ?? (data?.schema === 'soty.current-context.v2' ? data.context.ref : undefined), operation === 'execute');
       // A missing Native receipt is not a fence: an earlier request may still
-      // arrive. Do not give legacy clients a successful negative receipt.
+      // arrive. A typed 409 confirms only a well-formed response for this exact
+      // request, not absence or rollback. Invalid Native output is a 503.
       // Non-workspace adapters can still return their own opaque proof shape.
       if(operation==='readProof'&&(contract.kind==='soty.workspace.v1'?data?.outcome!=='committed':
-        ['not_applied','unknown'].includes(data?.outcome)))throw new SourceAppError('source_receipt_unknown',409);
+        ['not_applied','unknown'].includes(data?.outcome))) {
+        let receipt, expected;
+        try { receipt=fields(data,['requestId','inputDigest','outcome']); expected=fields(args.input,['inputDigest']); }
+        catch { throw new SourceAppError('source_app_response_invalid',503); }
+        check(receipt.requestId===args.requestId && typeof receipt.inputDigest==='string'
+          && /^[a-f0-9]{64}$/u.test(receipt.inputDigest) && receipt.inputDigest===expected.inputDigest
+          && ['not_applied','unknown'].includes(receipt.outcome),'source_app_response_invalid',503);
+        throw new ValidatedReceiptUnknown('source_receipt_unknown',409);
+      }
       send(res, 200, { ok: true, data });
       observed(operation,operation==='execute'&&data?.outcome==='committed'?'commit_verified':
         operation==='readProof'&&data?.outcome==='committed'?'receipt_verified':
@@ -534,14 +546,19 @@ export function createSourceAppBff(options) {
         && !url.pathname.includes('%') && !url.pathname.includes('..'), 'source_app_route_unavailable', 404);
       if (url.pathname.startsWith('/soty/')) await nativeRoute(req, res, url); else await embedRoute(req, res, url);
     } catch (error) {
+      if (url.pathname === '/api/embed/receipt' && error?.code === 'source_receipt_unknown'
+        && !(error instanceof ValidatedReceiptUnknown)) error = new SourceAppError('source_app_response_invalid',503);
       if (!res.headersSent && url.pathname.startsWith('/soty/')) {
         const superseded = error.code === 'source_app_intent_superseded', unknown = !error.status || error.status >= 500;
         page(res, superseded ? 'Откройте вход заново' : unknown ? 'Вход пока не подтверждён' : 'Не удалось подтвердить вход',
           '<p>' + (superseded ? 'Этот вход заменён более новым. Вернитесь в Соты и начните вход снова.'
             : unknown ? 'Вернитесь в Соты и проверьте завершение входа. Если ответа нет, повторите вход явно; новый профиль создавать не нужно.'
               : 'Подтвердите свой профиль в приложении и откройте вход заново из Сот.') + '</p>', {}, Number.isInteger(error.status) ? error.status : 503);
-      } else if (!res.headersSent) send(res, Number.isInteger(error.status) ? error.status : 503, { ok: false, error: { code: error.code || 'source_app_unknown', retryable: !error.status || error.status >= 500 } });
-      else res.destroy();
+      } else if (!res.headersSent) {
+        const projected = { code: error.code || 'source_app_unknown', retryable: !error.status || error.status >= 500,
+          ...(error instanceof ValidatedReceiptUnknown ? { receiptValidation: 'soty.source-receipt-check.v1' } : {}) };
+        send(res, Number.isInteger(error.status) ? error.status : 503, { ok: false, error: projected });
+      } else res.destroy();
     }
     return true;
   }, close() { closed = true; native.close(); } });

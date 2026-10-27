@@ -9,7 +9,7 @@ import { workspaceReadProofContext, workspaceWitness, workspaceReceipt } from '.
 import { HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../modules/apps/scoped-embed/resource-route-adapters.mjs';
 import { selectedHiveWorkflowOperations } from './hive-workflow-input.js';
 
-const installed = new WeakMap();
+const installed = new WeakMap(), unobservedReceipt = Symbol('source_receipt_unobserved');
 const need = value => { if (!value) throw new AccessError('selected_native_source_denied'); };
 const fields = (value, required, optional = []) => need(value && !Array.isArray(value)
   && typeof value === 'object' && Object.keys(value).every(key => [...required, ...optional].includes(key))
@@ -93,8 +93,15 @@ export function createSelectedNativeSourceApplication(raw) {
       handle: captured.handle, path, requestId: request.requestId, input: data, signal,
       ...(workspace ? { contextRef: captured.contextRef } : {}),
       withCurrentOwner: callback => host.withOwner(request, callback) });
-    need(!signal.aborted && response.status === 200);
+    need(!signal.aborted);
     const envelope = captureQueryData(response.data);
+    if (!hive && path === '/api/embed/receipt' && response.status === 409) {
+      fields(envelope, ['ok', 'error']); fields(envelope.error, ['code', 'retryable', 'receiptValidation']);
+      need(envelope.ok === false && envelope.error.code === 'source_receipt_unknown' && envelope.error.retryable === false
+        && envelope.error.receiptValidation === 'soty.source-receipt-check.v1');
+      return unobservedReceipt;
+    }
+    need(response.status === 200);
     if (hive) return envelope;
     fields(envelope, ['ok', 'data']); need(envelope.ok === true); return captureQueryData(envelope.data);
   }
@@ -134,7 +141,11 @@ export function createSelectedNativeSourceApplication(raw) {
           // Never use POST's latest/replayed revision as this request's receipt.
           proof = { requestId: request.requestId, inputDigest: canonicalHash(data.input), outcome: 'committed',
             receipt: { projectId: changes.projectId, revision: change.revision, operations: change.operations } };
-        } else proof = await call(request, '/api/embed/receipt', { inputDigest: canonicalHash(data.input) }, signal);
+        } else {
+          proof = await call(request, '/api/embed/receipt', { inputDigest: canonicalHash(data.input) }, signal);
+          // Internal readiness only: this is not a negative receipt or a fence.
+          if (proof === unobservedReceipt) return { ...base, outcome: 'unobserved' };
+        }
       }
       catch { return { ...base, outcome: 'unknown' }; }
       fields(proof, ['requestId', 'inputDigest', 'outcome'], ['replayed', 'receipt', 'result', 'data', ...(workspace ? ['contextAfter', 'workspaceReceipt', 'recovery'] : [])]);

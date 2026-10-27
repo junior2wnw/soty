@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { createSourceWorkspaceClient } from '../browser/index.mjs';
+import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+const { createSourceWorkspaceClient } = process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY
+  ? await import(pathToFileURL(join(process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY,'dist','browser.mjs')).href)
+  : await import('../browser/index.mjs');
 
 const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']'
   : value && typeof value === 'object' ? '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
@@ -287,4 +291,26 @@ test('an explicitly selected child acquires a new lease and never moves a retain
   assert.equal(selected.title, 'Other board'); assert.equal(f.calls.at(-1).args.input.operation, 'soty.context.select');
   assert.equal(f.calls.at(-1).args.contextRef, undefined); await assert.rejects(f.api.invoke(intent), /source_client_context_changed/);
   f.api.dispose(); await assert.rejects(ready(f), /source_client_context_changed/);
+});
+
+
+test('invalid Source receipt response remains unknown and recovery never resends the original write', async () => {
+  const f=fixture(); await ready(f);
+  const intent=await f.api.prepareInvoke({requestId:id('malformed-source-proof'),input:{operation:'notes.create',title:'Synthetic'}});
+  f.lostAck(); await assert.rejects(f.api.invoke(intent),error=>error.effectUnknown===true);
+  f.hold(()=>json({ok:false,error:{code:'source_app_response_invalid',retryable:true}},503));
+  await assert.rejects(f.api.recoverReceipt(intent),error=>error.code==='source_app_response_invalid'&&error.effectUnknown===true);
+  assert.equal(f.calls.filter(call=>call.path.endsWith('/invoke')).length,1);
+  assert.equal(f.effects(),1);
+});
+
+
+test('validated unknown Source marker remains compatible with browser receipt recovery', async () => {
+  const f=fixture(); await ready(f);
+  const intent=await f.api.prepareInvoke({requestId:id('validated-unknown'),input:{operation:'notes.create',title:'Synthetic'}});
+  f.lostAck(); await assert.rejects(f.api.invoke(intent),error=>error.effectUnknown===true);
+  f.hold(()=>json({ok:false,error:{code:'source_receipt_unknown',retryable:false,receiptValidation:'soty.source-receipt-check.v1'}},409));
+  await assert.rejects(f.api.recoverReceipt(intent),error=>error.code==='source_receipt_unknown'&&error.effectUnknown===true);
+  assert.equal(f.calls.filter(call=>call.path.endsWith('/invoke')).length,1);
+  assert.equal(f.effects(),1);
 });

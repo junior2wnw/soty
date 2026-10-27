@@ -21,10 +21,13 @@ const random=()=>randomBytes(32).toString('base64url');
 // This issuer is synthetic; the separate Human/Apps gate tests actual Root signing.
 async function fixture(t,portable=false,{crossBrand=false,sameOrigin=false,feedback=false,receiptRecovery=false}={}){
   const directory=await mkdtemp(join(tmpdir(),'root-workspace-http-'));let sdk=source;
-  if(portable){await buildSourceAppPackage({outdir:directory});await mkdir(join(directory,'node_modules'));
+  if(portable==='installed') {
+    assert.ok(process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY, 'installed SDK directory required');
+    sdk=await import(pathToFileURL(join(process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY,'dist','server.mjs')).href);
+  } else if(portable){await buildSourceAppPackage({outdir:directory});await mkdir(join(directory,'node_modules'));
     await symlink(dirname(dirname(require.resolve('openid-client'))),join(directory,'node_modules/openid-client'),process.platform==='win32'?'junction':'dir');
     sdk=await import(pathToFileURL(join(directory,'server.mjs')).href);}
-  let now=Date.now(),mode='',bff,context,profile,rootLive=true,nativeLive=true,commits=0,rootReads=0,revokeAt=0,advanceAtNextRootRead=0,nativeEpoch=1,abaAtNextRootRead=false,advanceEachRootRead=0,rootReadHook;
+  let now=Date.now(),mode='',proofMode='unknown',bff,context,profile,rootLive=true,nativeLive=true,commits=0,rootReads=0,revokeAt=0,advanceAtNextRootRead=0,nativeEpoch=1,abaAtNextRootRead=false,advanceEachRootRead=0,rootReadHook;
   const clock=()=>now,key=randomBytes(32),pair=generateKeyPairSync('rsa',{modulusLength:2048});
   const privateJwk={...pair.privateKey.export({format:'jwk'}),kid:'synthetic',alg:'RS256',use:'sig'};
   const publicJwk={...pair.publicKey.export({format:'jwk'}),kid:'synthetic',alg:'RS256',use:'sig'},signing=await importJWK(privateJwk,'RS256');
@@ -94,7 +97,16 @@ async function fixture(t,portable=false,{crossBrand=false,sameOrigin=false,feedb
       readProof(proof,binding,args,recovery){assert.equal(sdk.isSourceNativeReceiptRecoveryPort(recovery),true);assert.equal(Object.hasOwn(args,'contextRef'),false);
         return store.tx(()=>{inspect(proof,binding);assert.equal(store.inTransaction(),true);
           const row=store.db.prepare('SELECT * FROM fixture_receipts WHERE request_id=?').get(args.requestId);
-          assert.equal(row?.input_digest,args.input.inputDigest);return recovery.recover(JSON.parse(row.result_json),JSON.parse(row.binding_json));});},
+          if(!row){
+            if(proofMode==='throw-unknown')throw Object.assign(Error('synthetic Native failure'),{code:'source_receipt_unknown',status:409});
+            const result={requestId:proofMode==='wrong-request'?'different-synthetic-request':args.requestId,
+              inputDigest:proofMode==='wrong-digest'?'0'.repeat(64):args.input.inputDigest,
+              outcome:proofMode==='legacy-not-applied'?'not_applied':proofMode==='wrong-outcome'?'unexpected':'unknown'};
+            if(proofMode==='extra-field')result.extra='synthetic';
+            if(proofMode==='missing-field')delete result.inputDigest;
+            return result;
+          }
+          assert.equal(row.input_digest,args.input.inputDigest);return recovery.recover(JSON.parse(row.result_json),JSON.parse(row.binding_json));});},
     }:{}),
     ...(feedback?{feedback:{
       async context(proof,binding,input){inspect(proof,binding);assert.deepEqual(input,{});feedbackReads++;return feedbackContext();},
@@ -121,7 +133,7 @@ async function fixture(t,portable=false,{crossBrand=false,sameOrigin=false,feedb
   t.after(async()=>{store.close();
     assert.equal(dirname(resolve(directory)),resolve(tmpdir()));assert.match(basename(directory),/^root-workspace-http-/u);
     await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:40});});
-  return{request,store,commits:()=>commits,clearCookie:()=>{token=undefined;},setMode:value=>{mode=value;},closeRoot:()=>{rootLive=false;},revokeNative:()=>{nativeLive=false;},
+  return{request,store,commits:()=>commits,clearCookie:()=>{token=undefined;},setMode:value=>{mode=value;},setProofMode:value=>{proofMode=value;},closeRoot:()=>{rootLive=false;},revokeNative:()=>{nativeLive=false;},
     advance:ms=>{now+=ms;},advanceEveryRootRead:ms=>{advanceEachRootRead=ms;},advanceOnNextRootRead:ms=>{advanceAtNextRootRead=ms;},abaOnNextRootRead:()=>{abaAtNextRootRead=true;},newContext,profile,rootReads:()=>rootReads,revokeOnRootRead:count=>{revokeAt=count;},
     feedbackReads:()=>feedbackReads,feedbackWrites:()=>feedbackWrites,afterStaged:fn=>{afterStaged=fn;},
     restartSource:()=>{bff.close();bff=createBff();},
@@ -287,3 +299,23 @@ test('existing foreign or revoked cookie row remains denied under a fresh Root r
   f.store.db.prepare('UPDATE source_sessions SET cipher=?,active=0 WHERE id_hash=?').run(old.cipher,old.id_hash);
   assert.equal((await f.request()).status,401);assert.equal(f.commits(),1);
 });
+
+
+for(const portable of [false, process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY ? 'installed' : true])
+  test('typed unknown receipt is emitted only for a bound valid Native response '+(portable?'packaged SDK':'Source'), {timeout:30000}, async t => {
+    const f=await fixture(t,portable,{receiptRecovery:true});
+    assert.equal((await f.request()).status,200);
+    const contextRef=(await f.request('/api/embed/query')).body.data.context.ref;
+    const requestId='synthetic-unobserved-receipt-001', inputDigest=digest({operation:'items.create',title:'Never sent'});
+    for(const mode of ['unknown','legacy-not-applied','wrong-request','wrong-digest','extra-field','missing-field','wrong-outcome','throw-unknown']) {
+      f.setProofMode(mode);
+      const result=await f.request('/api/embed/receipt',{input:{requestId,input:{inputDigest},contextRef}});
+      const expected=['unknown','legacy-not-applied'].includes(mode)?409:503;
+      assert.equal(result.status,expected,mode);
+      assert.equal(result.body.error.code,expected===409?'source_receipt_unknown':'source_app_response_invalid',mode);
+      assert.equal(result.body.error.receiptValidation,expected===409?'soty.source-receipt-check.v1':undefined,mode);
+      assert.equal(result.body.data,undefined,mode);
+    }
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM fixture_effects').get().n,0);
+    assert.equal(f.store.db.prepare('SELECT count(*) n FROM fixture_receipts').get().n,0);
+  });

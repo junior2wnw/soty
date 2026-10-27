@@ -72,8 +72,9 @@ function synchronous(value) {
  * ledger. There is no new database, worker queue, token issuer or shell path.
  * Source effect/proof calls NEVER run inside a SQLite authority transaction.
  * A source must atomically deduplicate the exact request and retain its proof.
- * `not_applied` is retryable absence, never permission to release a started
- * reservation: another process may already have a source request in flight. */
+ * A source absence never fences a request already in flight. Only the unique
+ * pending-to-dispatching claimant can send once after a valid preflight; all
+ * started or recovered intents are reconciled by receipt without another send. */
 export function createExternalAdapterCoordinator({ entries, readonlyEntries = [], readonly, registry, invocations, authorize, limits = {} }) {
   object(limits, [], ['inflight', 'callTimeoutMs']);
   const bounds = Object.freeze({ inflight: limits.inflight ?? 4, callTimeoutMs: limits.callTimeoutMs ?? 8000 });
@@ -127,7 +128,7 @@ export function createExternalAdapterCoordinator({ entries, readonlyEntries = []
     const result = data(raw);
     object(result, ['requestId', 'inputDigest', 'outcome'], ['effects', 'receipt']);
     assert(result.requestId === context.internalRequestId && result.inputDigest === inputDigest
-      && ['committed', 'not_applied', 'unknown'].includes(result.outcome), 'external_proof_mismatch');
+      && ['committed', 'not_applied', 'unknown', 'unobserved'].includes(result.outcome), 'external_proof_mismatch');
     if (result.outcome !== 'committed') {
       assert(result.effects === undefined && result.receipt === undefined, 'external_proof_mismatch'); return result;
     }
@@ -150,7 +151,7 @@ export function createExternalAdapterCoordinator({ entries, readonlyEntries = []
     return { outcome: 'held' };
   }
   async function deliver(value, invocationId, allowExecute) {
-    let context;
+    let context, firstClaim = false;
     try {
       // The durable pre-effect marker is committed before any source call.
       // Recovery inspects an existing marker; it never makes a new attempt.
@@ -163,8 +164,10 @@ export function createExternalAdapterCoordinator({ entries, readonlyEntries = []
       'external_contract_mismatch');
       if (context.state === 'pending') {
         if (!allowExecute) return { outcome: 'not-started' };
-        context = authority(value, { phase: 'dispatch', authorization: context.authorization },
-          () => invocations.beginDispatch({ invocationId }));
+        const claimed = authority(value, { phase: 'dispatch', authorization: context.authorization },
+          () => invocations.beginDispatch({ invocationId, claimPending: true }));
+        if (claimed) { context = claimed; firstClaim = true; }
+        else context = invocations.inspectDispatch({ invocationId });
       }
     } catch { return { outcome: 'held' }; }
     const inputDigest = canonicalHash(context.input);
@@ -182,7 +185,10 @@ export function createExternalAdapterCoordinator({ entries, readonlyEntries = []
     try {
       const before = await read();
       if (before.outcome === 'committed') return settle(before);
-      if (before.outcome !== 'not_applied' || !allowExecute || context.cancelRequested) return hold(invocationId);
+      // `unobserved` confirms a live Source returned its typed unknown receipt;
+      // it never proves absence. Only the unique first claimant may send once.
+      if (!firstClaim || !allowExecute || context.cancelRequested
+        || !['not_applied', 'unobserved'].includes(before.outcome)) return hold(invocationId);
       // Recheck the original credential/deadline, current source binding and
       // app/resource authority after the network proof and just before send.
       const allowed = authority(value, { phase: 'execute', authorization: context.authorization }, () => {

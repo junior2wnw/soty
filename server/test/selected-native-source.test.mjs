@@ -119,3 +119,26 @@ test('HIVE insertion context never chooses the first of multiple views and prese
     }
   }
 });
+
+
+test('only an exact Source 409 unknown-receipt response marks a live unobserved proof', async () => {
+  for (const [mode, expected] of [
+    ['exact', 'unobserved'], ['legacy', 'unknown'], ['wrong-marker', 'unknown'], ['wrong-status', 'unknown'],
+    ['wrong-code', 'unknown'], ['retryable', 'unknown'], ['extra-field', 'unknown'], ['unavailable', 'unknown'],
+  ]) {
+    const row = createSelectedNativeSourceApplication(options());
+    bind(row, async value => {
+      assert.equal(value.path, '/api/embed/receipt');
+      if (mode === 'unavailable') throw Error('synthetic offline');
+      return { status: mode === 'wrong-status' ? 500 : 409, data: { ok: false, error: {
+        code: mode === 'wrong-code' ? 'different_error' : 'source_receipt_unknown', retryable: mode === 'retryable',
+        ...(mode === 'legacy' ? {} : { receiptValidation: mode === 'wrong-marker' ? 'other' : 'soty.source-receipt-check.v1' }),
+        ...(mode === 'extra-field' ? { extra: true } : {}),
+      } } };
+    });
+    const proof = await row.adapter.readProof(request(), signal());
+    assert.equal(proof.outcome, expected, mode);
+    assert.equal(proof.requestId, requestId);
+    assert.equal(proof.inputDigest, canonicalHash(input));
+  }
+});

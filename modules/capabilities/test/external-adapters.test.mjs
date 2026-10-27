@@ -69,6 +69,7 @@ function harness(t, { withAuthority, readProof, execute } = {}) {
     calls: () => ({ writes: sourceCalls, reads: sourceReads }),
     revokeSource() { sourceAllowed = false; }, revokeDevice() { deviceActive = false; },
     reopen(overrides) { service.close(); service = create(overrides); },
+    fork() { return create(); },
     sql(fn) { const db = new DatabaseSync(file, { readOnly: true }); try { return fn(db); } finally { db.close(); } },
   };
 }
@@ -242,4 +243,71 @@ test('finite registered admissions hold source-unknown quota and preserve exact 
   assert.throws(()=>f.service.external.admit({...f.request(),actor,idempotencyKey:'second_bound_4'}),/external_admission_limit/u);
   assert.equal((await f.service.external.invoke({...f.request(),idempotencyKey:'bounded_intent_0'})).invocation.invocationId,results[0].invocation.invocationId);
   assert.equal(f.calls().writes,0);
+});
+
+
+test('a fresh one-time claim may send after a verified unobserved receipt', async t => {
+  const f = harness(t, { readProof(request, effects) {
+    return effects.get(request.requestId) ?? { requestId: request.requestId, inputDigest: request.inputDigest, outcome: 'unobserved' };
+  } });
+  const first = await f.service.external.invoke(f.request());
+  assert.equal(first.invocation.status, 'succeeded');
+  assert.equal(f.calls().writes, 1);
+  const repeated = await f.service.external.invoke(f.request());
+  assert.equal(repeated.invocation.status, 'succeeded');
+  assert.equal(f.calls().writes, 1);
+});
+
+test('only one of two SQLite connections obtains a pending first-dispatch claim', t => {
+  const f = harness(t), other = f.fork();
+  try {
+    const accepted = f.service.external.admit(f.request());
+    const id = accepted.invocation.invocationId;
+    const first = f.service.invocations.beginDispatch({ invocationId: id, claimPending: true });
+    assert.ok(first);
+    assert.equal(other.invocations.beginDispatch({ invocationId: id, claimPending: true }), null);
+    assert.equal(other.invocations.beginDispatch({ invocationId: id }).internalRequestId, first.internalRequestId);
+    assert.equal(f.calls().writes, 0);
+  } finally { other.close(); }
+});
+
+test('two coordinators and SQLite connections never resend after an already started intent', { timeout: 15000 }, async t => {
+  let started, release;
+  const entered = new Promise(resolve => { started = resolve; });
+  const blocked = new Promise(resolve => { release = resolve; });
+  const f = harness(t, { async execute(request, effects) {
+    started(); await blocked;
+    effects.set(request.requestId, { requestId: request.requestId, inputDigest: request.inputDigest, outcome: 'committed',
+      effects: [{ kind: 'created', resourceType: 'planner-object', resourceId: 'one_effect', revision: 1 }],
+      receipt: { verificationMethod: 'domain_read', artifacts: [{ type: 'planner-object', id: 'one_effect', revision: 1 }] } });
+  } });
+  const other = f.fork();
+  try {
+    const request = f.request(), first = f.service.external.invoke(request);
+    await entered;
+    const secondActor = other.authenticateCredential({ token: f.issued.token, audience: AUDIENCE });
+    const second = await other.external.invoke({ ...f.request(), actor: secondActor });
+    assert.equal(second.invocation.status, 'execution_uncertain');
+    assert.equal(f.calls().writes, 1);
+    release();
+    const committed = await first;
+    assert.equal(committed.invocation.status, 'succeeded');
+    assert.equal(f.calls().writes, 1);
+    assert.equal(other.external.get({ actor: secondActor, invocationId: committed.invocation.invocationId }).invocation.status, 'succeeded');
+  } finally { release(); other.close(); }
+});
+
+test('restart after marker before send keeps not-applied and unobserved outcomes unresolved', async t => {
+  for (const outcome of ['not_applied', 'unobserved']) {
+    const f = harness(t, { readProof(request) { return { requestId: request.requestId, inputDigest: request.inputDigest, outcome }; } });
+    const accepted = f.service.external.admit(f.request()), id = accepted.invocation.invocationId;
+    assert.ok(f.service.invocations.beginDispatch({ invocationId: id, claimPending: true }));
+    f.reopen();
+    const recovered = await f.service.external.invoke(f.request());
+    assert.equal(recovered.invocation.status, 'execution_uncertain');
+    assert.equal(recovered.invocation.effectState, 'unknown');
+    assert.equal(f.calls().writes, 0);
+    assert.equal((await f.service.external.reconcile({ reference: CONTRACT, invocationId: id })).outcome, 'held');
+    assert.equal(f.calls().writes, 0);
+  }
 });

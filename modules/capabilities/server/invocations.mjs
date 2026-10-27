@@ -394,15 +394,24 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
         return { ...dispatchProjection(value, JSON.parse(value.authorization_json)), state: delivery.state };
       });
     },
-    beginDispatch({ invocationId } = {}) {
+    beginDispatch({ invocationId, claimPending = false } = {}) {
+      check(typeof claimPending === 'boolean');
       return atomic(() => {
         const value = row(invocationId); check(value, 'invocation_not_found'); assertGenericRead(value);
         native.assertGeneric(value.id);
         check(!value.cancel_requested && !TERMINAL.has(value.status), 'invocation_dispatch_denied');
+        const delivery = intent(value.id);
+        // This optional host-only claim is granted exactly once. A crashed or
+        // competing dispatcher must recover by receipt, never re-send on absence.
+        if (claimPending) {
+          check(delivery, 'invocation_reconcile_required');
+          if (delivery.state !== 'pending') return null;
+        }
         const authorized = authorizeDispatch(value);
-        const delivery = intent(value.id); check(delivery && ['pending', 'dispatching'].includes(delivery.state), 'invocation_reconcile_required');
+        check(delivery && ['pending', 'dispatching'].includes(delivery.state), 'invocation_reconcile_required');
         const timestamp = now();
-        run("UPDATE cap_dispatch_intents SET state='dispatching',updated_at=? WHERE invocation_id=?", timestamp, value.id);
+        const changed = run(`UPDATE cap_dispatch_intents SET state='dispatching',updated_at=? WHERE invocation_id=?${claimPending ? " AND state='pending'" : ''}`, timestamp, value.id);
+        if (claimPending) check(changed.changes === 1, 'invocation_reconcile_required');
         run('UPDATE cap_invocations SET updated_at=? WHERE id=?', timestamp, value.id);
         return dispatchProjection(row(value.id), authorized);
       });

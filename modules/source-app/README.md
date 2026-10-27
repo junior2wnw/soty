@@ -820,7 +820,12 @@ JSON-restored intent cannot call `invoke`; a retained
 context. If authority/context changed, keep the outcome unknown and ask the
 person to check it in the original context; do not silently resubmit it with a
 new context or a new ID. A missing receipt does not prove that the original
-request cannot arrive later: the BFF returns `source_receipt_unknown` and the
+request cannot arrive later: the BFF validates the Native response's exact
+request ID, input digest and shape, then returns `source_receipt_unknown` with
+`receiptValidation: 'soty.source-receipt-check.v1'`. This version marker lets a
+Root host distinguish older Source releases that did not validate the proof;
+it is not evidence of rollback. Malformed responses return
+`source_app_response_invalid`, and the
 browser SDK rejects with `effectUnknown:true`. Legacy `not_applied` responses
 are also treated as unknown; this version has no standard final-fence proof.
 If the original request never arrives, recovery can remain unknown indefinitely.
