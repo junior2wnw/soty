@@ -1,5 +1,9 @@
 # soty.online
 
+Соты объединяют личное пространство, общение, подключённые приложения и помощника.
+[Целевая модель «Рабочее пространство»](docs/research/soty-workspace-20261027/README.md)
+описывает простой общий путь; она отделена от статуса реально установленных функций.
+
 Личный ИИ каждого аккаунта: [архитектура, автоматический доступ, ключи и проверка выпуска](docs/account-ai.md).
 
 Размещение веб-проектов как приложений: [повторяемый процесс](docs/deployment/app-release.md).
@@ -44,10 +48,10 @@ in [`deploy/connect`](deploy/connect/README.md).
 The complete boundary and migration contract are in
 [`docs/architecture.md`](docs/architecture.md).
 
-The shared Identity checkpoint is intentionally separate from room/device
-trust. Soty is not the central IdP and does not publish the canonical wire
-contract; its off-by-default experimental relying-party adapter, ADR, and
-threat model start at
+The historical cross-project Identity checkpoint is separate from the current
+Soty mini-app login described in [app authentication](docs/deployment/app-authentication.md).
+Soty does not publish that cross-project canonical wire contract; its
+off-by-default experimental relying-party adapter, ADR, and threat model start at
 [`docs/identity/architecture-checkpoint.md`](docs/identity/architecture-checkpoint.md).
 The direct `STABLE` wire-v1 consumer and ownership boundary are documented in
 [`docs/identity/canonical-identity-wire-v1-adapter.md`](docs/identity/canonical-identity-wire-v1-adapter.md).
