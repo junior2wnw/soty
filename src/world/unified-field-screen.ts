@@ -118,6 +118,10 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const filterButtons = new Map<FieldFilter, HTMLButtonElement>();
   const host = el('div', 'uf-scene-host');
   const ownAppsOverview = el('section', 'uf-own-apps'); ownAppsOverview.setAttribute('aria-label', 'Мои приложения вне поля'); ownAppsOverview.hidden = true;
+  ownAppsOverview.addEventListener('focusin', event => {
+    const target = event.target;
+    if (target instanceof HTMLButtonElement && target.classList.contains('uf-own-app')) target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, { signal });
   const loading = el('div', 'uf-loading', 'Открываем поле…'); loading.setAttribute('role', 'status');
   const empty = el('div', 'uf-empty'); empty.hidden = true; empty.setAttribute('role', 'status');
   const feedback = el('div', 'uf-storage-status'); feedback.hidden = true; feedback.setAttribute('role', 'status');
