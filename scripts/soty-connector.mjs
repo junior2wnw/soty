@@ -710,6 +710,7 @@ function runChild(command, args, options) {
     let timedOut = false;
     let stdout = "";
     let stderr = "";
+    let inputError;
     let timer;
     let terminationTimer;
     const child = spawn(command, args, {
@@ -759,12 +760,19 @@ function runChild(command, args, options) {
       stderr = appendBounded(stderr, text, maxResultChars);
       options.onStderr?.(text);
     });
+    child.stdin?.on("error", (error) => {
+      inputError ||= error;
+      if (!settled && !options.signal?.aborted && !timedOut) abort();
+    });
     child.on("error", (error) => finish(() => reject(error)));
-    child.on("close", (code, signalName) => finish(() => resolveRun({
-      exitCode: options.signal?.aborted ? 130 : timedOut ? 124 : Number.isSafeInteger(code) ? code : signalName ? 1 : 0,
-      stdout,
-      stderr
-    })));
+    child.on("close", (code, signalName) => finish(() => {
+      if (inputError && !options.signal?.aborted && !timedOut) return reject(inputError);
+      resolveRun({
+        exitCode: options.signal?.aborted ? 130 : timedOut ? 124 : Number.isSafeInteger(code) ? code : signalName ? 1 : 0,
+        stdout,
+        stderr
+      });
+    }));
     if (options.input !== undefined) {
       child.stdin.end(options.input, "utf8");
     }

@@ -174,4 +174,65 @@ test(`actual ${kind} connector checks current owner immediately before spawning 
   assert.equal(await readFile(marker, 'utf8'), 'x');
   assert.equal(store.state.jobs.find(job => job.id === unknown.job.id).status, 'leased');
 });
+
+test(`actual ${kind} connector reports closed stdin once and remains usable`,
+  { skip: process.platform === 'win32' ? 'Unix pipe fixture' : false, timeout: 45000 }, async t => {
+  const parent = resolve(tmpdir()), root = await mkdtemp(join(parent, 'soty-auto-owner-process-'));
+  const runtime = join(root, 'runtime'), dataDir = join(root, 'data'), inputFile = join(root, 'input'), closeMarker = join(root, 'close-input');
+  await mkdir(runtime); await writeFile(join(runtime, 'connector-config.json'), JSON.stringify({ workspaceRoot: runtime, allowedRoots: [runtime] }));
+  const executable = join(root, 'fixture-agent');
+  await writeFile(executable, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.2.3; exit 0; fi\nif [ -f "$SOTY_FIXTURE_CLOSE" ]; then exec 0<&-; printf \'{"type":"text","part":{"text":"Apparent success"}}\\n\'; exec sleep 30; fi\ncat > "$SOTY_FIXTURE_INPUT"\nprintf \'{"type":"text","part":{"text":"Done"}}\\n\'\n');
+  await chmod(executable, 0o700);
+  const localPort = await unusedPort(), results = new Map(), app = express();
+  app.use((req, _res, next) => {
+    const match = /^\/api\/connectors\/jobs\/([^/]+)\/result$/u.exec(req.path);
+    if (match && req.method === 'POST') results.set(match[1], (results.get(match[1]) || 0) + 1);
+    next();
+  });
+  const { store } = attachConnectorApi(app, { dataDir, gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' } });
+  const server = createServer(app); await listen(server); const origin = `http://127.0.0.1:${server.address().port}`;
+  let child;
+  t.after(async () => {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise(done => child.once('exit', done)); child.kill(); await exited;
+    }
+    server.closeAllConnections(); await new Promise(done => server.close(done)); await store.close();
+    assert.equal(dirname(resolve(root)), parent); assert.match(basename(root), /^soty-auto-owner-process-/u);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => ['PATH','PATHEXT','SYSTEMROOT','WINDIR','COMSPEC'].includes(key.toUpperCase())));
+  child = spawn(process.execPath, [fileURLToPath(new URL(connectorPath, import.meta.url))], {
+    cwd: runtime, stdio: ['ignore', 'pipe', 'pipe'], env: { ...inherited,
+      TEMP: root, TMP: root, USERPROFILE: root, APPDATA: join(root, 'appdata'), LOCALAPPDATA: join(root, 'localappdata'),
+      SOTY_FIXTURE_INPUT: inputFile, SOTY_FIXTURE_CLOSE: closeMarker, SOTY_OPENCODE_PATH: executable, SOTY_CONNECTOR_DATA_DIR: runtime,
+      SOTY_CONNECTOR_PORT: String(localPort), SOTY_CONNECTOR_SERVER_URL: origin,
+      SOTY_CONNECTOR_LINK_ID: 'stdin_fixture_link_123456789012345', SOTY_CONNECTOR_DEVICE_ID: 'stdin_fixture_host',
+      SOTY_CONNECTOR_SCOPE: 'Dev', SOTY_CONNECTOR_AUTO_UPDATE: '0', SOTY_CONNECTOR_MANAGED: '0' },
+  });
+  child.stdout.resume(); child.stderr.resume();
+  const host = await waitFor(() => {
+    assert.equal(child.exitCode, null, 'connector exited before registration');
+    return store.state?.connectors[0];
+  });
+  const access = requestId => ({ ownerAccountId: 'fixture-owner', sourceActorDeviceId: 'fixture-device', guard: () => true,
+    connectorId: host.connectorId, expectedDeviceId: host.deviceId, requestId, requestIntent: digest(requestId) });
+  const create = (requestId, text, context = '') => store.createJob({ linkId: host.linkId, deviceId: host.deviceId, kind: 'agent',
+    input: { kind: 'agent', text, context } }, access(requestId));
+  const terminal = job => waitFor(() => {
+    const current = store.state.jobs.find(row => row.id === job.id);
+    return ['failed', 'succeeded', 'cancelled'].includes(current?.status) ? current : null;
+  });
+  const first = await create('stdin-full', 'Complete synthetic prompt'); assert.ok(first.job?.id);
+  assert.equal((await terminal(first.job)).status, 'succeeded');
+  assert.equal(await readFile(inputFile, 'utf8'), 'Complete synthetic prompt');
+  await writeFile(closeMarker, 'close');
+  const broken = await create('stdin-closed', '漢'.repeat(64000), '漢'.repeat(128000)); assert.ok(broken.job?.id);
+  const failed = await terminal(broken.job); assert.equal(failed.status, 'failed'); assert.match(failed.result.text, /EPIPE/u);
+  assert.equal(child.exitCode, null, 'connector died after the broken pipe');
+  await rm(closeMarker);
+  const last = await create('stdin-recovered', 'Another complete prompt'); assert.ok(last.job?.id);
+  assert.equal((await terminal(last.job)).status, 'succeeded');
+  assert.equal(await readFile(inputFile, 'utf8'), 'Another complete prompt');
+  for (const job of [first.job, broken.job, last.job]) assert.equal(results.get(job.id), 1);
+});
 }

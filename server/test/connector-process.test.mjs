@@ -11,13 +11,13 @@ const end = source.indexOf('\nasync function probeCommand(', start);
 assert.ok(start > 0 && end > start);
 const actualFunctionSource = source.slice(start, end);
 const defer = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-function fixture(t) {
+function fixture(t, { autoClose = true } = {}) {
   const children = [], timers = new Set(); let kills = 0;
   const clock = { setTimeout(callback, wait) { const id = setTimeout(() => { timers.delete(id); callback(); }, wait); timers.add(id); return id; },
     clearTimeout(id) { timers.delete(id); clearTimeout(id); } };
   class Child extends EventEmitter {
     stdout = new EventEmitter(); stderr = new EventEmitter();
-    stdin = { end: value => { this.input = value; }, destroy() {} };
+    stdin = Object.assign(new EventEmitter(), { end: value => { this.input = value; }, destroy() {} });
     kill() {}
     constructor(command, args, options) { super(); this.command = command; this.args = args; this.options = options; }
     finish(code = 0) { this.emit('close', code, code === 0 ? null : 'SIGTERM'); }
@@ -27,7 +27,7 @@ function fixture(t) {
     spawn(command, args, options) { const child = new Child(command, args, options); children.push(child); return child; },
     childEnv: () => ({ SOTY_TEST_ONLY: 'synthetic' }), maxResultChars: 1000000,
     appendBounded: (value, extra, limit) => (value + extra).slice(-limit),
-    killProcessTree(child) { kills++; queueMicrotask(() => child.finish(130)); },
+    killProcessTree(child) { kills++; if (autoClose) queueMicrotask(() => child.finish(130)); },
   });
   t.after(() => { for (const id of timers) clearTimeout(id); });
   return { run, children, timers, kills: () => kills, options: signal => ({ signal, cwd: 'synthetic-workspace', timeoutMs: 5000, input: 'synthetic prompt' }) };
@@ -55,4 +55,30 @@ test('normal completion and abort after spawn preserve existing result, tree cle
   const other = new AbortController(), active = f.run('synthetic-executable', ['two'], f.options(other.signal));
   assert.equal(f.children.length, 2); other.abort(); assert.equal((await active).exitCode, 130); assert.equal(f.kills(), 1);
   assert.equal(f.timers.size, 0); assert.equal(getEventListeners(other.signal, 'abort').length, 0);
+});
+test('a broken input pipe fails the job only after its native process closes', async t => {
+  const f = fixture(t, { autoClose: false }), owner = new AbortController(), pending = f.run('synthetic-executable', ['input'], f.options(owner.signal));
+  let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
+  const child = f.children[0], error = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+  child.stdin.emit('error', error); await Promise.resolve();
+  assert.equal(settled, false); assert.equal(f.kills(), 1); assert.equal(f.timers.size, 2);
+  child.stdout.emit('data', Buffer.from('an apparent success')); child.finish();
+  await assert.rejects(pending, cause => cause === error);
+  assert.equal(f.timers.size, 0); assert.equal(getEventListeners(owner.signal, 'abort').length, 0);
+});
+test('cancellation still wins over a broken input pipe', async t => {
+  const f = fixture(t), owner = new AbortController(), pending = f.run('synthetic-executable', ['input'], f.options(owner.signal));
+  f.children[0].stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  owner.abort(); assert.equal((await pending).exitCode, 130); assert.equal(f.kills(), 2);
+  assert.equal(f.timers.size, 0); assert.equal(getEventListeners(owner.signal, 'abort').length, 0);
+});
+test('timeout still wins over a broken input pipe', async t => {
+  const f = fixture(t, { autoClose: false }), owner = new AbortController();
+  const pending = f.run('synthetic-executable', ['input'], { ...f.options(owner.signal), timeoutMs: 10 });
+  const deadline = Date.now() + 1000;
+  while (f.kills() === 0 && Date.now() < deadline) await new Promise(done => setTimeout(done, 5));
+  assert.equal(f.kills(), 1);
+  f.children[0].stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  f.children[0].finish(0); assert.equal((await pending).exitCode, 124); assert.equal(f.kills(), 1);
+  assert.equal(f.timers.size, 0); assert.equal(getEventListeners(owner.signal, 'abort').length, 0);
 });
