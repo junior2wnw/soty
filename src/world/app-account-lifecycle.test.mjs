@@ -2889,7 +2889,10 @@ for (const claimSucceeds of [false, true]) test(`chat attachment with unavailabl
   f.app.chatCleanup();
 });
 
-for (const retryFrom of ['first', 'second']) for (const nextText of ['Следующая мысль', 'Первое сообщение']) test(`two chat tabs retry from ${retryFrom} without erasing the other ${nextText === 'Первое сообщение' ? 'identical' : 'different'} draft`, async () => {
+for (const retryFrom of ['first', 'second']) for (const variant of ['different', 'identical-edited', 'identical-unchanged']) {
+  if (retryFrom === 'first' && variant === 'identical-unchanged') continue;
+  const nextText=variant==='different'?'Следующая мысль':'Первое сообщение';
+  test(`two chat tabs retry from ${retryFrom} without erasing the other ${variant} draft`, async () => {
   const { createWorldService } = await import('../../modules/world/server/index.mjs');
   const world=createWorldService({databasePath:':memory:',projectId:'chat-two-tabs-regression'}),actor={accountId:'account-A',deviceId:'device-A',label:'Alice'},peer={accountId:'account-B',deviceId:'device-B',label:'Bob'};
   const call=(who,op,args={})=>world.execute({actor:who,op:'world.'+op,args});
@@ -2907,7 +2910,7 @@ for (const retryFrom of ['first', 'second']) for (const nextText of ['Следу
   const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});
   try {
     await turn();p1.querySelector('.sw-composer').requestSubmit();await turn();await turn();assert.equal(sends.length,1);
-    const input2=p2.querySelector('textarea');input2.value=nextText;input2.emit('input');
+    const input2=p2.querySelector('textarea');input2.value=nextText;if(variant!=='identical-unchanged')input2.emit('input');
     (retryFrom==='first'?p1:p2).querySelector('.sw-composer').requestSubmit();await turn();await turn();
     assert.equal(sends.length,2);assert.equal(sends[1],sends[0]);
     assert.deepEqual(call(peer,'chat.list',{communityId:room}).messages.map(m=>m.text),['Первое сообщение']);
@@ -2915,7 +2918,8 @@ for (const retryFrom of ['first', 'second']) for (const nextText of ['Следу
     assert.equal(chatState.createChatDraftStore(storage).read('account-A',room).text,nextText);
     if (retryFrom==='second') assert.match(second.app.lastToast, /прежнее сообщение/u);
   } finally {first.app.chatCleanup();second.app.chatCleanup();world.close();}
-});
+  });
+}
 
 for (const conflict of [false,true]) test(`old chat pending survives new queue startup${conflict ? ' when another distinct intent is already retained' : ' and is claimed before any send'}`, async () => {
   const f=fixture(),disk=new Map(),storage={getItem:key=>disk.get(key)??null,setItem:(key,value)=>disk.set(key,value),removeItem:key=>disk.delete(key)},events=[];

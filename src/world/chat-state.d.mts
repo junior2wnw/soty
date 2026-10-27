@@ -4,7 +4,7 @@ export interface ChatDraftStore {
   read(accountId: string, communityId: string): ChatDraft;
   edit(accountId: string, communityId: string, text: string, replyTo?: string | null): boolean;
   setAttachments(accountId: string, communityId: string, attachments: string[]): boolean;
-  beginSend(accountId: string, communityId: string, text: string, replyTo?: string | null, attachments?: string[]): { clientId: string; text: string; replyTo: string | null; attachments?: string[]; durable: boolean };
+  beginSend(accountId: string, communityId: string, text: string, replyTo?: string | null, attachments?: string[]): { clientId: string; text: string; replyTo: string | null; attachments?: string[]; durable: boolean; reusedOther?: boolean };
   recoverPending(accountId: string, communityId: string, pending: {clientId:string;text:string;replyTo?:string|null;attachments:string[]}): ChatDraft;
   discardUnsubmitted(accountId: string, communityId: string, clientId: string): ChatDraft;
   acknowledge(accountId: string, communityId: string, clientId: string, acceptedAttachments?: string[]): ChatDraft;

@@ -190,3 +190,18 @@ test('accepting another tab’s pending message retains this tab’s identical n
   reopened.acknowledge('alice','room','older_intent');
   assert.equal(reopened.read('alice','room').text,'Same text');assert.equal(reopened.read('alice','room').pending,null);
 });
+
+test('a second tab discovering the first tab pending preserves its identical new draft', () => {
+  const disk=storage(),first=createChatDraftStore(disk,()=> 'intent_first'),second=createChatDraftStore(disk,()=> 'intent_second');
+  first.edit('alice','room','Same text');second.read('alice','room');
+  assert.equal(first.beginSend('alice','room','Same text').clientId,'intent_first');
+  const reused=second.beginSend('alice','room','Same text');assert.equal(reused.clientId,'intent_first');assert.equal(reused.reusedOther,true);
+  second.acknowledge('alice','room',reused.clientId);
+  assert.equal(createChatDraftStore(disk).read('alice','room').text,'Same text');assert.equal(createChatDraftStore(disk).read('alice','room').pending,null);
+});
+
+test('typing a new draft after send and returning to the same text is not erased by the old acknowledgement', () => {
+  const disk=storage(),drafts=createChatDraftStore(disk,()=> 'intent_first');
+  drafts.beginSend('alice','room','Same text');drafts.edit('alice','room','New text');drafts.edit('alice','room','Same text');
+  drafts.acknowledge('alice','room','intent_first');assert.equal(createChatDraftStore(disk).read('alice','room').text,'Same text');
+});

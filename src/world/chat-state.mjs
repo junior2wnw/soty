@@ -67,6 +67,7 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
     read,
     edit(accountId, communityId, text, replyTo) {
       const value = read(accountId, communityId); value.text = text.slice(0, 6000);
+      if (value.pending) value.pending.preserveDraft = true;
       if (replyTo !== undefined) value.replyTo = replyId(replyTo);
       return save(accountId, communityId, value);
     },
@@ -76,6 +77,7 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
     },
     beginSend(accountId, communityId, text, replyTo, attachments) {
       const key = keyFor(accountId, communityId);
+      const observed = read(accountId, communityId).pending;
       if (!volatile.has(key)) { try { memory.set(key, decode(stored(key))); } catch { /* Preserve the live draft. */ } }
       const value = read(accountId, communityId);
       value.text = text;
@@ -83,9 +85,11 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       if (attachments !== undefined) { delete value.attachments; Object.assign(value,withRefs(attachments)); }
       // An attachment send can already have committed even when its ACK was
       // lost. Keep that exact intent; edits are the next draft, not a new send.
+      const reusedOther = Boolean(value.pending && value.pending.clientId !== observed?.clientId);
+      if (reusedOther) value.pending.preserveDraft = true;
       if (!value.pending) value.pending = { clientId: makeId(), text, replyTo: value.replyTo, ...withRefs(value.attachments) };
       const durable = save(accountId, communityId, value);
-      return { ...value.pending, durable };
+      return { ...value.pending, durable, ...(reusedOther ? { reusedOther: true } : {}) };
     },
     recoverPending(accountId, communityId, pending) {
       const value=read(accountId,communityId);

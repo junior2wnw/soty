@@ -2221,7 +2221,7 @@ class WorldApplication {
         let prepared;
         try { prepared=await outbox.prepareSend(pending); }
         catch(reason) { if ((reason as {code?:string})?.code === 'attachment_local_storage') { outboxFailed=true; if (!pending.attachments?.length) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' }); } throw reason; }
-        if (pending.clientId !== prepared.intent.clientId && active()) this.toast('Сначала подтверждаем прежнее сообщение. Новый текст остаётся черновиком.');
+        if ((pending.reusedOther || pending.clientId !== prepared.intent.clientId) && active()) this.toast('Сначала подтверждаем прежнее сообщение. Новый текст остаётся черновиком.');
         if(prepared.state==='accepted'){
           this.chatDrafts.acknowledge(accountId,conversation.draftKey,prepared.intent.clientId,prepared.intent.attachments);
           if(active())void load();return;
