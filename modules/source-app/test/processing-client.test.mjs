@@ -23,3 +23,7 @@ test('processing client refuses duplicate/malformed JSON, redirects and oversize
   const client=createSourceFeedbackProcessingClient({fetch:async()=>new Response('{"ok":true,"data":{}}',{headers:{'content-type':'text/html'}})});
   await assert.rejects(client.context());
 });
+test('legacy absent processing receipt remains unknown',async()=>{
+  const client=createSourceFeedbackProcessingClient({fetch:async()=>new Response(JSON.stringify({ok:true,data:{outcome:'not_applied'}}),{headers:{'content-type':'application/json'}})});
+  await assert.rejects(client.receipt({args:{requestId:'processing-legacy-receipt'},inputDigest:'0'.repeat(64)}),error=>error.code==='source_receipt_unknown');
+});

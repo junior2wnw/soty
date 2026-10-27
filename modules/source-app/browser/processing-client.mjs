@@ -35,6 +35,7 @@ export function createSourceFeedbackProcessingClient({fetch:fetcher=globalThis.f
       const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(sourceProcessingCanonical(copied)));
       return freeze({args:{requestId:'processing-'+crypto.randomUUID(),input:copied},inputDigest:[...new Uint8Array(bytes)].map(byte=>byte.toString(16).padStart(2,'0')).join('')});},
     apply:(intent,signal)=>call('invoke',intent.args,signal),
-    receipt:(intent,signal)=>call('receipt',{requestId:intent.args.requestId,input:{inputDigest:intent.inputDigest}},signal),
+    async receipt(intent,signal){const value=await call('receipt',{requestId:intent.args.requestId,input:{inputDigest:intent.inputDigest}},signal);
+      if(value?.outcome!=='committed')throw new SourceFeedbackClientError('source_receipt_unknown',409);return value;},
   });
 }

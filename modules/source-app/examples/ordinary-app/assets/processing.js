@@ -2,39 +2,62 @@ import {createSourceFeedbackProcessingClient,createSourceFeedbackClient} from '.
 
 export function mountProcessingUi({isCurrent=()=>true}={}){
   const api=createSourceFeedbackProcessingClient(),feedback=createSourceFeedbackClient(),byId=id=>document.getElementById(id),state=byId('processing-state');
-  let disposed=false,generation=0,pending=null;const active=new Set();
+  let disposed=false,generation=0,pending=null,pendingKey=null,actionBusy=false;const active=new Set();
   const live=gen=>!disposed&&isCurrent()===true&&gen===generation;
   const purposeName=purpose=>({ocr:'распознавание изображения',asr:'расшифровку аудио',triage:'подсказку по приоритету'})[purpose];
   const consentName=purpose=>({ocr:'локальное распознавание изображения',asr:'локальную расшифровку аудио',triage:'локальную подсказку по приоритету'})[purpose];
   function node(tag,text){const element=document.createElement(tag);element.textContent=text;return element;}
+  const recover=node('button','Проверить результат');recover.type='button';recover.hidden=true;state.after(recover);
+  function remember(intent,kind){
+    if(!pendingKey)throw Error('pending_storage_unavailable');
+    try{sessionStorage.setItem(pendingKey,JSON.stringify({requestId:intent.args.requestId,inputDigest:intent.inputDigest,kind}));}
+    catch{throw Error('pending_storage_unavailable');}
+  }
+  function restore(key){
+    let raw;try{raw=sessionStorage.getItem(key);}catch{throw Error('pending_storage_unavailable');}
+    if(raw===null)return null;let value;try{value=JSON.parse(raw);}catch{throw Error('pending_storage_invalid');}
+    if(!value||Object.keys(value).sort().join(',')!=='inputDigest,kind,requestId'||typeof value.requestId!=='string'
+      ||!/^processing-[A-Za-z0-9-]{16,100}$/u.test(value.requestId)||typeof value.inputDigest!=='string'
+      ||!/^[a-f0-9]{64}$/u.test(value.inputDigest)||!['consent','grant'].includes(value.kind))throw Error('pending_storage_invalid');
+    return{intent:{args:{requestId:value.requestId},inputDigest:value.inputDigest},kind:value.kind,recover:true};
+  }
+  function unknown(){state.textContent='Результат пока не подтверждён. Разрешение повторно не отправлено.';recover.hidden=false;recover.disabled=false;}
   async function action(button,input,kind){
-    const gen=generation,controller=new AbortController();active.add(controller);button.disabled=true;
+    if(actionBusy)return;actionBusy=true;const gen=generation,controller=new AbortController();active.add(controller);button.disabled=true;
     try{
-      if(!pending)pending={intent:await api.intent(input),kind,button};
+      const identity=await feedback.context(controller.signal);
+      if(!live(gen)||'processing-pending:'+identity.bindingDigest!==pendingKey)throw Error('processing_context_changed');
+      if(!pending){const intent=await api.intent(input);remember(intent,kind);pending={intent,kind,button,recover:false};}
       const current=pending;let result;
-      if(current.recover){result=await api.receipt(current.intent,controller.signal);
-        if(result.outcome!=='committed'){if(live(gen)){state.textContent='Результат пока не подтверждён. Разрешение или обработка повторно не запускаются.';button.disabled=false;button.textContent='Проверить результат';}return;}}
+      if(current.recover)result=await api.receipt(current.intent,controller.signal);
       else result=await api.apply(current.intent,controller.signal);
       if(!live(gen)||pending!==current)return;
-      pending=null;state.textContent=kind==='consent'?'Разрешение автора сохранено для выбранных материалов и цели.':
+      if(result?.outcome!=='committed'||result.requestId!==current.intent.args.requestId||result.inputDigest!==current.intent.inputDigest)throw Error('receipt_unknown');
+      try{sessionStorage.removeItem(pendingKey);}catch{throw Error('pending_storage_unavailable');}
+      pending=null;recover.hidden=true;state.textContent=current.kind==='consent'?'Разрешение автора сохранено для выбранных материалов и цели.':
         'Разрешение владельца сохранено. Обработчик пока недоступен; обработка не запускалась.';
-      button.textContent='Сохранено';button.disabled=true;
+      if(button!==recover){button.textContent='Сохранено';button.disabled=true;}
+      else{await open();if(!pending&&live(generation))state.textContent='Предыдущее разрешение подтверждено.';}
     }catch(error){if(!live(gen))return;
-      if(error.code==='ordinary_reporter_consent_required'){pending=null;state.textContent='Сначала автор материалов должен разрешить выбранную обработку.';button.disabled=false;}
-      else if(error.status===409){pending=null;state.textContent='Обращение или материалы изменились. Откройте список заново и проверьте новую цель обработки.';}
-      else if([401,403].includes(error.status)){pending=null;state.textContent='Доступ изменился. Обращение сохранено; войдите заново для проверки.';}
-      else{if(pending)pending.recover=true;state.textContent='Результат пока не подтверждён.';button.textContent='Проверить результат';button.disabled=false;}}
-    finally{active.delete(controller);}
+      if(pending){pending.recover=true;unknown();}
+      else{state.textContent=error?.message==='pending_storage_unavailable'?'Не удалось сохранить запрос на устройстве. Разрешение не отправлено.':
+        error?.message==='processing_context_changed'?'Профиль изменился. Откройте обработку заново.':'Не удалось подготовить запрос. Повторите попытку.';button.disabled=false;}}
+    finally{active.delete(controller);actionBusy=false;}
   }
+  recover.addEventListener('click',()=>{if(pending)void action(recover,null,pending.kind);});
   async function open(){
     const gen=++generation;for(const controller of active)controller.abort();active.clear();byId('processing-panel').hidden=false;
-    if(pending){state.textContent='Сначала проверьте результат предыдущего разрешения.';return;}
     const controller=new AbortController();active.add(controller);byId('processing-open').disabled=true;
     try{
-      const context=await api.context(controller.signal),list=await feedback.list({limit:20},controller.signal);
+      const context=await api.context(controller.signal),identity=await feedback.context(controller.signal);
       if(!live(gen))return;
-      if(context.schema!=='soty.feedback.processing-context.v1'||context.localOnly!==true||context.requiresReporterConsent!==true)throw new Error('invalid');
+      if(context.schema!=='soty.feedback.processing-context.v1'||context.localOnly!==true||context.requiresReporterConsent!==true
+        ||identity.schema!=='soty.source-feedback.context.v1'||!/^[a-f0-9]{64}$/u.test(identity.bindingDigest))throw new Error('invalid');
       byId('processing-tickets').replaceChildren();
+      const key='processing-pending:'+identity.bindingDigest;
+      if(key!==pendingKey){pendingKey=key;pending=null;pending=restore(key);}else if(!pending)pending=restore(key);
+      if(pending){unknown();return;}
+      recover.hidden=true;const list=await feedback.list({limit:20},controller.signal);if(!live(gen))return;
       for(const ticket of list.tickets){
         const info=await api.ticket(ticket.id,controller.signal);if(!live(gen))return;
         const row=node('li',''),label=node('p',ticket.body.slice(0,160));row.append(label);
@@ -57,7 +80,9 @@ export function mountProcessingUi({isCurrent=()=>true}={}){
         byId('processing-tickets').append(row);
       }
       if(live(gen))state.textContent=list.tickets.length?'Обработка требует отдельного разрешения автора материалов.':'Пока нет обращений.';
-    }catch(error){if(live(gen))state.textContent=[401,403].includes(error.status)?'Доступ изменился. Откройте приложение заново.':'Обработка пока недоступна. Исходные обращения сохранены.';}
+    }catch(error){if(live(gen))state.textContent=['pending_storage_invalid','pending_storage_unavailable'].includes(error?.message)?
+      'Не удалось проверить предыдущий запрос на устройстве. Новое разрешение не отправлено.':
+      [401,403].includes(error.status)?'Доступ изменился. Откройте приложение заново.':'Обработка пока недоступна. Исходные обращения сохранены.';}
     finally{active.delete(controller);if(live(gen))byId('processing-open').disabled=false;}
   }
   byId('processing-open').addEventListener('click',open);

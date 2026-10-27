@@ -66,6 +66,11 @@ test('usable Native reporter consent + independently proven Native owner grant, 
   await assert.rejects(f.invoke('owner',{...f.grant,attachmentDigest:'d'.repeat(64)}));await assert.rejects(f.invoke('owner',{...f.grant,ticketRevision:2}));
   await assert.rejects(f.invoke('owner',{...f.grant,owner:true}));
 });
+test('feedback binding for the same Native person survives restart and differs for another person',async t=>{
+  const f=await fixture(t),reporter=await f.runtime.feedback(await f.proof('reporter'),'context'),owner=await f.runtime.feedback(await f.proof('owner'),'context');
+  assert.notEqual(reporter.bindingDigest,owner.bindingDigest);
+  f.restart();const resumed=await f.runtime.feedback(await f.proof('reporter'),'context');assert.equal(resumed.bindingDigest,reporter.bindingDigest);
+});
 test('default-off worker/JSON proof denied; actual Native SQL claim/final + encrypted DATA result; exact lost ACK readback/restart never reprocess',async t=>{
   const f=await fixture(t);await f.invoke('reporter',f.consent);const created=await f.invoke('owner',f.grant),jobId=created.data.jobId;
   const queued=await f.runtime.call(await f.proof('reporter'),'read',{requestId:'job-queued-readback-0001',input:{operation:'feedback.job.result',jobId}});
