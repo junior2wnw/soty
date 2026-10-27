@@ -37,15 +37,16 @@ const code = ts.transpileModule([
 // source records and the renderer are ports; no new search algorithm is copied.
 function harness() {
   const calls = { open: [], recent: [], preview: [], context: [], knownApps: [], list: 0, focus: 0, route: [], writes: 0, camera: 0, close: 0 };
+  const browserDoc = { activeElement: null, body: {} };
   class NodePort {
     children = []; hidden = false; isConnected = true; attributes = new Map(); handlers = new Map(); parent = null;
     constructor(tag = 'div', className = '', textContent = '') { Object.assign(this, { tag, className, textContent }); }
     append(...nodes) { for (const node of nodes) { node.parent = this; node.isConnected = this.isConnected; } this.children.push(...nodes); }
     replaceChildren(...nodes) { for (const node of this.children) node.disconnect(); this.children = []; this.append(...nodes); }
-    disconnect() { this.isConnected = false; for (const child of this.children) child.disconnect(); }
+    disconnect() { this.isConnected = false; if (browserDoc.activeElement === this) browserDoc.activeElement = browserDoc.body; for (const child of this.children) child.disconnect(); }
     setAttribute(key, value) { this.attributes.set(key, String(value)); }
     addEventListener(type, listener) { const entries = this.handlers.get(type) || []; entries.push(listener); this.handlers.set(type, entries); }
-    focus() { calls.focus++; }
+    focus() { calls.focus++; browserDoc.activeElement = this; }
     click() { this.onClick?.(); }
     querySelector(selector) { return selector === 'button:not([disabled])' ? this.children.find(node => node.tag === 'button' && !node.disabled) ?? null : null; }
   }
@@ -64,7 +65,7 @@ function harness() {
   const before = JSON.stringify(document);
   let live = true;
   const environment = {
-    exports: {}, mode: 'mine', queries: { mine: '', search: '' }, filter: 'all', composing: false,
+    exports: {}, document: browserDoc, mode: 'mine', queries: { mine: '', search: '' }, filter: 'all', composing: false,
     mineGeneration: 1, mineResolvedGeneration: 1, mineConfirmedGeneration: 1, mineKnownRefs: new Set(metadata.keys()), mineFilterAdmitted: true,
     metadata, metadataRevision: 1, emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, ownedAppsState: 'ready',
     element: { dataset: { mineState: 'ready', query: 'empty' } }, empty: node(), searchInput, clear: { hidden: true },
@@ -99,7 +100,7 @@ function harness() {
     return event;
   };
   const enter = value => { searchInput.value = value; emit('input'); };
-  return { api, environment, calls, notes, apps, document, metadata, records, before, buttons, text, emit, enter, searchInput,
+  return { api, environment, calls, notes, apps, document, browserDoc, metadata, records, before, buttons, text, emit, enter, searchInput,
     retire() { live = false; }, assertUnchanged() { assert.equal(JSON.stringify(document), before); assert.equal(calls.writes, 0); assert.equal(calls.camera, 0); } };
 }
 
@@ -256,4 +257,21 @@ test('a late own app outside the field opens from search and disappears after it
   row.click();
   assert.equal(h.calls.open.length, 1, 'a stale result cannot open after access is removed');
   h.assertUnchanged();
+});
+
+test('a removed focused search result returns focus to search without pulling back other focus', () => {
+  for (const focused of [true, false]) {
+    const h = harness(), app = { id: 'app-' + 'f'.repeat(32), name: 'Новый проект', state: 'ready', createdAt: 9 };
+    let available = [app];
+    h.environment.overviewApps = () => available;
+    h.environment.overviewEntity = value => ({ entity: { kind: 'app', id: value.id }, title: value.name, source: 'owner' });
+    h.environment.element.dataset.search = 'open'; h.enter(app.name);
+    const row = h.buttons()[0]; row.focus();
+    if (!focused) h.searchInput.focus();
+    const before = h.calls.focus; available = []; row.click();
+    assert.equal(h.calls.open.length, 0);
+    assert.equal(h.browserDoc.activeElement, h.searchInput);
+    assert.equal(h.calls.focus, before + (focused ? 1 : 0), 'only a focused removed row moves focus');
+    h.assertUnchanged();
+  }
 });

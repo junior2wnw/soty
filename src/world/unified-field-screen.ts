@@ -311,6 +311,14 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const signature = JSON.stringify([visible, ownedAppsState, apps]);
     if (signature === ownAppsSignature) return;
     ownAppsSignature = signature;
+    const oldRetry = ownAppsOverview.querySelector<HTMLButtonElement>('.uf-own-apps-retry');
+    if (visible && ownedAppsState === 'loading' && oldRetry) {
+      const status = ownAppsOverview.querySelector<HTMLElement>('.uf-own-apps-status');
+      if (status) status.textContent = 'Обновляем ваши приложения…';
+      oldRetry.setAttribute('aria-disabled', 'true');
+      return;
+    }
+    const retryFocused = !!oldRetry && document.activeElement === oldRetry;
     const previous = ownAppsOverview.querySelector<HTMLDivElement>('.uf-own-apps-list');
     if (visible && ownedAppsState === 'ready' && apps.length && previous && ownAppsOverview.contains(document.activeElement)) {
       const wanted = new Map(apps.map(app => [app.id, app]));
@@ -330,15 +338,21 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }
     ownAppsOverview.replaceChildren();
     ownAppsOverview.hidden = !visible || ownedAppsState === 'loading' || ownedAppsState === 'ready' && apps.length === 0;
-    if (ownAppsOverview.hidden) return;
-    if (ownedAppsState === 'offline') {
+    if (!ownAppsOverview.hidden && ownedAppsState === 'offline') {
       const status = el('p', 'uf-own-apps-status', 'Не удалось обновить ваши приложения. Проверьте подключение.'); status.setAttribute('role', 'status');
-      const retry = button('Повторить', 'refresh', 'sw-button-quiet uf-own-apps-retry', () => { if (current()) run(loadOwnedApps(mineGeneration)); });
-      ownAppsOverview.append(status, retry); return;
+      const retry = button('Повторить', 'refresh', 'sw-button-quiet uf-own-apps-retry', () => {
+        if (current() && retry.getAttribute('aria-disabled') !== 'true') run(loadOwnedApps(mineGeneration));
+      });
+      ownAppsOverview.append(status, retry);
+    } else if (!ownAppsOverview.hidden) {
+      const heading = el('h2', '', 'Ваши приложения'), list = el('div', 'uf-own-apps-list');
+      for (const app of apps) list.append(ownAppButton(app));
+      ownAppsOverview.append(heading, list);
     }
-    const heading = el('h2', '', 'Ваши приложения'), list = el('div', 'uf-own-apps-list');
-    for (const app of apps) list.append(ownAppButton(app));
-    ownAppsOverview.append(heading, list);
+    if (retryFocused && visible) {
+      const target = ownAppsOverview.querySelector<HTMLButtonElement>('.uf-own-apps-retry, .uf-own-app') ?? listView;
+      if (isDialogFocusTarget(target)) target.focus({ preventScroll: true }); else focusFieldControl();
+    }
   }
   async function loadOwnedApps(generation: number): Promise<void> {
     const read = ++ownAppsReadSequence;
@@ -868,7 +882,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       const action = button('', row.contextId ? 'layers' : 'next', 'uf-list-entry uf-search-result', () => {
         if (!live() || !action.isConnected) return;
         const fresh = listEntries().find(value => value.key === row.key);
-        if (!fresh) { mineSearchSignature = ''; renderMineSearchResults(); return; }
+        if (!fresh) {
+          const focused = document.activeElement === action;
+          mineSearchSignature = ''; renderMineSearchResults();
+          if (focused && (document.activeElement === document.body || document.activeElement === null) && live()) searchInput.focus({ preventScroll: true });
+          return;
+        }
         if (fresh.contextId) { closePreview(false); engine?.focusContext(fresh.contextId); }
         else if (fresh.entity) { const item = currentEntity(fresh.entity); if (item) activate(item, fresh.shortcutId); }
       });
