@@ -3317,7 +3317,7 @@ class WorldApplication {
       const url = new URL(location.pathname, location.origin); url.hash = `profile/${profile.profileId}`;
       void navigator.clipboard.writeText(url.href).then(() => { if (current()) status.textContent = 'Ссылка скопирована.'; }).catch(() => { if (current()) error.textContent = 'Не удалось скопировать ссылку. Попробуйте ещё раз.'; });
     });
-    const actions = el('div', 'sw-row'); actions.append(save, verify);
+    const actions = el('div', 'sw-row sw-audience-actions'); actions.append(save, verify);
     const advanced = el('details', 'sw-app-settings-details'); advanced.append(el('summary', '', 'Общение и комнаты'));
     const setting = (title: string, description: string, symbol: string, checked: boolean, update: (checked: boolean) => Promise<void>): void => {
       const row = el('div', 'sw-settings-row'); const copy = el('div', 'sw-grow'); copy.append(el('strong', '', title), el('p', '', description)); row.append(icon(symbol), copy, switchControl(title, checked, update)); advanced.append(row);

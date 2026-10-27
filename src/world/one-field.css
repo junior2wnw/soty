@@ -150,6 +150,7 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
 .sw-audience-choice:has(input:focus-visible) { outline: 3px solid var(--sw-focus); outline-offset: 2px; }
 .sw-audience-choice:has(input:disabled) { opacity: .55; cursor: default; }
 .sw-audience-description { min-height: 36px; margin: 10px 0 0; color: var(--sw-muted); font-size: 13px; line-height: 18px; }
+.sw-audience-actions { flex-wrap: wrap; }
 .sw-app[data-experience=one-field]>.of-field-backdrop { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 .of-field-backdrop>:not(.uf-scene-host),.of-field-backdrop .uf-scene-host>:not(.uf-viewport) { display: none !important; }
 .of-field-backdrop .uf-node { opacity: .9; translate: var(--of-open-offset,0px) 0; }
