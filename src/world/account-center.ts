@@ -21,7 +21,13 @@ export function mountAccountCenter(options: AccountCenterOptions): { dispose(): 
   const identity = el('div', 'sw-account-identity'), copy = el('div');
   copy.append(el('strong', '', options.identity.displayName), el('p', 'sw-muted', 'Ваш профиль в Сотах'));
   identity.append(avatar(options.identity.displayName, options.identity.avatarUrl, options.identity.color, options.identity.profileId, options.identity.avatarRevision), copy);
-  const sections: [AccountSection, string, string, string][] = [
+  const available = (action: AccountAction) => !options.availableActions || options.availableActions.includes(action);
+  const sectionActions: Record<Exclude<AccountSection, 'profile'>, AccountAction[]> = {
+    notifications: ['notifications'], appearance: ['appearance'], ai: ['ai-api'],
+    security: ['auth-devices', 'recovery', 'human-signins', 'agent-access'],
+    data: ['device-status', 'data-export', 'help', 'developers'],
+  };
+  const allSections: [AccountSection, string, string, string][] = [
     ['profile', 'Профиль', 'person', 'Имя, фото и видимость для других людей'],
     ['notifications', 'Уведомления', 'bell', 'Получение уведомлений на этом устройстве'],
     ['appearance', 'Вид и управление', 'sun', 'Тема и управление в этом браузере'],
@@ -29,9 +35,9 @@ export function mountAccountCenter(options: AccountCenterOptions): { dispose(): 
     ['security', 'Безопасность', 'shield', 'Входы в профиль и разрешённые действия'],
     ['data', 'Данные и помощь', 'folder', 'Копии, состояние Сот и поддержка'],
   ];
-  let disposed = false, section = options.initialSection ?? 'profile';
+  const sections = allSections.filter(([id]) => id === 'profile' || sectionActions[id].some(available));
+  let disposed = false, section: AccountSection = sections.some(([id]) => id === options.initialSection) ? options.initialSection! : 'profile';
   const current = () => !disposed && options.host.isConnected && options.isCurrent();
-  const available = (action: AccountAction) => !options.availableActions || options.availableActions.includes(action);
   const entries = new Map<AccountSection, HTMLButtonElement>();
   const invoke = (action: AccountAction) => { if (current() && available(action)) options.onAction(action); };
   const action = (value: AccountAction, label: string, icon: string, scope: string): void => {

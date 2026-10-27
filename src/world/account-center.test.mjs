@@ -52,7 +52,37 @@ test('security separates identity devices, recovery and grants; data has distinc
 test('unavailable controls never dispatch; stale account or disposed centre cannot execute an old action', () => {
   const f = fixture({ availableActions: ['edit-profile'] });
   assert.equal(f.action('switch-profile'), undefined);
-  f.section('notifications').click(); assert.equal(f.action('notifications'), undefined);
+  assert.equal(f.section('notifications'), undefined);
+  f.panel.select('notifications'); assert.equal(f.action('notifications'), undefined);
   f.panel.select('profile'); const edit = f.action('edit-profile'); f.retire(); edit.click();
   assert.deepEqual(f.calls, []); f.panel.dispose(); edit.click(); assert.deepEqual(f.calls, []); assert.equal(f.host.children.length, 0);
+});
+
+test('unavailable initial notification section falls back to profile without an empty navigation item', () => {
+  const f = fixture({ initialSection: 'notifications', availableActions: ['edit-profile', 'appearance', 'auth-devices', 'data-export'] });
+  assert.equal(f.section('notifications'), undefined);
+  assert.equal(f.section('ai'), undefined);
+  assert.equal(f.section('profile').getAttribute('aria-current'), 'page');
+  assert.ok(f.action('edit-profile'));
+  f.panel.select('notifications');
+  assert.equal(f.section('profile').getAttribute('aria-current'), 'page');
+  assert.ok(f.action('edit-profile')); assert.deepEqual(f.calls, []);
+  f.section('appearance').click(); f.section('security').click(); f.action('auth-devices').click();
+  f.section('data').click(); f.action('data-export').click();
+  assert.deepEqual(f.calls, ['appearance', 'auth-devices', 'data-export']);
+});
+
+test('available initial notifications still expose their editor and subsequent navigation opens it directly', () => {
+  const f = fixture({ initialSection: 'notifications', availableActions: ['edit-profile', 'notifications'] });
+  assert.equal(f.section('notifications').getAttribute('aria-current'), 'page');
+  assert.ok(f.action('notifications')); f.action('notifications').click();
+  f.section('profile').click(); f.section('notifications').click();
+  assert.deepEqual(f.calls, ['notifications', 'notifications']);
+});
+
+test('an empty capability set retains the profile and omits other empty sections', () => {
+  const f = fixture({ initialSection: 'security', availableActions: [] });
+  assert.deepEqual(f.host.all().filter(node => node.dataset.accountSection).map(node => node.dataset.accountSection), ['profile']);
+  assert.equal(f.section('profile').getAttribute('aria-current'), 'page');
+  f.panel.select('security'); assert.deepEqual(f.calls, []);
 });

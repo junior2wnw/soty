@@ -122,7 +122,8 @@ function fixture() {
 
 function profileData(f) {
   f.app.openProfileMenu(); const menu = [...f.app.dialogs][0];
-  assert.equal(menu.body.querySelectorAll('[data-account-section]').length, 6, 'the actual AccountCenter renders its categories');
+  assert.equal(menu.body.querySelectorAll('[data-account-section]').length, 5, 'only categories with available actions are shown');
+  assert.equal(menu.body.querySelector('[data-account-section="notifications"]'), null, 'the fixture has no notification controller');
   const data = menu.body.querySelector('[data-account-section="data"]'); data.focus(); data.click();
   assert.equal(data.getAttribute('aria-current'), 'page');
   return menu;
