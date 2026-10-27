@@ -1928,18 +1928,18 @@ class WorldApplication {
     };
     const openDraftChoices = (): void => {
       const choices=draftChoices(), session=draftSession; if(choices.length<2||!session)return;
-      const ids=session.read().heads.map(head=>head.id), dialog=this.dialog('Выберите черновик'), list=el('div','sw-stack');
-      dialog.body.append(el('p','sw-muted','В разных вкладках появились разные варианты. Выберите, какой продолжить.'),list);
+      const ids=session.read().heads.map(head=>head.id), dialog=this.dialog('Оставить один черновик?'), list=el('div','sw-stack');
+      dialog.body.append(el('p','sw-muted','В разных вкладках появились разные варианты. Остальные варианты будут удалены. Скопируйте нужный текст перед выбором.'),list);
       if(attachmentRows.length)dialog.body.append(el('p','sw-muted','Вложения останутся в текущей очереди.'));
       for(const choice of choices) {
         const row=el('div','sw-chat-draft-choice');row.append(el('p','',choice.text||'Пустой черновик'));
         if(choice.replyTo) {const replied=known.get(choice.replyTo);row.append(el('small','sw-muted',replied?`Ответ: ${replied.author.displayName} — ${chatPreview(replied)}`:'Ответ на сообщение из истории'));
           row.append(button('Посмотреть ответ','back','sw-button-quiet',()=>{dialog.close();void jumpToMessage(choice.replyTo!);}));}
-        const use=button('Использовать этот','check','sw-button-quiet',()=>{void session.select(ids,choice.id).then(ok=>{
+        const use=button('Оставить этот вариант','check','sw-button-quiet',()=>{void session.select(ids,choice.id).then(ok=>{
           if(!active())return;if(!ok){errorMessage.textContent='Черновики изменились. Откройте выбор ещё раз.';void session.refresh();}
           dialog.close();if(ok)input.focus({preventScroll:true});
         });});
-        use.setAttribute('aria-label',`Использовать черновик: ${Array.from(choice.text.replace(/\s+/gu,' ').trim()).slice(0,90).join('')||'пустой'}${choice.replyTo?' — с ответом':''}`);
+        use.setAttribute('aria-label',`Оставить этот вариант: ${Array.from(choice.text.replace(/\s+/gu,' ').trim()).slice(0,90).join('')||'пустой'}${choice.replyTo?' — с ответом':''}`);
         row.append(use);list.append(row);
       }
     };

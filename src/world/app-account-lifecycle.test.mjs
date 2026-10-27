@@ -2997,8 +2997,12 @@ test('chat conflict chooser keeps a newer edit made while the chooser was open',
   await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
   const i1=p1.querySelector('textarea'),i2=p2.querySelector('textarea');i1.value='First';i1.emit('input');i2.value='Second';i2.emit('input');
   await Promise.all([first.app.chatDraftSession.flush(),second.app.chatDraftSession.flush()]);await Promise.all([first.app.chatDraftSession.refresh(),second.app.chatDraftSession.refresh()]);
-  const chooser=p1.querySelector('.sw-chat-draft-versions');assert.equal(chooser.hidden,false);p1.querySelector('.sw-composer').requestSubmit();await turn();await turn();const dialog=first.dialogs.at(-1),list=dialog.body.querySelector('.sw-stack');
+  const chooser=p1.querySelector('.sw-chat-draft-versions');assert.equal(chooser.hidden,false);p1.querySelector('.sw-composer').requestSubmit();await turn();await turn();let dialog=first.dialogs.at(-1);
+  assert.match(dialog.body.children[0].textContent,/Остальные варианты будут удалены\. Скопируйте нужный текст перед выбором\./u);
+  dialog.close();await first.app.chatDraftSession.refresh();assert.deepEqual(first.app.chatDraftSession.read().heads.map(h=>h.text).sort(),['First','Second']);
+  chooser.emit('click');dialog=first.dialogs.at(-1);const list=dialog.body.querySelector('.sw-stack');
   const firstRow=list.children.find(row=>row.querySelector('p')?.textContent==='First');assert.ok(firstRow);
+  assert.match(firstRow.querySelector('button').getAttribute('aria-label'),/^Оставить этот вариант: First/u);
   i2.value='Second newer';i2.emit('input');await second.app.chatDraftSession.flush();firstRow.querySelector('button').emit('click');await turn();await turn();
   assert.equal(dialog.element.open,false);assert.match(p1.querySelector('.sw-error').textContent,/изменились/u);await first.app.chatDraftSession.refresh();
   assert.deepEqual(first.app.chatDraftSession.read().heads.map(h=>h.text).sort(),['First','Second newer']);
