@@ -8,6 +8,7 @@ import { attachCanonicalIdentityApi } from "./identity-wire-v1-api.js";
 import { attachSotyIdentityAdapterApi } from "./soty-identity-adapter-api.js";
 import { attachTrafficControl } from "./traffic-control.js";
 import { attachConnectReleaseSource } from "./connect-release-source.js";
+import { createPreparedAppsExtension } from './prepared-apps.js';
 import { createWorldService } from "../modules/world/server/index.mjs";
 import { createCoverDecoder } from '../modules/cover-art/server/codec.mjs';
 import { createNotesService } from "../modules/notes/server/index.mjs";
@@ -280,6 +281,8 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     readCommunityAuthority: (actor, ownerAccountId, relevantCommunityIds) => world.appCommunityAuthority(actor.accountId, ownerAccountId, relevantCommunityIds),
     subscribeMembership: listener => world.subscribeMembership(listener),
     authenticateConnector: async auth => { await connectors.store.writeQueue; await connectors.store.readable(); return Boolean(connectors.store.authenticate({ ...auth, deviceId: auth.hostDeviceId || auth.deviceId })); },
+    connectorCurrent: auth => !connectors.store.closing && !connectors.store.failed && !connectors.store.persistence.failed
+      && Boolean(connectors.store.authenticate({ ...auth, deviceId: auth.hostDeviceId || auth.deviceId })),
   }); } catch (error) {
     // Retained zones still need validation when new claims are disabled. A
     // rejected startup must not leave already opened services alive.
@@ -333,7 +336,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     const coverExtensions = [world.profileCoverExtension, apps.coverExtension].filter(Boolean);
-    const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls, push,
+    const preparedApps = createPreparedAppsExtension({ store: connectors.store, apps, universal,
+      connect: { isActorActive: actor => connect?.isActorActive(actor) === true, withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback) } });
+    const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, preparedApps, notes, capabilities, humanCalls, push,
       ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), ...(accountAiService ? [accountAiService] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
     app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions,
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });

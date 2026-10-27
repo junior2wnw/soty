@@ -62,5 +62,7 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
   });
   return { registration, feedback, reviews, universalExtension, appsExtension,
     registerCreationJob(actor, job) { return completeRegistration(actor, apps.registerCreationJob(actor, job)); },
+    registerPreparedApp(actor, receipt, manifest) { return completeRegistration(actor, apps.registerPreparedApp(actor, receipt, manifest)); },
+    completeExisting(actor, app) { return completeRegistration(actor, { app }); },
     close() { registration.close(); feedback.close(); reviews.close(); } };
 }

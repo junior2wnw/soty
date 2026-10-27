@@ -122,6 +122,12 @@ process.stdout.write(`connector:${version}:${manifest.sha256}\n`);
 process.stdout.write(`connector-bytes:${Buffer.byteLength(bundled)}\n`);
 
 async function bundleLocalModules(sourceText) {
+  const strictJsonImport=/^import \{ parseSourceJson \} from "\.\.\/modules\/source-app\/shared\/strict-json\.mjs";\r?\n?/mu;
+  if(strictJsonImport.test(sourceText)) {
+    const build=createRequire(import.meta.resolve('vite'))('esbuild').build;
+    const result=await build({entryPoints:[join(root,'modules/source-app/shared/strict-json.mjs')],bundle:true,write:false,platform:'node',format:'iife',globalName:'PreparedStrictJson',target:'node24'});
+    sourceText=sourceText.replace(strictJsonImport, `${result.outputFiles[0].text}\nconst { parseSourceJson } = PreparedStrictJson;\n`);
+  }
   const scopedImport=/^import \{ createConnectorScopedFactory \} from "\.\.\/modules\/apps\/scoped-embed\/connector-host\.mjs";\r?\n?/mu;
   if(scopedImport.test(sourceText)) {
     const build=createRequire(import.meta.resolve('vite'))('esbuild').build;

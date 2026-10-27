@@ -37,6 +37,7 @@ import { parseSourceJson } from '../../source-app/shared/strict-json.mjs';
 import { COVER_APP_FORMATS, hasAudienceSchema, readAppAudience } from './audience.mjs';
 import { synchronous } from './engagement-transaction.mjs';
 import { createAppCoverAdapter, appCoverOperations } from './cover.mjs';
+import { createPreparedBrowse } from './prepared-browse.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 export function appIdForCreationJob(jobId) {
@@ -51,7 +52,7 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
-  readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, onHeartbeat = () => {}, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
+  readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, connectorCurrent = () => false, onHeartbeat = () => {}, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false,
   coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity,
   identitySignTimeoutMs = 8000, readAppGuide } = {}) {
@@ -270,6 +271,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     onBindingInvalidated(channel, id) {
       for (const stream of channel.streams.values()) if (stream.appId === id) closeStream(stream, 'app_source_changed');
     } });
+  const preparedBrowse = createPreparedBrowse({ channels, send, secret, assertActor, resolveOwnedDevice, authenticateConnector, connectorCurrent, blockedPorts });
   const sources = createSourceRegistry({ db, now, assertActor, publications, blockedPorts,
     scopedAdmission: scopedAdmissions,
     prepareTarget: runtimeBindings.prepareTarget, verifyPreparedTarget: runtimeBindings.verifyPreparedTarget,
@@ -282,8 +284,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         if (keys.has(channel.key) || (channel.bindingVersion === 2 && runtimeBindings.getState(channel, event.appId).state !== 'unavailable')) sync(channel);
       }
     } });
-  const sourcePreparationExtension = Object.freeze({ operations: new Set(['apps.source.prepare','apps.scoped.context','apps.scoped.renew']),
+  const sourcePreparationExtension = Object.freeze({ operations: new Set(['apps.source.prepare','apps.scoped.context','apps.scoped.renew','apps.prepared.browse']),
     async executeAsync({ op, args = {}, actor }) {
+      if (op === 'apps.prepared.browse') return preparedBrowse.browse(actor, authenticatedArgs(actor, args));
       if(op==='apps.scoped.renew'){
         args=authenticatedArgs(actor,args);exact(args,['appId','handle','requestId','shortSessionHandoff']);const id=appId(args.appId);
         assertApps(args.shortSessionHandoff===undefined||args.shortSessionHandoff===true,'app_scoped_renew_invalid',403);
@@ -629,7 +632,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function invalidateConnector({ hostDeviceId, connectorId } = {}) {
     for (const channel of channels.values()) if ((!hostDeviceId || channel.identity.hostDeviceId === hostDeviceId) && (!connectorId || channel.identity.connectorId === connectorId)) {
-      channels.delete(channel.key); runtimeBindings.drop(channel);
+      channels.delete(channel.key); runtimeBindings.drop(channel); preparedBrowse.drop(channel);
       for (const stream of channel.streams.values()) closeStream(stream, 'app_offline', false); channel.ws.terminate();
     }
   }
@@ -728,6 +731,17 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         && job.proposal?.sourceJobId === job.id, 'app_job_authority_invalid', 403);
       return registerLocalApp(actor, { hostDeviceId: job.deviceId, connectorId: job.connectorId, name: job.proposal.name,
         port: job.proposal.port, entryPath: job.proposal.entryPath, grants: { accountIds: [], communityIds: [] } }, job);
+    });
+  }
+  // Host-only: caller supplies a verified durable prepared-project receipt.
+  function registerPreparedApp(actor, receipt, manifest) {
+    return withContactAuthority(actor, () => {
+      assertActor(actor);
+      assertApps(receipt && receipt.ownerAccountId === actor.accountId && receipt.sourceActorDeviceId === actor.deviceId
+        && /^job_[a-f0-9]{32}$/u.test(receipt.id || ''), 'prepared_authority_invalid', 403);
+      return registerLocalApp(actor, { hostDeviceId: receipt.hostDeviceId, connectorId: receipt.connectorId,
+        name: manifest.name, port: manifest.port, entryPath: manifest.entryPath, grants: { accountIds: [], communityIds: [] } },
+      { id: receipt.id, linkId: receipt.linkId, deviceId: receipt.hostDeviceId, connectorId: receipt.connectorId });
     });
   }
   function creationJobApp(actor, jobId) {
@@ -1677,7 +1691,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const identity = { linkId: textId(frame.linkId), hostDeviceId: textId(frame.hostDeviceId), connectorId: textId(frame.connectorId) };
           assertApps(await authenticateConnector({ linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }), 'app_connector_auth_failed');
           if (closed || admissionClosed || ws.readyState !== 1) return;
-          let bindingVersion = 1, relayIdentity = false, relayIdempotencyKey = false;
+          let bindingVersion = 1, relayIdentity = false, relayIdempotencyKey = false, browsePrepared = false, inspectPrepared = false;
           let runtimeProfiles = ['soty.relay-restricted.v1'];
           if (frame.capabilities !== undefined) {
             const versions = frame.capabilities?.targetBindingVersions;
@@ -1694,6 +1708,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
               assertApps(typeof frame.capabilities.relayIdempotencyKey === 'boolean', 'app_source_protocol_required');
               relayIdempotencyKey = frame.capabilities.relayIdempotencyKey;
             }
+            if (frame.capabilities.preparedBrowse !== undefined) {
+              assertApps(typeof frame.capabilities.preparedBrowse === 'boolean', 'app_source_protocol_required');
+              browsePrepared = frame.capabilities.preparedBrowse;
+            }
+            if (frame.capabilities.preparedInspect !== undefined) {
+              assertApps(typeof frame.capabilities.preparedInspect === 'boolean', 'app_source_protocol_required');
+              inspectPrepared = frame.capabilities.preparedInspect;
+            }
             if (frame.capabilities.runtimeProfiles !== undefined) {
               const profiles = frame.capabilities.runtimeProfiles;
               assertApps(Array.isArray(profiles) && profiles.length > 0 && profiles.length <= 8
@@ -1704,11 +1726,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           }
           const key = connectorKey(identity), previous = channels.get(key);
           if (previous) {
-            runtimeBindings.drop(previous);
+            runtimeBindings.drop(previous); preparedBrowse.drop(previous);
             for (const oldStream of previous.streams.values()) closeStream(oldStream, 'app_offline', false);
             previous.ws.terminate();
           }
-          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, relayIdempotencyKey, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
+          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, relayIdempotencyKey, preparedBrowse: browsePrepared, preparedInspect: inspectPrepared, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
             authorityWitnesses:0, auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
             claimDigest: '', claimExpiresAt: 0, streams: new Map(), observations: new Map(), lastSeenAt: now() };
           channels.set(key, channel); clearTimeout(timer);
@@ -1744,7 +1766,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           finally {if(signingChannel)signingChannel.authorityWitnesses--;}
           return;
         }
-        if (runtimeBindings.handleFrame(channel, frame)) return;
+        if (preparedBrowse.handle(channel, frame) || runtimeBindings.handleFrame(channel, frame)) return;
         assertApps(!['binding-ack', 'binding-rejected', 'bound-observation', 'target-prepared', 'target-rejected', 'sync', 'open', 'bound-open', 'binding-set', 'binding-remove', 'target-prepare', 'ready'].includes(frame.type), 'app_bad_frame');
         if (frame.type === 'claim') {
           assertApps(/^[a-f0-9]{64}$/u.test(frame.claimDigest || ''), 'app_claim_digest_invalid'); channel.claimDigest = frame.claimDigest; channel.claimExpiresAt = now() + 5 * 60_000;
@@ -1871,7 +1893,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     });
     ws.once('close', () => {
       admissionClosed = true; clearTimeout(timer); if (!channel) return;
-      runtimeBindings.drop(channel);
+      runtimeBindings.drop(channel); preparedBrowse.drop(channel);
       if (channels.get(channel.key) === channel) channels.delete(channel.key);
       for (const stream of channel.streams.values()) closeStream(stream, 'app_offline', false);
     });
@@ -1879,7 +1901,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function allowsTlsDomain(domain) {
     return hostClassifier.allowsTlsDomain(domain);
   }
-  return { operations, execute, registerCreationJob, creationJobApp, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
+  return { operations, execute, registerCreationJob, registerPreparedApp, creationJobApp, inspectPrepared: preparedBrowse.inspect, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
     withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,
     canOpenScopedSourceContext,openScopedSourceContext,
     withAppAuthority: appAuthority,
@@ -1897,7 +1919,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         .map(zone => `${zone.scheme}://*.${zone.suffix}${zone.port ? `:${zone.port}` : ''}`))];
     },
     configured: Boolean(template || readNamedOrigins(db).length), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
-    close() { if (closed) return; scopedGateway?.close();closed = true; covers?.close(); discussions.close(); sources.close(); runtimeBindings.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); bootCandidates.clear(); wss.close(); db.close(); },
+    close() { if (closed) return; scopedGateway?.close();closed = true; covers?.close(); discussions.close(); sources.close(); runtimeBindings.close(); preparedBrowse.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); bootCandidates.clear(); wss.close(); db.close(); },
   };
 }
 function discussionAuthorLabel(actor) {

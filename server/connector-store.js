@@ -467,6 +467,33 @@ class ConnectorStore {
     return { ok: true, found: true, reused: true, job: publicJob(job, { events: false, resultPreview: true }) };
   }
 
+  /** A read-only project inspection needs no executor job. Its original owner,
+   * device, selected location and manifest digest are immutable in the same
+   * existing request ledger used for other account actions. */
+  async readPreparedRequest(input, guard) {
+    const intent = normalizePreparedIntent(input);
+    if (!intent || typeof guard !== 'function') return { ok: false, error: 'invalid-prepared-request' };
+    await this.writeQueue; await this.readable();
+    if (guard() !== true) return { ok: false, error: 'job-access-denied' };
+    const previous = this.requestIndex.get(preparedRequestKey(intent));
+    return previous ? preparedReceipt(previous, intent) : { ok: true, found: false };
+  }
+
+  async reservePreparedRequest(input, guard) {
+    const intent = normalizePreparedIntent(input);
+    if (!intent || typeof guard !== 'function') return { ok: false, error: 'invalid-prepared-request' };
+    return this.mutate(() => {
+      if (this.maintenance() || guard() !== true) return { ok: false, error: 'job-access-denied' };
+      const key = preparedRequestKey(intent), previous = this.requestIndex.get(key);
+      if (previous) return preparedReceipt(previous, intent);
+      if (this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: 'connector-request-limit' };
+      const fingerprint = hashToken(JSON.stringify(intent));
+      const record = { id: key, fingerprint, requestIntent: fingerprint, jobId: `job_${randomUUID().replaceAll('-', '')}`, prepared: intent };
+      this.state.requests = [...this.state.requests, record];
+      return preparedReceipt(record, intent);
+    });
+  }
+
   async rejectOwnedRequest(auth, options, reason) {
     return this.mutate(() => {
       if (typeof options.guard !== 'function' || !options.guard() || !safeId(options.ownerAccountId, 160)
@@ -1001,6 +1028,36 @@ function emptyState() {
   return { schema: storeSchema, connectors: [], accessGrants: [], jobs: [], requests: [] };
 }
 
+function normalizePreparedIntent(value) {
+  const names = ['schema', 'ownerAccountId', 'sourceActorDeviceId', 'linkId', 'hostDeviceId', 'connectorId', 'requestId', 'location', 'manifestDigest'];
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== names.length
+    || !Object.keys(value).every(key => names.includes(key)) || value.schema !== 'soty.prepared-request.v1') return null;
+  if (typeof value.ownerAccountId !== 'string' || safeId(value.ownerAccountId, 160) !== value.ownerAccountId
+    || typeof value.sourceActorDeviceId !== 'string' || safeDeviceId(value.sourceActorDeviceId) !== value.sourceActorDeviceId
+    || typeof value.linkId !== 'string' || safeLinkId(value.linkId) !== value.linkId
+    || typeof value.hostDeviceId !== 'string' || safeDeviceId(value.hostDeviceId) !== value.hostDeviceId
+    || typeof value.connectorId !== 'string' || safeId(value.connectorId, 160) !== value.connectorId
+    || typeof value.requestId !== 'string' || safeId(value.requestId, 160) !== value.requestId
+    || typeof value.manifestDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(value.manifestDigest)) return null;
+  const loc = value.location, segment = item => typeof item === 'string' && item.length > 0 && item.length <= 255 && item.isWellFormed()
+    && item !== '.' && item !== '..' && !/[\\/\u0000-\u001f\u007f]/u.test(item);
+  if (!loc || typeof loc !== 'object' || Array.isArray(loc) || Object.keys(loc).length !== 2
+    || !Object.keys(loc).every(key => ['rootId', 'segments'].includes(key)) || typeof loc.rootId !== 'string' || !/^[a-f0-9]{64}$/u.test(loc.rootId)
+    || !Array.isArray(loc.segments) || loc.segments.length > 32 || !loc.segments.every(segment)
+    || Buffer.byteLength(JSON.stringify(loc), 'utf8') > 4096) return null;
+  return { schema: value.schema, ownerAccountId: value.ownerAccountId, sourceActorDeviceId: value.sourceActorDeviceId,
+    linkId: value.linkId, hostDeviceId: value.hostDeviceId, connectorId: value.connectorId, requestId: value.requestId,
+    location: { rootId: loc.rootId, segments: [...loc.segments] }, manifestDigest: value.manifestDigest };
+}
+function preparedRequestKey(intent) { return hashToken(JSON.stringify(['account', intent.ownerAccountId, intent.requestId])); }
+function preparedReceipt(record, intent) {
+  const hash = hashToken(JSON.stringify(intent));
+  if (!record.prepared || record.id !== preparedRequestKey(intent) || record.fingerprint !== hash || record.requestIntent !== hash
+    || JSON.stringify(normalizePreparedIntent(record.prepared)) !== JSON.stringify(intent) || !/^job_[a-f0-9]{32}$/u.test(record.jobId))
+    return { ok: false, error: 'job-request-conflict' };
+  return { ok: true, found: true, receipt: { id: record.jobId, ...intent } };
+}
+
 export function normalizeConnectorState(value) {
   const state = emptyState();
   if (value?.schema !== storeSchema && !previousStoreSchemas.has(value?.schema)) throw new Error("Unknown connector store schema; preserve data for recovery");
@@ -1039,6 +1096,8 @@ export function normalizeConnectorState(value) {
     const record = state.requests.find(item => item.id === automaticArchiveKey(job.ownerAccountId, job.id));
     if (!record?.autoArchive || record.autoArchive.requestId !== job.requestId) throw new Error('Missing automatic archive receipt; preserve data for recovery');
   }
+  if (state.requests.some(item => item.prepared !== undefined && (!normalizePreparedIntent(item.prepared)
+    || !preparedReceipt(item, normalizePreparedIntent(item.prepared)).ok))) throw new Error('Invalid prepared request history; preserve data for recovery');
   if (new Set(state.requests.map((item) => item.id)).size !== state.requests.length) throw new Error("Duplicate request identities");
   state.connectors = Array.isArray(value.connectors)
     ? value.connectors.filter(validStoredConnector).map(normalizeStoredConnector)

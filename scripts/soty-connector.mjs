@@ -3,18 +3,20 @@ import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from 'node:events';
 import { createHash, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify as verifySignature } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createConnectorScopedFactory } from "../modules/apps/scoped-embed/connector-host.mjs";
+import { parseSourceJson } from "../modules/source-app/shared/strict-json.mjs";
 import { createTrafficFabric, trafficFabricSchema } from "./agent-modules/traffic-fabric.mjs";
 import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema } from "./agent-modules/traffic-core.mjs";
 import { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease } from "./agent-modules/transit-client.mjs";
 import { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
 import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
-import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
+import { createLocalAppsRuntime, normalizeLocalAppManifest, prepareLocalAppWorkspace, probeLocalApp, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
+import { createPreparedProjectBrowser } from "./agent-modules/prepared-projects.mjs";
 import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
 import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
 import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
@@ -102,13 +104,17 @@ function loadScopedHostEntries(file) {
     return value.entries;
   } catch {throw new Error('scoped_embed_host_configuration_invalid');}
 }
+const preparedProjects = createPreparedProjectBrowser({ allowedRoots: allowedJobRoots, lstat, open, opendir, realpath,
+  basename, isAbsolute, join, relative, sep, digest: sha256, normalizeManifest: normalizeLocalAppManifest,
+  parseJson: parseSourceJson, blockedPorts: [port], probe: value => probeLocalApp({ httpRequest }, value) });
 const localApps = createLocalAppsRuntime({
   randomSecret: () => randomBytes(32).toString('base64url'),
   digest: value => createHash('sha256').update(value).digest('hex'),
   createWebSocket: url => new globalThis.WebSocket(url),
   httpRequest, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64'),
 }, { serverUrl: () => relayBaseUrl, token: () => connectorToken,
-  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port],scopedFactory });
+  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port],scopedFactory,
+  preparedBrowse: request => preparedProjects.list(request), preparedInspect: request => preparedProjects.inspect(request) });
 
 const trafficFabric = createTrafficFabric({
   uuid: randomUUID,

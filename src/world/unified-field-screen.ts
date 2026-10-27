@@ -45,7 +45,7 @@ export interface UnifiedFieldScreen {
   setMode(mode: UnifiedFieldMode, query?: string, filter?: FieldFilter): void;
   attachHeaderSearch(header: HTMLElement): void;
   addEntity(ref: FieldEntityRef): Promise<void>;
-  focusSearch(): void; closeSearch(): void; focusContext(contextId: string): void; openAdd(): void; refresh(options?: { preserveView?: boolean }): Promise<void>;
+  focusSearch(): void; closeSearch(): void; focusContext(contextId: string): void; openAdd(): void; refresh(options?: { preserveView?: boolean }): Promise<void>; refreshOwnApps(): Promise<void>;
   openView(): void; openList(query?: string): void; arrange(): void;
   hasUnsavedChanges(): boolean; flush(): Promise<void>; reconnect(): void; dispose(): void;
 }
@@ -1084,6 +1084,16 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       await ready; if (!current()) return;
       const mineTask = loadMine();
       if (mode === 'search') await Promise.all([mineTask, searchDirectory(false, refreshOptions?.preserveView === true)]); else await mineTask;
+    },
+    async refreshOwnApps() {
+      await ready; if (!current() || mode !== 'mine') return;
+      const generation = mineGeneration;
+      try {
+        const result = await options.api.request<{ apps: unknown[] }>('apps.list', { expectedAccountId: options.accountId });
+        if (!current() || generation !== mineGeneration || mode !== 'mine' || !Array.isArray(result.apps)
+          || ownAppsOverview.contains(document.activeElement)) return;
+        ownedApps = result.apps; ownedAppsState = 'ready'; renderOwnApps();
+      } catch { /* Preserve the existing overview during a transient failure. */ }
     },
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
     async flush() { await engine?.flush(); await persistence.flush(); },

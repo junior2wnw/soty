@@ -56,6 +56,7 @@ import { mountCoverEditor } from './cover-editor';
 import { createCoverApi, type CoverKind } from './cover-api.mjs';
 import { createAppCoverPresenter, mountAppCoverField, type AppCoverPresenter } from './app-cover-presenter.mjs';
 import { mountNotifications } from '../platform/notifications';
+import { mountPreparedAppDialog } from './prepared-app-dialog';
 import type { NotificationTarget } from '../platform/notifications-client.mjs';
 
 type GroupTab = 'about' | 'chat' | 'apps';
@@ -1464,7 +1465,7 @@ class WorldApplication {
         if (item.entity.kind === 'person' && record && 'profileId' in record) { const person = record as DirectoryPerson; this.openPersonDialog(person); return; }
         if (item.entity.kind === 'device') this.runHook(() => this.options.openAccount('devices'));
       }),
-      onCreate: kind => { if (!isCurrent()) return; if (kind === 'app') this.openAddApp(); else if (kind === 'community') this.openCommunityForm(); else if (kind === 'device') this.runHook(this.options.connectDevice); else if (kind === 'person') this.runHook(() => this.options.openAccount('people')); else this.afterNoteSaved(() => { this.assistantMode = 'create'; this.navigateReady('assistant'); }); },
+      onCreate: kind => { if (!isCurrent()) return; if (kind === 'app') this.openPreparedApp(); else if (kind === 'community') this.openCommunityForm(); else if (kind === 'device') this.runHook(this.options.connectDevice); else if (kind === 'person') this.runHook(() => this.options.openAccount('people')); else this.afterNoteSaved(() => { this.assistantMode = 'create'; this.navigateReady('assistant'); }); },
     });
     this.unifiedField = field; this.main.replaceChildren(field.element); field.attachHeaderSearch(this.header); this.mountFieldCovers(field); this.syncWorkspaceNavigation();
   }
@@ -2739,7 +2740,7 @@ class WorldApplication {
     if (this.view === 'messages' && !this.group) { this.openCommunityForm(undefined, true); return; }
     const dialog = this.dialog('Добавить'); const list = el('div', 'sx-profile-menu');
     const option = (title: string, symbol: string, action: () => void): void => list.append(button(title, symbol, 'sw-button-large', () => { dialog.close(); action(); }));
-    option('Приложение', 'grid', () => this.openAddApp());
+    option('Приложение', 'grid', () => this.openPreparedApp());
     option('Записку', 'note', () => this.afterNoteSaved(() => this.openNotes('new')));
     option('Устройство', 'laptop', () => this.runHook(this.options.connectDevice));
     option('Комнату', 'people', () => this.openCommunityForm());
@@ -2755,7 +2756,7 @@ class WorldApplication {
     const apps = this.apps.filter(app => app.deviceId === device.deviceId);
     if (apps.length) apps.forEach(app => content.append(button(app.name, 'grid', '', () => { dialog.close(); void this.openApplication(app); })));
     else content.append(el('p', 'sw-muted', 'На устройстве пока нет добавленных приложений.'));
-    content.append(button('Добавить приложение', 'plus', 'sw-button-primary', () => { dialog.close(); this.openAddApp(undefined, device.deviceId); }), button('Управление устройствами', 'settings', 'sw-button-quiet', () => { dialog.close(); this.runHook(() => this.options.openAccount('devices')); })); dialog.body.append(content);
+    content.append(button('Добавить приложение', 'plus', 'sw-button-primary', () => { dialog.close(); this.openPreparedApp(device.deviceId); }), button('Управление устройствами', 'settings', 'sw-button-quiet', () => { dialog.close(); this.runHook(() => this.options.openAccount('devices')); })); dialog.body.append(content);
   }
 
   private appStateLabel(status: string): string { return appStatusLabel(status); }
@@ -2967,6 +2968,27 @@ class WorldApplication {
       })),
     };
   }
+  private openPreparedApp(selectedDevice?: string): void {
+    const accountId = this.deskAccount, accountCurrent = this.accountTask(), sequence = this.screenSequence;
+    if (!accountId || !accountCurrent()) return;
+    const dialog = this.dialog('Подключить приложение');
+    const current = (): boolean => accountCurrent() && sequence === this.screenSequence && dialog.element.open;
+    void mountPreparedAppDialog({ dialog, api: this.api, accountId, ...(selectedDevice ? { selectedDevice } : {}), current, accountCurrent,
+      identity: () => this.options.localAccount?.() ?? Promise.resolve({ accountId: null }),
+      connectDevice: () => { if (current()) { dialog.close(); this.runHook(this.options.connectDevice); } },
+      manual: device => { if (current()) { dialog.close(); this.openAddApp(undefined, device); } },
+      background: () => { if (accountCurrent()) void this.unifiedField?.refreshOwnApps(); },
+      open: app => {
+        if (!current()) return;
+        dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
+        this.afterNoteSaved(() => {
+          if (!accountCurrent() || sequence !== this.screenSequence) return;
+          void this.openApplication({ appId: app.id, name: app.name, status: 'unknown', ownerAccountId: accountId,
+            grants: { accountIds: [], communityIds: [] } }, undefined, true);
+        });
+      } });
+  }
+
   private openAddApp(communityId?: string, selectedDevice?: string): void {
     const accountId = this.deskAccount, accountCurrent = this.accountTask(), sequence = this.screenSequence;
     if (!accountId || !accountCurrent()) return;

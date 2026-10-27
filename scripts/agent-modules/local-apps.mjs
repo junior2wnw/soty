@@ -104,7 +104,10 @@ export function createLocalAppsRuntime(deps, options = {}) {
     ws.addEventListener('open', () => {
       if (!current(context)) return;
       send(context, { type: 'auth', schema: localAppsSchema, ...identity, token: authToken,
-        capabilities: { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true, ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
+        capabilities: { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true,
+          ...(typeof options.preparedBrowse === 'function' ? { preparedBrowse: true } : {}),
+          ...(typeof options.preparedInspect === 'function' ? { preparedInspect: true } : {}),
+          ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
       authToken = undefined;
     });
     ws.addEventListener('message', event => {
@@ -307,6 +310,18 @@ export function createLocalAppsRuntime(deps, options = {}) {
     if (frame.type === 'binding-set') { setBinding(context, frame); return; }
     if (frame.type === 'binding-remove') { removeBindings(context, frame); return; }
     if (frame.type === 'target-prepare') { prepareTarget(context, frame); return; }
+    if (frame.type === 'prepared-browse' || frame.type === 'prepared-inspect') {
+      const inspect = frame.type === 'prepared-inspect', handler = inspect ? options.preparedInspect : options.preparedBrowse;
+      channelFrame(context, frame, inspect ? ['nonce', 'location', 'digest'] : ['nonce', 'location', 'after']);
+      localAppsCheck(localAppsNonce(frame.nonce) && typeof handler === 'function' && (context.preparedBrowseCount || 0) < 4, 'apps_bad_frame');
+      context.preparedBrowseCount = (context.preparedBrowseCount || 0) + 1;
+      void Promise.resolve().then(() => handler(inspect ? { location: frame.location, digest: frame.digest }
+        : { location: frame.location ?? null, after: frame.after ?? '' }))
+        .then(result => { if (connected(context)) send(context, { type: 'prepared-browse-result', channelId: context.channelId, nonce: frame.nonce, ok: true, result }); })
+        .catch(() => { if (connected(context)) send(context, { type: 'prepared-browse-result', channelId: context.channelId, nonce: frame.nonce, ok: false }); })
+        .finally(() => { context.preparedBrowseCount--; });
+      return;
+    }
     if (frame.type === 'sync') { legacySync(context, frame); return; }
     if (frame.type === 'open' || frame.type === 'bound-open') { openStream(context, frame); return; }
     localAppsCheck(['cancel', 'ack', 'end', 'data'].includes(frame.type), 'apps_bad_frame');
