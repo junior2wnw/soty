@@ -22,3 +22,4 @@ export { sendNativeEntryHttpError } from './native-entry-http-error.mjs';
 export { createRelayIdentityVerifier } from './relay-identity.mjs';
 export { createSqliteRelayNonceStore } from './sqlite-relay-nonces.mjs';
 export { createSqliteRelayIdentity } from './sqlite-relay-identity.mjs';
+export { createRelayPersonalServer } from './relay-personal-server.mjs';

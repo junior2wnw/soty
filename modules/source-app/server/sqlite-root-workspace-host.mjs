@@ -7,6 +7,7 @@ import { isRootSignedWorkspaceSource } from './standard-profile.mjs';
 import { createSourceNativeAuthorityPort, isSourceNativeCommitPort, isSourceNativeReceiptRecoveryPort } from './native-authority.mjs';
 import { createSourceSessionCipher } from './session-cipher.mjs';
 import { check, fields, digest, nonce, syncResult, jsonCopy } from './wire.mjs';
+import { PERSONAL_DOCUMENT_DDL,personalPrincipalId,withPersonalDocuments } from './personal-documents.mjs';
 
 const SCHEMA='soty.sqlite-root-workspace.v1';
 export const SQLITE_ROOT_WORKSPACE_LIMITS=Object.freeze({sessions:4096,nonces:4096,receiptsPerPerson:20000});
@@ -16,18 +17,10 @@ CREATE TABLE soty_workspace_sessions(id_hash TEXT PRIMARY KEY,principal_id TEXT 
 CREATE TABLE soty_workspace_nonces(nonce TEXT PRIMARY KEY,expires_at INTEGER NOT NULL);
 CREATE TABLE soty_workspace_receipts(principal_id TEXT NOT NULL REFERENCES soty_workspace_people(id),request_id TEXT NOT NULL,input_digest TEXT NOT NULL,result_json TEXT NOT NULL,binding_json TEXT NOT NULL,PRIMARY KEY(principal_id,request_id));
 CREATE TRIGGER soty_workspace_receipt_immutable BEFORE UPDATE ON soty_workspace_receipts BEGIN SELECT RAISE(ABORT,'soty_workspace_receipt_immutable');END;`;
-const DOCUMENT_DDL='CREATE TABLE soty_workspace_documents(principal_id TEXT NOT NULL REFERENCES soty_workspace_people(id),collection TEXT NOT NULL,item_id TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(principal_id,collection,item_id))';
 const columns={soty_workspace_meta:'id,schema,namespace,personal',soty_workspace_people:'id,issuer,subject,incarnation,active,generation,revision',
   soty_workspace_sessions:'id_hash,principal_id,resource_id,native_hash,active,expires_at,cipher,key_id',soty_workspace_nonces:'nonce,expires_at',
   soty_workspace_receipts:'principal_id,request_id,input_digest,result_json,binding_json'};
 const denied=condition=>check(condition,'source_workspace_native_denied',403);
-// Reserve room for the domain result and the Source response envelope.
-const DOCUMENT_PAGE_BYTES=32768,DOCUMENT_PAGE_NODES=3000,DOCUMENT_PAGE_ITEMS=100;
-function jsonNodes(value){
-  if(Array.isArray(value))return 1+value.reduce((sum,item)=>sum+jsonNodes(item),0);
-  if(value&&typeof value==='object')return 1+Object.values(value).reduce((sum,item)=>sum+1+jsonNodes(item),0);
-  return 1;
-}
 
 /** New per-person SQLite applications. Existing databases/identity models use
  * the maintained Native/storage ports or an explicit adapter, never a shadow
@@ -68,18 +61,17 @@ export function createSqliteRootWorkspaceHost(options) {
     check(db.prepare('PRAGMA foreign_key_check').all().length===0,'source_workspace_host_corrupt',503);
     check(db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='soty_workspace_receipt_immutable'").get()?.sql
       ==="CREATE TRIGGER soty_workspace_receipt_immutable BEFORE UPDATE ON soty_workspace_receipts BEGIN SELECT RAISE(ABORT,'soty_workspace_receipt_immutable');END",'source_workspace_host_schema_mismatch',503);
-    if(personalDocuments)check(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='soty_workspace_documents'").get()?.sql===DOCUMENT_DDL,
+    if(personalDocuments)check(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='soty_workspace_documents'").get()?.sql===PERSONAL_DOCUMENT_DDL,
       'source_workspace_host_schema_mismatch',503);
     syncResult(domain.inspect?.(db));
   }
   try{db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000');
     const present=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
-    if(!present.length){check(value.initialize===true,'source_workspace_host_not_initialized',503);tx(()=>{db.exec(DDL);if(personalDocuments)db.exec(DOCUMENT_DDL);db.prepare('INSERT INTO soty_workspace_meta VALUES(1,?,?,?)').run(SCHEMA,namespace,value.personalWorkspaces===true?1:0);syncResult(domain.initialize?.(db));verifySchema();});}
+    if(!present.length){check(value.initialize===true,'source_workspace_host_not_initialized',503);tx(()=>{db.exec(DDL);if(personalDocuments)db.exec(PERSONAL_DOCUMENT_DDL);db.prepare('INSERT INTO soty_workspace_meta VALUES(1,?,?,?)').run(SCHEMA,namespace,value.personalWorkspaces===true?1:0);syncResult(domain.initialize?.(db));verifySchema();});}
     else verifySchema();
     const sample=db.prepare('SELECT * FROM soty_workspace_sessions LIMIT 1').get();if(sample)openSession(sample);
     db.exec('PRAGMA journal_mode=WAL');
   }catch(error){try{db.close();}finally{cipher.close();}throw error;}
-  const personId=identity=>'person-'+digest([profile.issuer,identity.subject]);
   const resourceId=id=>'personal:'+id;
   const sourceHash=(binding,id)=>digest([namespace,id,binding.rootPrincipal,binding.rootReferenceDigest,binding.instanceId??'main']);
   function verifyRoot(binding,verified){
@@ -108,38 +100,8 @@ export function createSqliteRootWorkspaceHost(options) {
     return Object.freeze({database:db,principalId:row.id,resourceId:resourceId(row.id)});}
   function callDomain(method,actor,args){
     if(!personalDocuments)return syncResult(domain[method](actor,args));
-    let active=true;
-    const collection=value=>check(typeof value==='string'&&/^[a-zA-Z0-9_.-]{1,64}$/u.test(value),'source_workspace_collection_invalid');
-    const itemId=value=>check(typeof value==='string'&&/^[a-zA-Z0-9_.:-]{1,128}$/u.test(value),'source_workspace_item_invalid');
-    const access=()=>check(active&&inTransaction,'source_workspace_personal_context_closed',503);
-    const pageDigest=(name,id)=>digest(['soty.personal-page.v1',namespace,actor.principalId,name,id]);
-    function list(name,cursor=null){
-      access();collection(name);let anchor=null;
-      if(cursor!==null){
-        const match=typeof cursor==='string'?/^([a-zA-Z0-9_.:-]{1,128})\.([a-f0-9]{64})$/u.exec(cursor):null;
-        check(match&&pageDigest(name,match[1])===match[2]&&db.prepare('SELECT 1 FROM soty_workspace_documents WHERE principal_id=? AND collection=? AND item_id=?')
-          .get(actor.principalId,name,match[1]),'source_workspace_cursor_invalid');
-        anchor=match[1];
-      }
-      const where=anchor===null?'':' AND rowid<(SELECT rowid FROM soty_workspace_documents WHERE principal_id=? AND collection=? AND item_id=?)';
-      const rows=db.prepare('SELECT item_id,value_json FROM soty_workspace_documents WHERE principal_id=? AND collection=?'+where+' ORDER BY rowid DESC LIMIT 101')
-        .iterate(...(anchor===null?[actor.principalId,name]:[actor.principalId,name,actor.principalId,name,anchor]));
-      const items=[];let bytes=2,nodes=1,last=null,more=false;
-      for(const row of rows){
-        const item={id:row.item_id,value:JSON.parse(row.value_json)},itemBytes=Buffer.byteLength(JSON.stringify(item))+1,itemNodes=jsonNodes(item);
-        if(items.length===DOCUMENT_PAGE_ITEMS||bytes+itemBytes>DOCUMENT_PAGE_BYTES||nodes+itemNodes>DOCUMENT_PAGE_NODES){more=true;break;}
-        items.push(item);bytes+=itemBytes;nodes+=itemNodes;last=row.item_id;
-      }
-      check(!more||last!==null,'source_workspace_page_item_too_large',503);
-      const nextCursor=more?`${last}.${pageDigest(name,last)}`:null;
-      return{items,nextCursor};
-    }
-    const personal=Object.freeze({
-      list,
-      create(name,id,value){access();check(method==='execute','source_workspace_personal_read_only',403);collection(name);itemId(id);
-        const document=jsonCopy(value,{bytes:16384,nodes:1200,depth:12});db.prepare('INSERT INTO soty_workspace_documents VALUES(?,?,?,?)').run(actor.principalId,name,id,JSON.stringify(document));},
-    });
-    try{return syncResult(domain[method](Object.freeze({personal,resourceId:actor.resourceId}),args));}finally{active=false;}
+    return withPersonalDocuments({database:db,namespace,principalId:actor.principalId,resourceId:actor.resourceId,method,inTransaction:()=>inTransaction},
+      current=>domain[method](current,args));
   }
   function openSession(row){
     const record=cipher.open(row.id_hash,row.cipher,row.key_id),sealed=fields(record,['payload','native']);
@@ -171,7 +133,7 @@ export function createSqliteRootWorkspaceHost(options) {
   });
   const native=createSourceNativeAuthorityPort({capture:unsupported,
     captureRoot(binding,verified){verifyRoot(binding,verified);return tx(()=>{
-      const row=person(binding),id=personId(binding.identity);
+      const row=person(binding),id=personalPrincipalId(binding.identity);
       denied(row?row.active===1 && row.id===id:binding.operation==='root-session' && value.personalWorkspaces===true);
       const proof=Object.freeze({});proofs.set(proof,{verified,id,bindingDigest:digest(binding),generation:row?.generation??1,incarnation:row?.incarnation??null,pending:!row});
       inspect(proof,binding,{pending:true});return proof;});},

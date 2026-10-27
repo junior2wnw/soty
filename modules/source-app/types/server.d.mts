@@ -168,6 +168,11 @@ export interface SqlitePersonalDocumentsDomain {
   read:(current:SqlitePersonalDocumentsReadContext,args:{requestId:string;input:unknown})=>Record<string,unknown>;
   execute?:(current:SqlitePersonalDocumentsContext,args:{requestId:string;input:unknown})=>{workspaceReceipt:NativeWorkspaceReceipt;result?:unknown;data?:unknown};
 }
+/** Experimental new relay app; caller supplies trusted app/issuer and runs a
+ * trusted domain. No sandbox, launcher or Source commit-time recheck. */
+export function createRelayPersonalServer(options:{appId:string;issuer:string;databasePath:string;nonceDatabasePath:string;
+  domain:SqlitePersonalDocumentsDomain;ui:string;listen:{host:'127.0.0.1';port:number};initialize?:boolean;fetch?:typeof globalThis.fetch;clock?:()=>number}):{
+  server:import('node:http').Server;listen():Promise<number>;close():Promise<void>};
 export interface SqliteRootWorkspaceHost {readonly native:SourceNativeAuthorityPort;readonly storage:SourceStoragePort;
   readonly profile:SourceProfile&{digest:string};inspect():{schema:'soty.sqlite-root-workspace.v1';appId:string;initialized:true;
     personalWorkspaces:boolean;keyCorrectness:'sample_verified'|'unproved_empty';connected:false};

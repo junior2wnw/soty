@@ -7,6 +7,7 @@ import { join, dirname, resolve } from 'node:path';
 import { createConnectService, digestArgs } from '../../modules/connect/server/index.mjs';
 import { createConnectorStore, normalizeConnectorState } from '../connector-store.js';
 import { createAppJobsExtension } from '../apps-jobs.js';
+import { appIdForCreationJob } from '../../modules/apps/server/index.mjs';
 import { DatabaseSync } from 'node:sqlite';
 
 const origin = 'http://localhost:5200';
@@ -51,6 +52,16 @@ async function setup(t) {
     ownHost(value) { ownedHosts.push(value); }, setInferenceReady(value) { inferenceReady = value; },
     createArgs: { hostDeviceId: host.hostDeviceId, connectorId: host.connectorId, requestId: 'create-a-shopping-app', text: 'Список покупок', cwd: 'C:\\test-workspace' } };
 }
+
+test('a signed creation job has a deterministic app ID before execution but requests an ordinary local app',async t=>{
+  const f=await setup(t),created=await invoke(f.service,f.owner,'apps.agent.create',f.createArgs);
+  assert.equal(created.ok,true);const job=created.job;
+  assert.equal(appIdForCreationJob(job.id),`app-${job.id.slice(4)}`);
+  const leased=await f.store.poll(f.auth,0);assert.equal(leased.jobs[0].id,job.id);
+  assert.equal(leased.jobs[0].input.output,'local-app');
+  assert.match(leased.jobs[0].input.context,/soty\.local-app\.v1/u);
+  assert.doesNotMatch(leased.jobs[0].input.context,/root-workspace|personalDocuments|relay.identity/iu);
+});
 
 test('opt-in leased account task stops on current owner loss and a late native result resolves unknown without claiming success', async t => {
   const f = await setup(t), args = { ...f.createArgs, expectedAccountId: f.accountId, conversationId: 'local-current-receipt' };

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
-import { createServer as createTlsServer } from 'node:https';
+import { createServer as createTlsServer,request as httpsRequest } from 'node:https';
 import { randomBytes, generateKeyPairSync } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -17,9 +17,9 @@ const random = () => randomBytes(32).toString('base64url'), pause = ms => new Pr
 async function until(check, ms = 20000) { const end = Date.now()+ms; while(Date.now()<end) { const value = await check(); if(value)return value; await pause(40); } throw new Error('ordinary_installed_timeout'); }
 export async function freePort() { const server=createServer(); await new Promise(done=>server.listen(0,'127.0.0.1',done)); const port=server.address().port; await new Promise(done=>server.close(done)); return port; }
 const vault = () => { let value; return { async read(){return structuredClone(value??null);},async claim(next){value??=structuredClone(next);return structuredClone(value);},async compareAndSwap(revision,next){assert.equal(value.localRevision,revision);value=structuredClone(next);return structuredClone(value);} }; };
-export function wireHttp(port,path,{host,cookie,origin,method,body,fields,headers={}}={}) {
+export function wireHttp(port,path,{host,cookie,origin,method,body,fields,headers={},tls=false,ca}={}) {
   return new Promise((resolve,reject)=>{const bytes=fields?new URLSearchParams(fields).toString():body===undefined?null:Buffer.isBuffer(body)?body:JSON.stringify(body);
-    const request=httpRequest({hostname:'127.0.0.1',port,path,method:method||(bytes===null?'GET':'POST'),agent:false,headers:{...(host?{host}:{}),...(cookie?{cookie}:{}),...(origin?{origin}:{}),
+    const request=(tls?httpsRequest:httpRequest)({hostname:'127.0.0.1',port,path,method:method||(bytes===null?'GET':'POST'),agent:false,...(tls?{ca}:{}),headers:{...(host?{host}:{}),...(cookie?{cookie}:{}),...(origin?{origin}:{}),
       ...(bytes!==null?{'content-type':fields?'application/x-www-form-urlencoded':'application/json','content-length':Buffer.byteLength(bytes)}:{}),...headers},signal:AbortSignal.timeout(10000)},response=>{
       const parts=[];let size=0;response.on('data',part=>{size+=part.length;if(size>4194304)response.destroy();else parts.push(part);});response.on('error',reject);response.on('end',()=>{
         const text=Buffer.concat(parts).toString('utf8');let value;try{value=JSON.parse(text);}catch{}resolve({status:response.statusCode,headers:response.headers,text,value});});});request.on('error',reject);request.end(bytes);});
@@ -40,7 +40,9 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
     ...(options.namedAppZone?{namedAppZone:options.namedAppZone}:{})};
   root=createHttpApp(dist,rootOptions);
   const signed=async label=>{const client=createClientWithStorage({projectId:'soty',endpoint:origin+'/api/connect/rpc',scopedAppCleanup:true,
-    fetch:(url,opts)=>fetch(url,{...opts,headers:{...opts.headers,origin}})},vault());clients.push(client);return{client,account:await client.bootstrap(label)};};
+    fetch:options.backendTls?async(url,opts)=>{const reply=await wireHttp(backendPort,new URL(url).pathname,{tls:true,ca:options.backendTls.cert,
+      host:new URL(origin).host,origin,method:opts.method,body:Buffer.from(opts.body),headers:opts.headers});return new Response(reply.text,{status:reply.status,headers:reply.headers});}
+      :(url,opts)=>fetch(url,{...opts,headers:{...opts.headers,origin}})},vault());clients.push(client);return{client,account:await client.bootstrap(label)};};
   const owner=await signed('Synthetic Root app owner'),reader=await signed('Synthetic Native participant'),foreign=await signed('Synthetic foreign profile');
   const hostFile=join(runtimeDir,'selected-hosts.json');
   await writeFile(join(runtimeDir,'connector-config.json'),JSON.stringify({workspaceRoot:runtimeDir,allowedRoots:[runtimeDir],installId:'ordinary_fixture'}));
@@ -65,11 +67,12 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
     realms.push({realmId,index,port,appId,embedded,native,target,profile,key:randomBytes(32),cipherKey:randomBytes(32),clientSecret:random(),instance:null,databasePath:join(directory,realmId+'.sqlite'),
       ...(options.workspace ? {workspaceCreation:index===0?{operation:'items.create',titleField:'title',artifactType:'ordinary-item'}:{operation:'books.add',titleField:'label',artifactType:'library-book',category:'book'}}:{})});
   }
+  if(options.afterRegistration)await options.afterRegistration({realms,owner,reader,root});
   await stopChild();await root.locals.closeServices();
   const jwk=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({format:'jwk'});Object.assign(jwk,{kid:'ordinary-fixture',use:'sig',alg:'RS256'});
   const humanIdentity={enabled:true,issuer:origin+'/human-identity',registryId:'soty',environmentId:'production',clients:realms.filter(realm=>!options.withoutRpClients?.includes(realm.realmId)).map(realm=>({id:realm.profile.clientId,label:'Synthetic '+realm.realmId,
     redirectUri:realm.embedded+'/api/embed/callback',clientSecret:realm.clientSecret})),jwks:{keys:[jwk]},cookieKeys:[random()],artifactKey:randomBytes(32),artifactKeyId:'ordinary-fixture'};
-  const activeOptions={...rootOptions,humanIdentity,allowScopedEmbedMigration:true,allowSelectedResourceMigration:true,scopedEmbedProfiles:realms.map(realm=>realm.profile),
+  const activeOptions={...rootOptions,humanIdentity,allowScopedEmbedMigration:true,allowSelectedResourceMigration:true,scopedEmbedProfiles:options.relayOnly?[]:realms.map(realm=>realm.profile),
     ...(options.agentSourceAccess?{agentSourceAccess:options.agentSourceAccess,capabilityAudience:origin}:{}),
     ...(options.externalApplications?{externalApplications:options.externalApplications(realms)}:{}),
     ...(options.personalAgent?{personalAgent:options.personalAgent(realms)}:{})};
@@ -99,18 +102,21 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
       realm.instance.store.grant(realm.realmId+'-private-other','native-other','participant');realm.otherNativeToken=realm.instance.store.createNativeSession('native-other');}
     await realm.instance.listen();
   }
-  await writeFile(hostFile,JSON.stringify({schema:'soty.selected-embed-hosts.v1',entries:realms.map(realm=>({profile:realm.profile,key:realm.key.toString('base64url')}))}));startChild(true);
+  if(!options.relayOnly)await writeFile(hostFile,JSON.stringify({schema:'soty.selected-embed-hosts.v1',entries:realms.map(realm=>({profile:realm.profile,key:realm.key.toString('base64url')}))}));startChild(!options.relayOnly);
   await until(async()=>{try{return(await wireHttp(connectorPort,'/apps/claim',{origin,body:{}})).status===200;}catch{return false;}},60000);
   for(const realm of realms){
+    if(options.relayOnly)continue;
     if(options.promoteSource){await options.promoteSource({realm,owner,reader});continue;}
     const pub=await owner.client.extension('apps.publication.get',{appId:realm.appId});const prepared=await owner.client.extension('apps.source.prepare',{appId:realm.appId,expectedPolicyEpoch:pub.policyEpoch,expectedTargetRevision:pub.activeTargetRevision,
     source:{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,port:realm.port,entryPath:'/embed',profile:'soty.selected-human-embed.v2'}});
     await owner.client.extension('apps.source.promote',{appId:realm.appId,requestId:'ordinary-promote-'+realm.realmId,expectedPolicyEpoch:pub.policyEpoch,expectedTargetRevision:pub.activeTargetRevision,preparationId:prepared.preparationId,launchPolicy:'restricted',listed:false});
   }
   await until(async()=>{const list=await owner.client.extension('apps.list');return realms.every(realm=>list.apps.find(app=>app.id===realm.appId)?.state==='ready');});
+  const rootTlsCa=options.backendTls?.cert;
   async function wire(url,options={}){url=new URL(url);const realm=realms.find(realm=>url.origin===realm.embedded||url.origin===realm.native),app=realm&&url.origin===realm.embedded;
     const physical=app||url.origin===origin?backendPort:realm?.port;assert.ok(physical,'fixed fixture origin');const jar=jars.get(url.hostname)??new Map();jars.set(url.hostname,jar);
-    const cookie=[...jar].map(([name,value])=>name+'='+value).join('; ');const reply=await wireHttp(physical,url.pathname+url.search,{host:url.host,cookie,origin:options.body||options.fields?url.origin:undefined,...options});
+    const cookie=[...jar].map(([name,value])=>name+'='+value).join('; ');const reply=await wireHttp(physical,url.pathname+url.search,{host:url.host,cookie,origin:options.body||options.fields?url.origin:undefined,
+      ...(physical===backendPort&&rootTlsCa?{tls:true,ca:rootTlsCa}:{}),...options});
     for(const raw of reply.headers['set-cookie']??[]){const pair=raw.split(';')[0],index=pair.indexOf('=');jar.set(pair.slice(0,index),pair.slice(index+1));}
     return{...reply,location:reply.headers.location?new URL(reply.headers.location,url):null};}
   for(const realm of realms){const nativeJar=jars.get('localhost')??new Map();jars.set('localhost',nativeJar);if(realm.nativeToken)nativeJar.set('ordinary_native_'+realm.realmId,realm.nativeToken);

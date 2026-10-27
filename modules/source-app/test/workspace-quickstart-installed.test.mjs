@@ -57,9 +57,19 @@ async function nativeFactory({realm,initialize,directory}) {
 }
 
 test('same-origin Source-only reading-list quickstart: installed CLI and actual Root connect, private data, restart receipt and revoke', {timeout:120000},async t=>{
+  let beforeProfiles=false;
   const f=await createOrdinaryInstalledFixture(t,{workspace:true,sourceOnly:true,realmIds:['reading'],withoutRpClients:['reading'],
-    sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,nativeFactory,
+    sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,nativeFactory,afterRegistration:async({realms,owner})=>{
+      const realm=realms[0],published=await owner.client.extension('apps.publication.get',{appId:realm.appId});
+      assert.equal(realm.instance,null,'real Apps identity was created before Source host started');
+      await assert.rejects(owner.client.extension('apps.source.prepare',{appId:realm.appId,expectedPolicyEpoch:published.policyEpoch,
+        expectedTargetRevision:published.activeTargetRevision,source:{hostDeviceId:realm.profile.connector.hostDeviceId,
+          connectorId:realm.profile.connector.connectorId,port:realm.port,entryPath:'/embed',profile:'soty.selected-human-embed.v2'}}),
+        error=>error.code==='app_scoped_admission_required');
+      beforeProfiles=true;
+    },
     connectorScript:fileURLToPath(new URL('../../../scripts/soty-connector.mjs',import.meta.url))});
+  assert.equal(beforeProfiles,true);
   const realm=f.realms[0],clients=[],paths=[];
   t.after(()=>clients.forEach(client=>client.dispose()));
   async function frame(signer=f.reader){
