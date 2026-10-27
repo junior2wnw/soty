@@ -39,7 +39,7 @@ async function upstream(t, handler) {
   t.after(async () => { for (const socket of sockets) socket.destroy(); await new Promise(done => server.close(done)); });
   return { port: server.address().port, seen, server };
 }
-async function fixture(t, { mode = 2, runtimeDeps = {}, blockedPorts = [], ready, scopedFactory } = {}) {
+async function fixture(t, { mode = 2, runtimeDeps = {}, runtimeOptions = {}, blockedPorts = [], ready, scopedFactory } = {}) {
   const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 }); await once(wss, 'listening');
   const channelId = nonce(), frames = [], peers = []; let peer;
   wss.on('connection', socket => {
@@ -52,7 +52,7 @@ async function fixture(t, { mode = 2, runtimeDeps = {}, blockedPorts = [], ready
     });
   });
   const runtime = createLocalAppsRuntime({ ...deps, ...runtimeDeps }, { serverUrl: `http://127.0.0.1:${wss.address().port}`,
-    identity, token: 'synthetic-test-token', blockedPorts, scopedFactory });
+    identity, token: 'synthetic-test-token', blockedPorts, scopedFactory, ...runtimeOptions });
   t.after(async () => { runtime.stop(); for (const socket of peers) socket.terminate(); await new Promise(done => wss.close(done)); });
   runtime.start();
   await until(() => frames.some(frame => frame.type === 'auth'));
@@ -111,6 +111,33 @@ function injected(t, { holdWrite = false, clock = Date.now, maxBufferedAmount } 
   return { runtime, sockets, requests, start };
 }
 const respond = (req, status = 200) => req.emit('response', { statusCode: status, headers: {}, destroy() {} });
+
+test('a saturated prepared-project browse refuses only the fifth read while a real neighbour stream completes', async t => {
+  let finishResponse;
+  const app = await upstream(t, (req, res) => {
+    if (req.method === 'HEAD') { res.writeHead(200).end(); return; }
+    res.writeHead(200, { 'content-type': 'text/plain' }); res.write('before-'); finishResponse = () => res.end('after');
+  });
+  const waiting = [], f = await fixture(t, { runtimeOptions: { preparedBrowse: () => new Promise(resolve => waiting.push(resolve)) } });
+  const binding = await f.bind(target(1, app.port));
+  const streamId = randomBytes(16).toString('hex');
+  f.control('bound-open', { syncId: binding.syncId, ...pins(binding.target), id: streamId, kind: 'http', path: '/', method: 'GET', headers: {} });
+  f.send({ type: 'end', id: streamId });
+  await until(() => finishResponse && f.frames.some(frame => frame.id === streamId && frame.type === 'data'));
+  const tokens = Array.from({ length: 5 }, nonce);
+  for (const value of tokens.slice(0, 4)) f.control('prepared-browse', { nonce: value, location: null, after: '' });
+  await until(() => waiting.length === 4);
+  f.control('prepared-browse', { nonce: tokens[4], location: null, after: '' });
+  const rejected = await until(() => f.frames.find(frame => frame.type === 'prepared-browse-result' && frame.nonce === tokens[4]));
+  assert.equal(rejected.ok, false); assert.equal(rejected.code, 'prepared_busy');
+  assert.equal(f.runtime.status().connected, true); assert.equal(f.peer.readyState, 1);
+  finishResponse(); await until(() => f.frames.some(frame => frame.id === streamId && frame.type === 'end'));
+  const received = f.frames.filter(frame => frame.id === streamId && frame.type === 'data').map(frame => Buffer.from(frame.data, 'base64').toString()).join('');
+  assert.equal(received, 'before-after'); assert.equal(f.frames.some(frame => frame.id === streamId && frame.type === 'cancel'), false);
+  for (const resolve of waiting) resolve({ schema: 'soty.prepared-directories.v1', roots: [] });
+  await until(() => f.frames.filter(frame => frame.type === 'prepared-browse-result' && frame.ok).length === 4);
+  assert.equal(f.runtime.status().connected, true);
+});
 
 test('legacy negotiation remains functional, and new auth advertises both binding versions', async t => {
   const app = await upstream(t), f = await fixture(t, { mode: 1 });

@@ -54,9 +54,9 @@ export function createPreparedBrowse({ channels, send, secret, assertActor, reso
     assertApps(channel.bindingVersion === 2 && (channel.preparedBrowse || channel.preparedInspect) && frame.channelId === channel.channelId
       && typeof frame.nonce === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(frame.nonce)
       && typeof frame.ok === 'boolean' && (frame.ok ? keys(frame, ['type', 'channelId', 'nonce', 'ok', 'result'])
-        : keys(frame, ['type', 'channelId', 'nonce', 'ok'])), 'app_bad_frame');
+        : keys(frame, ['type', 'channelId', 'nonce', 'ok']) || keys(frame, ['type', 'channelId', 'nonce', 'ok', 'code']) && frame.code === 'prepared_busy'), 'app_bad_frame');
     const item = pending.get(frame.nonce);
-    if (item?.channel === channel) finish(item, frame.ok ? null : new AppsError('prepared_browse_failed', 422), frame.result);
+    if (item?.channel === channel) finish(item, frame.ok ? null : new AppsError(frame.code === 'prepared_busy' ? 'prepared_busy' : 'prepared_browse_failed', frame.code === 'prepared_busy' ? 429 : 422), frame.result);
     return true;
   }
   async function request(actor, args, inspect = false) {

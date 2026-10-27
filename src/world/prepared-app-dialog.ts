@@ -41,6 +41,7 @@ export async function mountPreparedAppDialog(options: Options): Promise<void> {
   const message = (cause: unknown): string => {
     const code = typeof cause === 'object' && cause && 'code' in cause ? String(cause.code) : '';
     if (code === 'prepared_connector_unsupported') return 'Обновите подключение Сот на выбранном устройстве.';
+    if (code === 'prepared_busy') return 'Устройство ещё проверяет другие папки. Подождите и повторите.';
     if (code === 'prepared_browse_failed') return 'Папка или приложение изменились. Проверьте, что проект запущен, и выберите его снова.';
     if (code === 'prepared_local_unavailable') return 'Не удалось сохранить состояние подключения; действие не начато.';
     if (code === 'prepared_local_capacity') return 'Сначала проверьте предыдущие подключения.';

@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAppsService } from '../server/index.mjs';
+import { createPreparedBrowse } from '../server/prepared-browse.mjs';
+import { connectorKey } from '../server/protocol.mjs';
 import { createLocalAppsRuntime, normalizeLocalAppManifest, probeLocalApp } from '../../../scripts/agent-modules/local-apps.mjs';
 import { createPreparedProjectBrowser } from '../../../scripts/agent-modules/prepared-projects.mjs';
 import { parseSourceJson } from '../../source-app/shared/strict-json.mjs';
@@ -22,6 +24,19 @@ const gate = () => {
   const wait = new Promise(done => { release = done; }), entered = new Promise(done => { enter = done; });
   return { release, enter, wait, entered };
 };
+
+test('Root forwards a bounded busy response as a retryable error', async () => {
+  const identity = { linkId: 'busy-link', hostDeviceId: 'busy-host', connectorId: 'busy-connector' }, key = connectorKey(identity);
+  const channel = { key, identity, bindingVersion: 2, preparedBrowse: true, channelId: secret(), ws: { readyState: 1 }, auth: {} };
+  const channels = new Map([[key, channel]]); let registry;
+  registry = createPreparedBrowse({ channels, secret, assertActor: () => {}, resolveOwnedDevice: () => identity,
+    authenticateConnector: async () => true, connectorCurrent: () => true, blockedPorts: [],
+    send: (_channel, frame) => { queueMicrotask(() => registry.handle(channel,
+      { type: 'prepared-browse-result', channelId: channel.channelId, nonce: frame.nonce, ok: false, code: 'prepared_busy' })); return true; } });
+  try { await assert.rejects(registry.browse({ accountId: 'owner', deviceId: 'phone' }, { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId }),
+    { code: 'prepared_busy', status: 429 }); }
+  finally { registry.close(); }
+});
 
 test('only the current owner can browse a real permitted project through its authenticated connector', { timeout: 30000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'soty-prepared-channel-'));
