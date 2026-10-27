@@ -127,6 +127,7 @@ Native private данных без собственной Human session. Это 
 контракты совместимы; зависимое изменение проверяется на согласованных версиях.
 
 **Backend.** Один полный image из immutable revision и frozen dependencies.
+Для исходного контекста используй `python scripts/archive-source.py --commit <полный SHA> --output-root <существующий каталог>` из актуального checkout: программа сверяет весь архив с Git и сохраняет receipt; ручной `git archive` на Windows может изменить байты.
 Сначала установи свежие DATA/mountedDestination и readers исходного и нового
 точных images; старые имена томов и форматы не являются defaults.
 `deploy/connector/cli.mjs prepare/promote` уже владеет lifecycle, проверками
