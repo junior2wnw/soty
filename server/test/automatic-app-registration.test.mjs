@@ -428,6 +428,7 @@ test('the revoked-device maintenance blocker clears only after the current owner
   assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, true);
   const cancellation = await second.extension('apps.agent.cancel', { ...f.target, jobId: id }); assert.equal(cancellation.job.status, 'succeeded');
   const current = f.service().locals.connectorService.store; await current.mutate(() => current.expire(Date.now() + 8 * 24 * 60 * 60_000));
+  assert.equal((await current.poll(f.auth)).error, 'connector-auth-failed', 'the simulated offline connector expired');
   assert.ok(current.state.jobs.find(job => job.id === id)); await f.restart({}, { announce: false });
   const args = { expectedAccountId: f.account.accountId, jobId: id }, archived = await second.extension('apps.agent.archive', args);
   assert.equal(archived.state, 'archived'); const status = await probe({ dataDir: f.dataDir }); assert.equal(status.count, 0); assert.equal(status.automaticPending, undefined);
@@ -486,6 +487,7 @@ test('the previous reader cannot resume an archived job, and its historical rece
   try { await old.ready; assert.equal((await old.automaticAppJobs(id)).length, 0);
     assert.equal(old.state.jobs.find(job => job.id === id).cancelRequested, true);
     await old.mutate(() => old.expire(Date.now() + 8 * 24 * 60 * 60_000));
+    assert.equal((await old.poll(f.auth)).error, 'connector-auth-failed', 'the simulated offline connector expired');
     assert.equal(old.state.jobs.some(job => job.id === id), false, 'the old reader really cleaned up the job'); }
   finally { await old.close(); }
   await f.restart({}, { announce: false }); assert.deepEqual((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt, archived.receipt);
@@ -525,6 +527,7 @@ test('lost host access exposes only an owner-bound recovery entry and a durable 
   assert.equal((await f.owner.extension('apps.assistant.history', { expectedAccountId: f.account.accountId })).jobs.find(job => job.id === id).restrictedAuto, 'archived');
   assert.equal((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt.requestId, archived.receipt.requestId);
   await store.mutate(() => store.expire(Date.now() + 8 * 24 * 60 * 60_000));
+  assert.equal((await store.poll(f.auth)).error, 'connector-auth-failed', 'the simulated offline connector expired');
   assert.equal(store.state.jobs.some(job => job.id === id), false); await f.restart({}, { announce: false });
   const recovered = await f.owner.extension('apps.assistant.history', { expectedAccountId: f.account.accountId });
   const final = recovered.jobs.find(job => job.id === id); assert.equal(final.restrictedAuto, 'archived'); assert.equal(final.cwd, '');
