@@ -4,6 +4,7 @@ data/
 var/
 backups/
 .codex-work/
+/.voice-v5-vite-cache/
 *.log
 .env
 .env.*
@@ -34,6 +35,7 @@ scripts/sotyctl.ps1
 
 output/
 modules/source-app/python/__pycache__/
+/deploy/connect/__pycache__/
 .local/
 
 /scripts/app-art/jobs/
