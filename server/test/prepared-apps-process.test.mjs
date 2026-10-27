@@ -47,7 +47,10 @@ for (const [kind, file] of [['source', 'scripts/soty-connector.mjs'], ['release'
     });
     if (kind === 'release') {
       const manifest = JSON.parse(await readFile(join(repo, 'public/agent/manifest.json'), 'utf8'));
-      assert.equal(manifest.version, '1.4.13'); assert.equal(digest(await readFile(join(repo, file))), manifest.sha256);
+      const source = await readFile(join(repo, 'scripts/soty-connector.mjs'), 'utf8');
+      const version = /const connectorVersion = "([^"]+)"/u.exec(source)?.[1];
+      assert.ok(version); assert.equal(manifest.version, version);
+      assert.equal(digest(await readFile(join(repo, file))), manifest.sha256);
     }
     const port = await freePort(), inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => ['PATH','PATHEXT','SYSTEMROOT','WINDIR','COMSPEC'].includes(key.toUpperCase())));
     child = spawn(process.execPath, [join(repo, file)], { cwd: connectorDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...inherited,

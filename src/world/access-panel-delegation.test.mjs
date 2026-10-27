@@ -108,6 +108,17 @@ test('child presentation uses actual parent and root IDs with the shared budget 
   assert.equal(f.host.querySelector('.sa-state').textContent, 'Отозван');
 });
 
+test('a manifest grant is described as reading only, without starting or connecting the application', async t => {
+  const agent = principal('manifest-reader');
+  const access = grant('grant-manifest', agent.id, { capabilities: [{ capabilityId: 'apps.prepared.manifest.read', version: 1 }],
+    resources: ['apps.prepared.manifest', 'apps.prepared.project:' + 'a'.repeat(64)], effects: [], recipients: ['soty:prepared-manifest'] });
+  const f = fixture(t, { data: { principals: [agent], grants: [access] } }); await settle();
+  f.target('principal-manifest-reader').click(); await settle();
+  const card = f.host.querySelector('.sa-grant'); assert.ok(card);
+  assert.match(card.textContent, /Чтение описания выбранного проекта/u);
+  assert.match(card.textContent, /Агент не запускает и не подключает приложение/u);
+});
+
 test('service audit remains distinct from a signed owner device and preserves exact principal IDs', async t => {
   const f = fixture(t, { data: { events: [
     { id: 'e1', kind: 'access.grants.derive', objectType: 'grant', objectId: 'child_grant', actorType: 'service', actorId: 'principal_exact_parent', createdAt: time },

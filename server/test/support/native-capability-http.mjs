@@ -18,7 +18,7 @@ export function nativeIdentity(label) {
 }
 export function good(value) { assert.equal(value.ok, true, value.error?.code); return value; }
 
-export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, capabilitiesVersion = 2, oauth, appOrigins = false, universalAppsEnabled = true } = {}) {
+export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, capabilitiesVersion = 2, oauth, appOrigins = false, universalAppsEnabled = true, appFactory = createHttpApp } = {}) {
   const parent = realpathSync(tmpdir()), directory = realpathSync(mkdtempSync(join(parent, 'soty-native-http-')));
   const nonce = randomUUID(), marker = join(directory, 'test-owner'); writeFileSync(marker, nonce, { flag: 'wx' });
   // Wire/authority fixtures own their document and never depend on a stale or
@@ -42,7 +42,8 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
     allowOAuthMigration: true, actorActive: () => false }).close();
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const create = enabled => createHttpApp(distDir, { dataDir: directory, connectOrigins: [origin],
+  let currentAppFactory = appFactory;
+  const create = enabled => currentAppFactory(distDir, { dataDir: directory, connectOrigins: [origin],
     universalAppsEnabled,
     capabilityAudience: origin, nativeNotesEnabled: enabled, gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' },
     ...(appOrigins ? { appOriginTemplate: `http://{appId}.localhost:${server.address().port}` } : {}),
@@ -92,7 +93,8 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
   return { directory, notesFile, capsFile, origin, call, proof, bootstrap, issue, http, server,
     get app() { return app; },
     setFront(value) { front = value; },
-    async restart({ enabled = false } = {}) {
+    async restart({ enabled = false, appFactory: nextAppFactory } = {}) {
+      if (nextAppFactory !== undefined) { assert.equal(typeof nextAppFactory, 'function'); currentAppFactory = nextAppFactory; }
       await app?.locals.closeServices(); app = undefined;
       try { app = create(enabled); }
       catch (error) { await waitForRejectedHttpStart(error); throw error; }

@@ -98,5 +98,15 @@ export function createPreparedProjectBrowser(deps) {
     need(again.path === selected.path && latest && latest.digest === digest, 'prepared_manifest_changed');
     return found.value;
   }
-  return Object.freeze({ list, inspect });
+  // Read only the exact selected manifest. In particular, do not probe its
+  // port: even a HEAD request can trigger effects in an arbitrary application.
+  async function readManifest({ location } = {}) {
+    const selected = await resolveLocation(location), found = await manifest(selected.path);
+    const again = await resolveLocation(location), latest = await manifest(again.path);
+    need(again.path === selected.path && Boolean(found) === Boolean(latest)
+      && (!found || found.digest === latest.digest), 'prepared_manifest_changed');
+    return { schema: 'soty.prepared-manifest.v1', state: found ? 'present' : 'missing',
+      name: found?.value.name ?? '', digest: found?.digest ?? '' };
+  }
+  return Object.freeze({ list, inspect, readManifest });
 }

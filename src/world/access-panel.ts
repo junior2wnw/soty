@@ -67,6 +67,7 @@ function dateLabel(time: number): string {
 }
 function grantName(grant: Grant): string {
   if (grant.capabilities.length === 1 && grant.capabilities[0]?.capabilityId === notesCapability.capabilityId) return 'Создание записок';
+  if (grant.capabilities.length === 1 && grant.capabilities[0]?.capabilityId === 'apps.prepared.manifest.read') return 'Чтение описания выбранного проекта';
   if (grant.capabilities.length > 0 && grant.capabilities.every(item => item.capabilityId.startsWith('apps.feedback.'))) return grant.effects.length ? 'Обработка обращений приложения' : 'Чтение обращений приложения';
   return grant.capabilities.length === 1 ? 'Функция приложения' : `${grant.capabilities.length} функции приложений`;
 }
@@ -510,6 +511,8 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       if (grant.budget.uncertain > 0) facts.append(fact('Не подтверждено', String(grant.budget.uncertain)));
     }
     row.append(summary, facts);
+    if (grant.capabilities.length === 1 && grant.capabilities[0]?.capabilityId === 'apps.prepared.manifest.read')
+      row.append(el('p', 'sa-muted', 'Только чтение описания выбранного проекта. Агент не запускает и не подключает приложение.'));
     if (grant.parentGrantId) row.append(el('p', 'sa-muted', 'Выдача записана. Доступ зависит от ключа и всей цепочки разрешений; они проверяются перед каждым действием.'));
     if (grant.budget?.unit === 'invocations' && grant.budget.limit > 0) {
       const progress = el('progress', 'sa-budget'); progress.max = grant.budget.limit; progress.value = grant.budget.spent + grant.budget.reserved;

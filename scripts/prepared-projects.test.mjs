@@ -14,18 +14,19 @@ async function fixture(t) {
   const parent = await mkdtemp(join(tmpdir(), 'soty-prepared-directory-'));
   const root = join(parent, 'allowed'), outside = join(parent, 'outside'), project = join(root, 'project');
   await mkdir(join(project, '.soty'), { recursive: true }); await mkdir(outside); await mkdir(join(root, 'second'));
-  const server = createServer((_req, res) => res.writeHead(204).end());
+  let appRequests = 0, directoryReads = 0;
+  const server = createServer((_req, res) => { appRequests++; res.writeHead(204).end(); });
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const manifest = { schema: 'soty.local-app.v1', name: 'Учебный проект', port: server.address().port, entryPath: '/' };
   await writeFile(join(project, '.soty', 'app.json'), JSON.stringify(manifest));
   let allowed = [root];
-  const browser = createPreparedProjectBrowser({ allowedRoots: () => allowed, lstat, open, opendir, realpath,
+  const browser = createPreparedProjectBrowser({ allowedRoots: () => allowed, lstat, open, opendir: async path => { directoryReads++; return opendir(path); }, realpath,
     basename, isAbsolute, join, relative, sep, digest, normalizeManifest: normalizeLocalAppManifest, parseJson: parseSourceJson,
     blockedPorts: [], probe: value => probeLocalApp({ httpRequest: request }, value) });
   t.after(async () => { server.closeAllConnections(); if (server.listening) await new Promise(done => server.close(done));
     assert.equal(dirname(resolve(parent)), resolve(tmpdir())); assert.match(basename(parent), /^soty-prepared-directory-/u);
     await rm(parent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
-  return { browser, root, outside, project, manifest, restrict(next) { allowed = next; },
+  return { browser, root, outside, project, manifest, get appRequests() { return appRequests; }, get directoryReads() { return directoryReads; }, restrict(next) { allowed = next; },
     async stop() { server.closeAllConnections(); await new Promise(done => server.close(done)); } };
 }
 
@@ -39,6 +40,24 @@ test('owned allowed root exposes a bounded folder choice and the same validated 
   const accepted = await f.browser.inspect({ location: project, digest: preview.project.digest });
   assert.deepEqual(accepted, f.manifest);
   assert.equal((await f.browser.list({ location, after: 'project' })).entries[0], 'second');
+});
+
+test('manifest-only read checks the selected file without any request to the app or directory listing', async t => {
+  const f = await fixture(t), root = (await f.browser.list()).roots[0];
+  const location = { rootId: root.id, segments: ['project'] };
+  const result = await f.browser.readManifest({ location });
+  assert.deepEqual(result, { schema: 'soty.prepared-manifest.v1', state: 'present', name: f.manifest.name,
+    digest: digest(JSON.stringify(f.manifest)) });
+  assert.equal(f.appRequests, 0, 'even a HEAD request is not read-only for an arbitrary app');
+  assert.equal(f.directoryReads, 0, 'the selected project does not authorize listing its neighbors');
+  const missing = await f.browser.readManifest({ location: { rootId: root.id, segments: ['second'] } });
+  assert.deepEqual(missing, { schema: 'soty.prepared-manifest.v1', state: 'missing', name: '', digest: '' });
+  assert.equal(f.appRequests, 0);
+  assert.equal(f.directoryReads, 0);
+  await assert.rejects(f.browser.readManifest({ location: { rootId: root.id, segments: ['..', 'outside'] } }), { code: 'prepared_location_invalid' });
+  f.restrict([f.outside]);
+  await assert.rejects(f.browser.readManifest({ location }), { code: 'prepared_root_changed' });
+  assert.equal(f.appRequests, 0);
 });
 
 test('path traversal, junction escape, root replacement and a changed manifest fail closed', async t => {

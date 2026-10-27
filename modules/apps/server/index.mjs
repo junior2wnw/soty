@@ -1741,7 +1741,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const identity = { linkId: textId(frame.linkId), hostDeviceId: textId(frame.hostDeviceId), connectorId: textId(frame.connectorId) };
           assertApps(await authenticateConnector({ linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }), 'app_connector_auth_failed');
           if (closed || admissionClosed || ws.readyState !== 1) return;
-          let bindingVersion = 1, relayIdentity = false, relayIdempotencyKey = false, browsePrepared = false, inspectPrepared = false;
+          let bindingVersion = 1, relayIdentity = false, relayIdempotencyKey = false, browsePrepared = false, inspectPrepared = false, manifestPrepared = false;
           let runtimeProfiles = ['soty.relay-restricted.v1'];
           if (frame.capabilities !== undefined) {
             const versions = frame.capabilities?.targetBindingVersions;
@@ -1766,6 +1766,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
               assertApps(typeof frame.capabilities.preparedInspect === 'boolean', 'app_source_protocol_required');
               inspectPrepared = frame.capabilities.preparedInspect;
             }
+            if (frame.capabilities.preparedManifest !== undefined) {
+              assertApps(typeof frame.capabilities.preparedManifest === 'boolean', 'app_source_protocol_required');
+              manifestPrepared = frame.capabilities.preparedManifest;
+            }
             if (frame.capabilities.runtimeProfiles !== undefined) {
               const profiles = frame.capabilities.runtimeProfiles;
               assertApps(Array.isArray(profiles) && profiles.length > 0 && profiles.length <= 8
@@ -1780,7 +1784,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             for (const oldStream of previous.streams.values()) closeStream(oldStream, 'app_offline', false);
             previous.ws.terminate();
           }
-          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, relayIdempotencyKey, preparedBrowse: browsePrepared, preparedInspect: inspectPrepared, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
+          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, relayIdempotencyKey, preparedBrowse: browsePrepared, preparedInspect: inspectPrepared, preparedManifest: manifestPrepared, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
             authorityWitnesses:0, auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
             claimDigest: '', claimExpiresAt: 0, streams: new Map(), observations: new Map(), lastSeenAt: now() };
           channels.set(key, channel); clearTimeout(timer);
@@ -1951,7 +1955,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function allowsTlsDomain(domain) {
     return hostClassifier.allowsTlsDomain(domain);
   }
-  return { operations, execute, registerCreationJob, registerPreparedApp, creationJobApp, inspectPrepared: preparedBrowse.inspect, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
+  return { operations, execute, registerCreationJob, registerPreparedApp, creationJobApp, inspectPrepared: preparedBrowse.inspect, readPreparedManifest: preparedBrowse.readManifest, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
     withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,
     canOpenScopedSourceContext,openScopedSourceContext,
     withAppAuthority: appAuthority,

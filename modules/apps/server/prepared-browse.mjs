@@ -42,6 +42,13 @@ export function createPreparedBrowse({ channels, send, secret, assertActor, reso
     }
     return value;
   }
+  function checkedManifest(value) {
+    assertApps(keys(value, ['schema', 'state', 'name', 'digest']) && value.schema === 'soty.prepared-manifest.v1'
+      && ['present', 'missing'].includes(value.state), 'prepared_bad_response', 502);
+    if (value.state === 'missing') assertApps(value.name === '' && value.digest === '', 'prepared_bad_response', 502);
+    else assertApps(appName(value.name) === value.name && /^[a-f0-9]{64}$/u.test(value.digest || ''), 'prepared_bad_response', 502);
+    return value;
+  }
   const fail = () => new AppsError('prepared_device_unavailable', 503);
   function finish(entry, error, frame) {
     if (pending.get(entry.nonce) !== entry) return;
@@ -51,7 +58,7 @@ export function createPreparedBrowse({ channels, send, secret, assertActor, reso
   function drop(channel) { for (const item of pending.values()) if (item.channel === channel) finish(item, fail()); }
   function handle(channel, frame) {
     if (frame.type !== 'prepared-browse-result') return false;
-    assertApps(channel.bindingVersion === 2 && (channel.preparedBrowse || channel.preparedInspect) && frame.channelId === channel.channelId
+    assertApps(channel.bindingVersion === 2 && (channel.preparedBrowse || channel.preparedInspect || channel.preparedManifest) && frame.channelId === channel.channelId
       && typeof frame.nonce === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(frame.nonce)
       && typeof frame.ok === 'boolean' && (frame.ok ? keys(frame, ['type', 'channelId', 'nonce', 'ok', 'result'])
         : keys(frame, ['type', 'channelId', 'nonce', 'ok']) || keys(frame, ['type', 'channelId', 'nonce', 'ok', 'code']) && frame.code === 'prepared_busy'), 'app_bad_frame');
@@ -59,16 +66,17 @@ export function createPreparedBrowse({ channels, send, secret, assertActor, reso
     if (item?.channel === channel) finish(item, frame.ok ? null : new AppsError(frame.code === 'prepared_busy' ? 'prepared_busy' : 'prepared_browse_failed', frame.code === 'prepared_busy' ? 429 : 422), frame.result);
     return true;
   }
-  async function request(actor, args, inspect = false) {
+  async function request(actor, args, kind = 'browse') {
+    const inspect = kind === 'inspect', manifestOnly = kind === 'manifest';
     assertApps(!closed && args && typeof args === 'object' && !Array.isArray(args)
-      && Object.keys(args).every(key => (inspect ? ['hostDeviceId', 'connectorId', 'location', 'digest']
+      && Object.keys(args).every(key => (inspect ? ['hostDeviceId', 'connectorId', 'location', 'digest'] : manifestOnly ? ['hostDeviceId', 'connectorId', 'location']
         : ['hostDeviceId', 'connectorId', 'location', 'after']).includes(key)), 'prepared_invalid_request');
     const location = args.location ?? null, after = args.after ?? '';
-    assertApps((inspect ? locationValid(location) && typeof args.digest === 'string' && /^[a-f0-9]{64}$/u.test(args.digest)
+    assertApps((inspect ? locationValid(location) && typeof args.digest === 'string' && /^[a-f0-9]{64}$/u.test(args.digest) : manifestOnly ? locationValid(location)
       : (location === null || locationValid(location)) && (after === '' || segment(after)) && (location !== null || after === '')),
     'prepared_invalid_request');
     const identity = resolveOwnedDevice(actor, args.hostDeviceId, args.connectorId), key = connectorKey(identity), channel = channels.get(key);
-    assertApps(channel && channel.bindingVersion === 2 && (inspect ? channel.preparedInspect : channel.preparedBrowse) === true && channel.ws.readyState === 1,
+    assertApps(channel && channel.bindingVersion === 2 && (inspect ? channel.preparedInspect : manifestOnly ? channel.preparedManifest : channel.preparedBrowse) === true && channel.ws.readyState === 1,
       'prepared_connector_unsupported', 503);
     const recheck = () => {
       assertApps(!closed, 'apps_closed', 503); assertActor(actor);
@@ -82,9 +90,11 @@ export function createPreparedBrowse({ channels, send, secret, assertActor, reso
       const item = { nonce, channel, resolve, reject, timer: null };
       item.timer = setTimeout(() => finish(item, fail()), 8000); item.timer.unref(); pending.set(nonce, item);
       if (!send(channel, inspect ? { type: 'prepared-inspect', channelId: channel.channelId, nonce, location, digest: args.digest }
+        : manifestOnly ? { type: 'prepared-manifest', channelId: channel.channelId, nonce, location }
         : { type: 'prepared-browse', channelId: channel.channelId, nonce, location, after })) finish(item, fail());
     });
     recheck(); assertApps(await authenticateConnector(channel.auth), 'prepared_device_unavailable', 503); recheck();
+    if (manifestOnly) return { result: checkedManifest(response), assertCurrent() { recheck(); assertApps(connectorCurrent(channel.auth) === true, 'prepared_device_unavailable', 503); } };
     if (!inspect) return checkedResult(response, location, after);
     assertApps(keys(response, ['schema', 'name', 'port', 'entryPath']), 'prepared_bad_response', 502);
     const manifest = normalizeManifest(response, blockedPorts);
@@ -92,6 +102,7 @@ export function createPreparedBrowse({ channels, send, secret, assertActor, reso
       && createHash('sha256').update(JSON.stringify(manifest)).digest('hex') === args.digest, 'prepared_bad_response', 502);
     return { manifest, assertCurrent() { recheck(); assertApps(connectorCurrent(channel.auth) === true, 'prepared_device_unavailable', 503); } };
   }
-  return Object.freeze({ browse: (actor, args) => request(actor, args), inspect: (actor, args) => request(actor, args, true), handle, drop,
+  return Object.freeze({ browse: (actor, args) => request(actor, args), inspect: (actor, args) => request(actor, args, 'inspect'),
+    readManifest: (actor, args) => request(actor, args, 'manifest'), handle, drop,
     close() { closed = true; for (const item of pending.values()) finish(item, fail()); } });
 }

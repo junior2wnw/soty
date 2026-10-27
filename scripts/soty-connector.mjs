@@ -22,7 +22,7 @@ import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
 import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.13";
+const connectorVersion = "1.4.14";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -114,7 +114,8 @@ const localApps = createLocalAppsRuntime({
   httpRequest, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64'),
 }, { serverUrl: () => relayBaseUrl, token: () => connectorToken,
   identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port],scopedFactory,
-  preparedBrowse: request => preparedProjects.list(request), preparedInspect: request => preparedProjects.inspect(request) });
+  preparedBrowse: request => preparedProjects.list(request), preparedInspect: request => preparedProjects.inspect(request),
+  preparedManifest: request => preparedProjects.readManifest(request) });
 
 const trafficFabric = createTrafficFabric({
   uuid: randomUUID,

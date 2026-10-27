@@ -107,6 +107,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
         capabilities: { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true,
           ...(typeof options.preparedBrowse === 'function' ? { preparedBrowse: true } : {}),
           ...(typeof options.preparedInspect === 'function' ? { preparedInspect: true } : {}),
+          ...(typeof options.preparedManifest === 'function' ? { preparedManifest: true } : {}),
           ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
       authToken = undefined;
     });
@@ -310,16 +311,17 @@ export function createLocalAppsRuntime(deps, options = {}) {
     if (frame.type === 'binding-set') { setBinding(context, frame); return; }
     if (frame.type === 'binding-remove') { removeBindings(context, frame); return; }
     if (frame.type === 'target-prepare') { prepareTarget(context, frame); return; }
-    if (frame.type === 'prepared-browse' || frame.type === 'prepared-inspect') {
-      const inspect = frame.type === 'prepared-inspect', handler = inspect ? options.preparedInspect : options.preparedBrowse;
-      channelFrame(context, frame, inspect ? ['nonce', 'location', 'digest'] : ['nonce', 'location', 'after']);
+    if (frame.type === 'prepared-browse' || frame.type === 'prepared-inspect' || frame.type === 'prepared-manifest') {
+      const inspect = frame.type === 'prepared-inspect', manifest = frame.type === 'prepared-manifest';
+      const handler = inspect ? options.preparedInspect : manifest ? options.preparedManifest : options.preparedBrowse;
+      channelFrame(context, frame, inspect ? ['nonce', 'location', 'digest'] : manifest ? ['nonce', 'location'] : ['nonce', 'location', 'after']);
       localAppsCheck(localAppsNonce(frame.nonce) && typeof handler === 'function', 'apps_bad_frame');
       if ((context.preparedBrowseCount || 0) >= 4) {
         send(context, { type: 'prepared-browse-result', channelId: context.channelId, nonce: frame.nonce, ok: false, code: 'prepared_busy' }); return;
       }
       context.preparedBrowseCount = (context.preparedBrowseCount || 0) + 1;
       void Promise.resolve().then(() => handler(inspect ? { location: frame.location, digest: frame.digest }
-        : { location: frame.location ?? null, after: frame.after ?? '' }))
+        : manifest ? { location: frame.location } : { location: frame.location ?? null, after: frame.after ?? '' }))
         .then(result => { if (connected(context)) send(context, { type: 'prepared-browse-result', channelId: context.channelId, nonce: frame.nonce, ok: true, result }); })
         .catch(() => { if (connected(context)) send(context, { type: 'prepared-browse-result', channelId: context.channelId, nonce: frame.nonce, ok: false }); })
         .finally(() => { context.preparedBrowseCount--; });
