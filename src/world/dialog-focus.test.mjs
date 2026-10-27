@@ -411,6 +411,54 @@ test('Actual profile editor support keeps the unsaved About form open without sa
   assert.equal(f.app.profile.bio, '', 'The saved profile remains unchanged');
 });
 
+test('related settings keep the original profile draft and return keyboard focus', async () => {
+  for (const label of ['Видимость', 'Оформление', 'Вход и сохранность аккаунта']) {
+    const f = fixture(); let child, saves = 0;
+    f.app.profile = { profileId: 'account-A', displayName: 'Synthetic profile', bio: '', interests: [], avatarColor: 'honey' };
+    f.app.openVisibility = () => { child = f.app.dialog('Видимость'); };
+    f.app.openAppearance = () => { child = f.app.dialog('Оформление'); };
+    f.app.options.openAccount = async tab => { assert.equal(tab, 'recovery'); child = f.app.dialog('Восстановление'); };
+    f.app.updateProfile = () => { saves++; };
+    f.app.openProfileEditor();
+    const parent = [...f.app.dialogs][0], form = parent.body.querySelector('form'), draft = form.querySelector('textarea');
+    draft.value = 'Unsaved draft';
+    const action = parent.body.querySelectorAll('button').find(node => node.textContent === label);
+    action.focus(); action.click(); await new Promise(resolve => setImmediate(resolve));
+    assert.ok(child?.element.open, label);
+    assert.equal(parent.element.open, true, label);
+    assert.equal(draft.value, 'Unsaved draft'); assert.equal(saves, 0);
+    child.close(); f.drain();
+    assert.equal(f.document.activeElement, action, label);
+    assert.equal(draft.value, 'Unsaved draft'); assert.equal(saves, 0);
+    f.app.openProfileEditor();
+    assert.equal([...f.app.dialogs].filter(item => item.element.open).length, 1, 'Do not open a second profile editor');
+    parent.close(); f.drain();
+    f.app.openProfileEditor();
+    assert.equal([...f.app.dialogs].filter(item => item.element.open).length, 1, 'A closed editor can be opened again');
+  }
+});
+
+test('related profile settings cannot open after account changes or a deferred recovery handoff becomes stale', async () => {
+  for (const label of ['Видимость', 'Оформление', 'Вход и сохранность аккаунта']) {
+    const f = fixture(); let calls = 0;
+    f.app.profile = { profileId: 'account-A', displayName: 'Synthetic profile', bio: '', interests: [], avatarColor: 'honey' };
+    f.app.openVisibility = f.app.openAppearance = () => { calls++; };
+    f.app.options.openAccount = async () => { calls++; };
+    f.app.openProfileEditor();
+    const parent = [...f.app.dialogs][0], action = parent.body.querySelectorAll('button').find(node => node.textContent === label);
+    f.app.accountGeneration += 2; action.click(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 0, label);
+  }
+  const f = fixture(); let calls = 0;
+  f.app.profile = { profileId: 'account-A', displayName: 'Synthetic profile', bio: '', interests: [], avatarColor: 'honey' };
+  f.app.options.openAccount = async () => { calls++; };
+  f.app.openProfileEditor();
+  const parent = [...f.app.dialogs][0];
+  parent.body.querySelectorAll('button').find(node => node.textContent === 'Вход и сохранность аккаунта').click();
+  f.app.accountGeneration += 2; await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 0);
+});
+
 test('removed Help and stale profile entries cannot run actions after close, account ABA or destruction', () => {
   for (const boundary of ['closed', 'account ABA', 'destroy']) {
     const f = fixture(); let calls = 0; f.app.afterNoteSaved = () => calls++;

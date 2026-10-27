@@ -130,6 +130,7 @@ class WorldApplication {
   private readonly dialogs = new Set<WorldDialog>();
   private appSettingsDialog: WorldDialog | null = null;
   private aiSettingsDialog: WorldDialog | null = null;
+  private profileEditorDialog: WorldDialog | null = null;
   private appSettingsRouteClose: ((resume: () => void) => void) | null = null;
   private coverDialog: WorldDialog | null = null;
   private coverHandle: ReturnType<typeof mountCoverEditor> | null = null;
@@ -3381,10 +3382,12 @@ class WorldApplication {
   }
 
   openProfileEditor(): void {
-    if (this.destroyed) return;
+    if (this.destroyed || this.profileEditorDialog?.element.open) return;
     const profile = this.profile; if (!profile) { this.runHook(this.options.openAccount); return; }
     const current = this.accountTask();
-    const dialog = this.dialog('Профиль'); const form = el('form');
+    const dialog = this.dialog('Профиль', () => { if (this.profileEditorDialog === dialog) this.profileEditorDialog = null; });
+    this.profileEditorDialog = dialog;
+    const form = el('form');
     const name = textInput(profile.displayName, 'Ваше имя', 80); name.required = true;
     const bio = el('textarea', 'sw-textarea'); bio.value = profile.bio; bio.maxLength = 400; bio.placeholder = 'Чем занимаетесь, что любите';
     const interests = textInput(profile.interests.join(', '), 'Фото, музыка, технологии', 240);
@@ -3426,7 +3429,14 @@ class WorldApplication {
         dialog.close(); this.toast('Профиль сохранён');
       }).catch(reason => { if (current() && dialog.element.open) error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
     });
-    const extra = el('div', 'sw-stack'); extra.append(button('Видимость', 'eye', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openVisibility(); }), button('Оформление', 'settings', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openAppearance(); }), button('Вход и сохранность аккаунта', 'lock', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(() => this.options.openAccount('recovery')); }), this.coreSupportLink()); dialog.body.append(form, el('hr', 'sw-rule'), extra);
+    const openRelated = (action: () => void): void => { if (current() && dialog.element.open) action(); };
+    const extra = el('div', 'sw-stack'); extra.append(
+      button('Видимость', 'eye', 'sw-button-quiet sw-button-wide', () => openRelated(() => this.openVisibility())),
+      button('Оформление', 'settings', 'sw-button-quiet sw-button-wide', () => openRelated(() => this.openAppearance())),
+      button('Вход и сохранность аккаунта', 'lock', 'sw-button-quiet sw-button-wide', () => openRelated(() => this.runHook(() => {
+        if (current() && dialog.element.open) return this.options.openAccount('recovery');
+      }))), this.coreSupportLink());
+    dialog.body.append(form, el('hr', 'sw-rule'), extra);
   }
 
   private colorPicker(current: string, change: (color: string) => void): HTMLElement {
