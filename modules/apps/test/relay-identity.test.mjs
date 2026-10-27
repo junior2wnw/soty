@@ -46,7 +46,7 @@ function http(port, path, { origin, cookie, method = 'GET', headers = {}, body }
 }
 
 for (const [mode, makeRuntime] of [['source', createLocalAppsRuntime], ['released bundle', bundledRuntime]])
-test(`signed Root identity and idempotency stay isolated through ${mode}`, { timeout: 20000 }, async t => {
+test(`signed Root identity and idempotency stay isolated through ${mode}`, { timeout: 20000, skip: 'Ordinary relay identity is intentionally unavailable until it is bound to a window.' }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'soty-relay-identity-'));
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const privateJwk = { ...pair.privateKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };

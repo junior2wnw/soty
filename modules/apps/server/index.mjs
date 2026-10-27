@@ -54,8 +54,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, connectorCurrent = () => false, onHeartbeat = () => {}, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false,
-  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity,
-  identitySignTimeoutMs = 8000, readAppGuide } = {}) {
+  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, readAppGuide } = {}) {
   assertApps(typeof allowCoverMigration === 'boolean', 'apps_cover_migration_configuration_invalid', 503);
   assertApps(coverDecoder === undefined || coverDecoder && typeof coverDecoder.decode === 'function'
     && typeof withCurrentContacts === 'function' && typeof withWorldAuthorityFence === 'function'
@@ -103,9 +102,6 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   assertApps(Array.isArray(scopedEmbedProfiles)&&scopedEmbedProfiles.length<=64&&typeof allowScopedEmbedMigration==='boolean'&&typeof allowSelectedResourceMigration==='boolean','app_scoped_configuration_invalid',503);
   scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);});
   assertApps(signSourceAuthority===undefined || typeof signSourceAuthority==='function','app_scoped_configuration_invalid',503);
-  assertApps(signRelayIdentity===undefined || typeof signRelayIdentity==='function','app_identity_configuration_invalid',503);
-  assertApps(Number.isSafeInteger(identitySignTimeoutMs) && identitySignTimeoutMs >= 1 && identitySignTimeoutMs <= 8000,
-    'app_identity_configuration_invalid', 503);
   assertApps(!scopedEmbedProfiles.some(profile=>isRootSignedWorkspaceSource(profile.sourceProfile)) || typeof signSourceAuthority==='function',
     'app_scoped_identity_witness_unavailable',503);
   assertApps(readAppGuide === undefined || typeof readAppGuide === 'function', 'app_guide_configuration_invalid', 500);
@@ -1258,9 +1254,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         'app_identity_request_invalid', 400);
       assertApps(session.decision.subject === 'account' && session.sessionKey && sessions.get(session.sessionKey) === session,
         'apps_authentication_required', 401);
-      const channel = channels.get(session.decision.route.connectorKey);
-      assertApps(channel?.bindingVersion === 2 && channel.relayIdentity === true && signRelayIdentity,
-        'app_identity_unavailable', 503);
+      // The ordinary ingress cookie is shared by same-origin windows. Until
+      // identity is bound to the originating window, signing it could silently
+      // change the person in an already-open app after another account enters.
+      assertApps(false, 'app_identity_window_unavailable', 503);
     }
     const stream = openStream(app, session, { kind: 'http', req, res });
     stream.requestPath=path;
@@ -1270,28 +1267,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     res.once('close', () => closeStream(stream, 'app_client_closed'));
     try {
       const headers=cleanHeaders(req.headers);if(selected&&req.headers.origin)headers.origin=req.headers.origin;
-      let identityWitness;
-      if (identityRequested) {
-        const original = stream.session.decision;
-        let timer, onClose;
-        try {
-          const stopped = new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new AppsError('app_identity_unavailable', 503)), identitySignTimeoutMs); timer.unref?.();
-            onClose = () => reject(new AppsError('app_access_revoked', 403)); res.once('close', onClose);
-            if (stream.closed) onClose();
-          });
-          identityWitness = await Promise.race([Promise.resolve().then(() => signRelayIdentity({ appId: app.id, accountId: original.actor.accountId,
-            method: req.method, path, expiresAt: original.expiresAt })), stopped]);
-        } finally { clearTimeout(timer); res.off('close', onClose); }
-        const current = sessionFor(req, app, { requireCookie: true }), fresh = checkStream(stream);
-        assertApps(current === session && sessions.get(session.sessionKey) === session && typeof identityWitness === 'string'
-          && identityWitness.length > 0 && identityWitness.length <= 8192 && fresh.actor?.accountId === original.actor.accountId
-          && fresh.actor?.deviceId === original.actor.deviceId && fresh.policyEpoch === original.policyEpoch
-          && fresh.targetRevision === original.targetRevision && fresh.targetDigest === original.targetDigest,
-          'app_access_revoked', 403);
-      }
-      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers,
-        ...(identityWitness ? { identityWitness } : {}) });
+      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers });
       let count = 0;
       for await (const chunk of req) { count += chunk.length; assertApps(count <= (route?route.requestBytes:LIMITS.requestBytes), 'app_request_too_large', 413); await sendChunks(stream, chunk); }
       sendStream(stream, { type: 'end', id: stream.id });
@@ -1961,7 +1937,8 @@ function respondFailure(req, res, status, error, page = {}) {
   // destroys the request, so advertising keep-alive would strand the next GET.
   if (!req.readableEnded && !res.headersSent) { res.shouldKeepAlive = false; res.setHeader('Connection', 'close'); }
   if (!String(req.headers.accept || '').includes('text/html')) {
-    const message = error === 'app_idempotency_key_unavailable' ? 'Обновите коннектор на устройстве приложения и повторите проверку.'
+    const message = error === 'app_identity_window_unavailable' ? 'Общий вход временно недоступен. Попробуйте позже.'
+      : error === 'app_idempotency_key_unavailable' ? 'Обновите коннектор на устройстве приложения и повторите проверку.'
       : error === 'app_idempotency_key_unsupported' ? 'Этот режим приложения не поддерживает передачу ключа операции.' : undefined;
     json(res, status, { ok: false, error, ...(message ? { message } : {}) }); return;
   }
