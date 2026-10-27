@@ -155,7 +155,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const searchLimitCopy = el('span', '', 'Показаны первые 256 результатов. Уточните поиск.'); searchLimitCopy.setAttribute('role', 'status');
   searchLimit.append(searchLimitCopy, button('Уточнить поиск', 'search', 'sw-button-quiet', () => searchInput.focus()));
   const undo = button('Отменить', 'back', 'uf-undo', () => run(engine?.undo())); undo.hidden = true;
-  host.append(loading, empty, feedback, toolbar, panControls, arrangeHint, more, undo); element.append(head, workspaceTools, localSearch, filters, searchLimit, ownAppsOverview, host);
+  const fieldChrome = el('div', 'uf-field-chrome'); fieldChrome.append(workspaceTools, ownAppsOverview);
+  host.append(loading, empty, feedback, toolbar, panControls, arrangeHint, more, undo); element.append(head, fieldChrome, localSearch, filters, searchLimit, host);
   const dialogs = new Set<WorldDialog>();
   const metadata = new Map<string, DirectoryEntity>(BUILTINS.map(item => [fieldEntityKey(item.entity), item]));
   let engine: UnifiedField | null = null, summary: UnifiedFieldSummary | null = null, state: FieldPersistenceState | null = null;

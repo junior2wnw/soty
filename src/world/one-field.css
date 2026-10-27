@@ -265,8 +265,10 @@ html[data-soty-keyboard=true] .sw-app[data-experience=one-field]:has(>.sw-main>.
 .of-workspace-control { position: relative; }
 .of-workspace-control[aria-current=page] { color: var(--sw-ink); background: var(--sw-surface-subtle); }
 .of-workspace-control>.sx-nav-unread { position: absolute; top: 1px; inset-inline-end: 1px; }
-.sw-app[data-experience=one-field] .uf-workspace-tools { --of-tools-top: 108px; position: absolute; z-index: 23; top: var(--of-tools-top); left: 34px; display: flex; gap: 4px; max-width: calc(100% - 68px); padding: 3px; border: 1px solid var(--sw-line); border-radius: 16px; background: var(--of-paper); }
-.sw-app[data-experience=one-field] .uf-screen:has(>.uf-own-apps:not([hidden]))>.uf-workspace-tools { position: relative; inset: auto; align-self: flex-start; margin: var(--of-tools-top) 34px 0; }
+.sw-app[data-experience=one-field] .uf-field-chrome { --of-tools-top: 108px; position: absolute; z-index: 23; top: var(--of-tools-top); left: 34px; right: 34px; display: flex; flex-direction: column; align-items: flex-start; pointer-events: none; }
+.sw-app[data-experience=one-field] .uf-field-chrome>* { pointer-events: auto; }
+.sw-app[data-experience=one-field] .uf-workspace-tools { display: flex; gap: 4px; max-width: 100%; padding: 3px; border: 1px solid var(--sw-line); border-radius: 16px; background: var(--of-paper); }
+.sw-app[data-experience=one-field] .uf-field-chrome>.uf-own-apps { max-width: 100%; padding: 8px 0; }
 .uf-workspace-tools>.sw-button { min-height: 44px; margin: 0; padding: 8px 12px; border: 0; border-radius: 12px; background: transparent; font-size: 13px; }
 .uf-workspace-tools[hidden],.uf-workspace-tools>[hidden] { display: none!important; }
 .uf-workspace-tools>:is(.uf-workspace-create,.uf-workspace-more) { display: none; }
@@ -276,14 +278,15 @@ html[data-soty-keyboard=true] .sw-app[data-experience=one-field]:has(>.sw-main>.
 .sw-app[data-experience=one-field] .uf-search-scope { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--sw-line); border-radius: 16px; background: var(--of-paper); }
 .uf-search-scope>.sw-button { flex: 1; min-width: 0; min-height: 44px; border: 0; border-radius: 12px; background: transparent; }
 .uf-search-scope>.sw-button[aria-pressed=true] { color: var(--sw-ink); background: var(--sw-surface-subtle); }
-.sw-app[data-experience=one-field] .uf-screen[data-search=open]>.uf-workspace-tools { display: none; }
+.sw-app[data-experience=one-field] .uf-screen[data-search=open] .uf-workspace-tools { display: none; }
 @media(max-width:720px) {
   .sw-app[data-experience=one-field]>.of-field-navigation { display: none; }
   .sw-app[data-experience=one-field]>.sw-mobile-nav { width: min(360px,calc(100% - 24px)); height: 64px; min-height: 64px; padding: 4px; border-radius: 22px; bottom: max(8px,env(safe-area-inset-bottom,0px)); }
   .sw-app[data-experience=one-field]>.sw-mobile-nav>.of-workspace-control { display: flex; flex: 1 1 0; flex-direction: column; justify-content: center; min-width: 0; min-height: 54px; padding: 3px 2px; gap: 3px; border: 0; border-radius: 16px; font-size: 11px; line-height: 14px; }
   .sw-app[data-experience=one-field]>.sw-mobile-nav>.of-workspace-control>.sw-icon { width: 21px; height: 21px; }
-  .sw-app[data-experience=one-field] .uf-workspace-tools { --of-tools-top: max(16px,env(safe-area-inset-top,0px)); left: 12px; top: var(--of-tools-top); right: 68px; max-width: none; display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 0; padding: 2px; }
-  .sw-app[data-experience=one-field] .uf-screen:has(>.uf-own-apps:not([hidden]))>.uf-workspace-tools { align-self: stretch; margin-inline: 12px 68px; }
+  .sw-app[data-experience=one-field] .uf-field-chrome { --of-tools-top: max(16px,env(safe-area-inset-top,0px)); left: 12px; right: 12px; }
+  .sw-app[data-experience=one-field] .uf-workspace-tools { width: calc(100% - 56px); max-width: none; display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 0; padding: 2px; }
+  .sw-app[data-experience=one-field] .uf-field-chrome>.uf-own-apps { padding: 6px 0; }
   .uf-workspace-tools>:is(.uf-workspace-create,.uf-workspace-more) { display: flex; }
   .uf-workspace-tools>.sw-button { grid-column: span 2; flex-direction: row; min-width: 0; min-height: 44px; padding: 4px; gap: 4px; font-size: 12px; line-height: 16px; }
   .uf-workspace-tools>.sw-button:nth-last-child(-n+2) { grid-column: span 3; }

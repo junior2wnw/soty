@@ -21,6 +21,9 @@
 .uf-screen button { -webkit-tap-highlight-color: transparent; }
 .uf-screen [hidden] { display: none !important; }
 .uf-screen :is(button,input):focus-visible { outline: 3px solid var(--sw-focus); outline-offset: 4px; }
+.uf-field-chrome { display: contents; }
+.uf-field-chrome>.uf-own-apps { order: 1; }
+.uf-screen>.uf-scene-host { order: 2; }
 .uf-own-apps { flex: none; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 8px 24px; }
 .uf-screen .uf-own-apps h2 { flex: none; margin: 0; color: var(--sw-muted); font-size: 13px; line-height: 18px; font-weight: 650; }
 .uf-own-apps-list { display: flex; min-width: 0; gap: 8px; overflow-x: auto; padding: 8px; scrollbar-width: thin; }
