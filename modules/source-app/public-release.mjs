@@ -9,6 +9,11 @@ import {SOURCE_APP_OUTPUTS,SOURCE_APP_COPY_FILES,SOURCE_SDK_TEXT_FILES,SOURCE_SD
 const fail=code=>{throw Object.assign(new Error(code),{code});};
 const need=(value,code='source_sdk_release_invalid')=>{if(!value)fail(code);};
 export const sourceSdkHash=bytes=>createHash('sha256').update(bytes).digest('hex');
+// Bound retained immutable URLs by total bytes and finite scan work; never recycle them.
+export function verifySourceSdkRetention(count,bytes){
+  need(Number.isSafeInteger(count)&&count>=0&&count<=SOURCE_SDK_LIMITS.archives
+    &&Number.isSafeInteger(bytes)&&bytes>=0&&bytes<=SOURCE_SDK_LIMITS.retainedBytes,'source_sdk_public_capacity');
+}
 const hex=value=>typeof value==='string'&&/^[a-f0-9]{64}$/u.test(value);
 const commit=value=>typeof value==='string'&&/^[a-f0-9]{40}$/u.test(value);
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)
@@ -169,9 +174,11 @@ export function verifyPublicSourceSdk(root,{requireContext=true}={}){
   for(const current of [sdkRoot,directory]){const stamp=lstatSync(current);need(stamp.isDirectory()&&!stamp.isSymbolicLink()&&realpathSync(current)===current,'source_sdk_public_layout_invalid');}
   need(readdirSync(sdkRoot).join(',')==='source-app','source_sdk_public_layout_invalid');
   const names=readdirSync(directory);need(names.includes('index.json')&&names.length<=SOURCE_SDK_LIMITS.archives+1,'source_sdk_public_layout_invalid');
+  let retainedBytes=0;
   for(const name of names){need(name==='index.json'||sourceSdkArchiveName('sdk/source-app/'+name),'source_sdk_public_layout_invalid');
     if(name==='index.json')continue;const file=join(directory,name),stamp=lstatSync(file);
     need(stamp.isFile()&&!stamp.isSymbolicLink()&&stamp.size<=SOURCE_SDK_LIMITS.archiveBytes,'source_sdk_public_layout_invalid');
+    retainedBytes+=stamp.size;verifySourceSdkRetention(names.length-1,retainedBytes);
     const bytes=readFileSync(file);need(name===sourceSdkHash(bytes)+'.tgz','source_sdk_archive_hash_mismatch');readSourceSdkArchive(bytes);}
   const path=join(resolve(root),'public',SOURCE_SDK_INDEX),stat=lstatSync(path);need(stat.isFile()&&!stat.isSymbolicLink()&&realpathSync(path)===path&&stat.size<=4096,'source_sdk_index_invalid');
   const index=parse(readFileSync(path));need(sourceSdkArchiveName(index?.artifact?.url?.slice(1))&&hex(index.artifact.sha256)

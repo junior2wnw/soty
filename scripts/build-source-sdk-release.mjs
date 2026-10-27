@@ -5,7 +5,7 @@ import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes} from 'node:crypto';
 import {SOURCE_SDK_FILES,SOURCE_SDK_TEXT_FILES,SOURCE_SDK_INDEX,SOURCE_SDK_LIMITS,sourceSdkArchiveName} from '../modules/source-app/package-contract.mjs';
-import {createSourceSdkArchive,readSourceSdkArchive,sourceSdkReleaseIndex,sourceSdkHash,sourceSdkSourceName,sourceSdkRuntimeLock,verifySourceSdkContext,verifyPublicSourceSdk} from '../modules/source-app/public-release.mjs';
+import {createSourceSdkArchive,readSourceSdkArchive,sourceSdkReleaseIndex,sourceSdkHash,sourceSdkSourceName,sourceSdkRuntimeLock,verifySourceSdkContext,verifyPublicSourceSdk,verifySourceSdkRetention} from '../modules/source-app/public-release.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const fail=code=>{throw Object.assign(new Error(code),{code});};
@@ -44,10 +44,14 @@ export async function buildSourceSdkRelease(){
     const stat=await lstat(destination);need(stat.isDirectory()&&!stat.isSymbolicLink()&&await realpath(destination)===destination,'source_sdk_public_layout_invalid');
     if(part==='sdk')need((await readdir(destination)).every(name=>name==='source-app'),'source_sdk_public_layout_invalid');}
   const existing=await readdir(destination);need(existing.every(name=>name==='index.json'||sourceSdkArchiveName('sdk/source-app/'+name)),'source_sdk_public_layout_invalid');
+  const archiveCount=existing.filter(name=>name.endsWith('.tgz')).length;let retainedBytes=0;
+  verifySourceSdkRetention(archiveCount,0);
   for(const name of existing){const path=join(destination,name),stat=await lstat(path);need(stat.isFile()&&!stat.isSymbolicLink(),'source_sdk_public_layout_invalid');
-    if(name!=='index.json'){need(stat.size<=SOURCE_SDK_LIMITS.archiveBytes,'source_sdk_archive_limit');const bytes=await readFile(path);
+    if(name!=='index.json'){need(stat.size<=SOURCE_SDK_LIMITS.archiveBytes,'source_sdk_archive_limit');retainedBytes+=stat.size;
+      verifySourceSdkRetention(archiveCount,retainedBytes);const bytes=await readFile(path);
       need(name===sourceSdkHash(bytes)+'.tgz','source_sdk_archive_hash_mismatch');readSourceSdkArchive(bytes);}}
-  need(existing.filter(name=>name.endsWith('.tgz')).length<SOURCE_SDK_LIMITS.archives||existing.includes(index.artifact.sha256+'.tgz'),'source_sdk_public_capacity');
+  const retained=existing.includes(index.artifact.sha256+'.tgz');
+  verifySourceSdkRetention(archiveCount+(retained?0:1),retainedBytes+(retained?0:archive.length));
   // Existing hash URLs are immutable. Never overwrite them with different bytes.
   const archivePath=join(destination,index.artifact.sha256+'.tgz');
   try{const prior=await lstat(archivePath);need(prior.isFile()&&!prior.isSymbolicLink()&&prior.size===archive.length,'source_sdk_immutable_conflict');

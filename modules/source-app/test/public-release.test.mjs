@@ -5,7 +5,7 @@ import {join,resolve,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {gzipSync,gunzipSync} from 'node:zlib';
 import {SOURCE_SDK_FILES,SOURCE_SDK_LIMITS} from '../package-contract.mjs';
-import {readSourceSdkArchive,sourceSdkReleaseIndex,verifySourceSdkIndex,verifySourceSdkContext,verifyPublicSourceSdk,sourceSdkRuntimeLock} from '../public-release.mjs';
+import {readSourceSdkArchive,sourceSdkReleaseIndex,verifySourceSdkIndex,verifySourceSdkContext,verifyPublicSourceSdk,sourceSdkRuntimeLock,verifySourceSdkRetention} from '../public-release.mjs';
 import {sdkFormatFixture} from './support/public-release.mjs';
 
 async function fixture(t){const directory=await mkdtemp(join(tmpdir(),'sdk-public-unit-'));
@@ -73,4 +73,29 @@ test('runtime shrinkwrap derives only exact frozen openid-client and two leaves;
   assert.equal(lock.packages['node_modules/oauth4webapi'].version,'3.8.8');assert.equal(Object.keys(lock.packages).length,4);
   for(const text of [bytes.toString().replace('lockfileVersion: \'9.0\'','lockfileVersion: \'future\''),
     bytes.toString().replace('  openid-client@6.8.4:\n    dependencies:\n      jose: 6.2.12','  openid-client@6.8.4:\n    dependencies:\n      jose: latest'),bytes.toString()+'\npackages:\n'])assert.throws(()=>sourceSdkRuntimeLock(f.pkg,Buffer.from(text)));
+});
+
+test('retained SDK capacity permits more than eight archives but bounds bytes and scan count',()=>{
+  assert.ok(SOURCE_SDK_LIMITS.archives>8);
+  assert.equal(SOURCE_SDK_LIMITS.retainedBytes,64*1024*1024);
+  assert.doesNotThrow(()=>verifySourceSdkRetention(9,9*SOURCE_SDK_LIMITS.archiveBytes));
+  assert.doesNotThrow(()=>verifySourceSdkRetention(SOURCE_SDK_LIMITS.archives,SOURCE_SDK_LIMITS.retainedBytes));
+  for(const [count,bytes]of [[1,SOURCE_SDK_LIMITS.retainedBytes+1],[SOURCE_SDK_LIMITS.archives+1,0],[-1,0],[1,NaN]])
+    assert.throws(()=>verifySourceSdkRetention(count,bytes),{code:'source_sdk_public_capacity'});
+});
+
+test('nine retained valid SDK archives verify without changing any immutable URL',async t=>{
+  const f=await fixture(t),context=join(f.directory,'retained'),directory=join(context,'public/sdk/source-app');
+  await mkdir(directory,{recursive:true});
+  const original=f.files.get('README.md'),retained=new Map();let index;
+  for(let i=0;i<9;i++){
+    const readme=Buffer.concat([original,Buffer.from('\nRetained synthetic release '+i+'\n')]);
+    f.files.set('README.md',readme);f.sources.set('modules/source-app/README.md',readme);
+    const archive=f.archive();index=sourceSdkReleaseIndex(archive);
+    const name=index.artifact.sha256+'.tgz';retained.set(name,archive);await writeFile(join(directory,name),archive);
+  }
+  assert.equal(retained.size,9);
+  await writeFile(join(directory,'index.json'),f.json(index));
+  assert.equal(verifyPublicSourceSdk(context,{requireContext:false}).ok,true);
+  for(const [name,archive]of retained)assert.deepEqual(await readFile(join(directory,name)),archive);
 });
