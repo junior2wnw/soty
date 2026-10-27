@@ -108,13 +108,26 @@ test('HTTP timeout and unknown lost stdout retain the failed stage and never rep
   });
 });
 
-test('a running exec cannot extend its original operation deadline or authorize a second execution', async t => {
-  const f=await fixture(t),request=f.api.request.bind(f.api);f.api.timeoutMs=90;
-  f.api.request=async(method,route,...rest)=>{const value=await request(method,route,...rest);return route.startsWith('/exec/')&&route.endsWith('/json')?{...value,Running:true}:value;};
-  const started=Date.now();
-  await assert.rejects(f.api.universalPreparedness(args.originalId),error=>{
-    const d=universalMeasurementDiagnostic(error);assert.equal(d.errorCategory,'exec_running_deadline');assert.equal(d.exec.running,true);assert.equal(d.deadlineMs,90);assert.equal(d.inspectPolls>=1,true);return true;});
-  assert.equal(Date.now()-started<500,true);assert.equal(f.calls.filter(c=>c.route.endsWith('/exec')).length,1);assert.equal(f.calls.filter(c=>c.route.endsWith('/start')&&c.route.startsWith('/exec/')).length,1);
+test('a running exec cannot extend its original operation deadline or authorize a second execution', { timeout: 2000 }, async t => {
+  let now=10000,command,inspections=0;const calls=[],execId='b'.repeat(64);
+  t.mock.method(Date,'now',()=>now);
+  const engine={timeoutMs:90,
+    async inspect(id,options){calls.push(['container',options.timeoutMs]);options.onStatus(200);now+=10;
+      return {Id:id,Image:args.originalImage,State:{Running:true,StartedAt:'fixed'}};},
+    async request(method,route,body,_raw,_limit,options){calls.push([route,options.timeoutMs]);options.onStatus(200);
+      if(method==='POST'&&route===`/containers/${args.originalId}/exec`){command=body.Cmd;now+=15;return {Id:execId};}
+      if(method==='POST'&&route===`/exec/${execId}/start`){now+=20;return frame(dto());}
+      if(method==='GET'&&route===`/exec/${execId}/json`){now+=++inspections===1?25:20;
+        return {ID:execId,ContainerID:args.originalId,Running:true,ExitCode:0,
+          ProcessConfig:{privileged:false,tty:false,entrypoint:command[0],arguments:command.slice(1)}};}
+      throw Error('unexpected_docker_request');
+    }};
+  await assert.rejects(DockerApi.prototype.universalPreparedness.call(engine,args.originalId),error=>{
+    const d=universalMeasurementDiagnostic(error);assert.equal(error.code,'universal_measurement_unresolved');
+    assert.equal(d.errorCategory,'exec_running_deadline');assert.equal(d.exec.running,true);assert.equal(d.deadlineMs,90);
+    assert.equal(d.elapsedMs,90);assert.equal(d.inspectPolls,2);return true;});
+  assert.deepEqual(calls,[['container',90],[`/containers/${args.originalId}/exec`,80],
+    [`/exec/${execId}/start`,65],[`/exec/${execId}/json`,45],[`/exec/${execId}/json`,20]]);
 });
 
 test('untrusted error properties cannot manufacture a journal-safe measurement diagnostic',()=>{
