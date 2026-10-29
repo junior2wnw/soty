@@ -90,7 +90,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   if (!entry.intent && hostEntry.rejectedTyped && window.location.href === entryInput)
     throw Object.assign(Error('The connection link contains unsupported parameters'), { code: 'connection_route_invalid' });
   const offeredConnection = entry.intent ?? hostEntry.connection;
-  let ownedConnection = offeredConnection && ['profile', 'community', 'application'].includes(offeredConnection.kind) ? offeredConnection : null;
+  let ownedConnection = offeredConnection && ['profile', 'community', 'application', 'contact', 'device'].includes(offeredConnection.kind) ? offeredConnection : null;
   let ownedRoute: string | null = null;
   // A typed cold continuation owns its destination. A normal deep link owns
   // only the original URL; Back/Forward to another route is a newer intent.
@@ -401,7 +401,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (!entryCurrent() || window.location.href !== ownedRoute) return;
     await entryWorld.refresh();
     if (!entryCurrent() || window.location.href !== ownedRoute) return;
-    await entryWorld.followConnection(ownedConnection);
+    if (ownedConnection.kind === 'contact' || ownedConnection.kind === 'device') await openAccount('people', ownedConnection);
+    else await entryWorld.followConnection(ownedConnection);
   } else if (entry.intent) {
     if (!entryCurrent()) return;
     if (entry.intent.kind === 'contact' || entry.intent.kind === 'device') await openAccount('people', entry.intent);
@@ -409,9 +410,6 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       if (!entryCurrent()) throw Error('connection_entry_changed');
       window.location.assign(takeConnectionNavigation(entry.intent!, window.location.origin, entry.handoff));
     });
-  } else {
-    const initial = parseConnectionIntent(entryInput, window.location.origin);
-    if ((initial?.kind === 'contact' || initial?.kind === 'device') && entryCurrent()) await openConnections(entryInput);
   }
   const actionUrl = new URL(window.location.href);
   if (actionUrl.searchParams.get('action') === 'connect-device') {

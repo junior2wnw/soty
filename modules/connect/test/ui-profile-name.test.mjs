@@ -176,6 +176,7 @@ test('the approving device shows the bound account and needs only its one explic
     approveEnrollment: async (...args) => { calls.push(args); } };
   const f = panelFixture(client, { initialIntent: { kind: 'device', id: requestId } });
   await until(() => f.content.querySelector('[data-approve]') && f.content.getAttribute('aria-busy') === 'false');
+  assert.equal(f.dialog.querySelector('h2').textContent, 'Подтвердить вход');
   assert.equal(f.dialog.querySelector('nav').hidden, true); assert.equal(calls.length, 0);
   await f.content.querySelector('[data-approve]').handlers.get('click')({ preventDefault() {} });
   assert.deepEqual(calls, [[requestId, 'original-account']]); assert.equal(f.dialog.open, false);
