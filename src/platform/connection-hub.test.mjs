@@ -106,6 +106,53 @@ test('known account bypasses registration and does not open media or a new local
   assert.equal(f.calls.bootstrap, 0); assert.equal(f.calls.acquire, 0); assert.equal(f.host.children.length, 0);
 });
 
+test('a new device opens its automatically saved account without an entry screen or a click', async t => {
+  const f = fixture(t, { state: fakeState(null, null) });
+  const ready = f.ensure(); await until(() => f.calls.bootstrap === 1);
+  const result = await ready;
+  assert.equal(result.state.accountId, 'acct_created'); assert.equal(result.intent, null);
+  assert.equal(f.calls.bootstrap, 1); assert.equal(f.calls.acquire, 0);
+  assert.equal(f.host.children.length, 0); assert.equal(f.records.length, 0);
+});
+
+test('automatic entry leaves saved profiles and incomplete device transfers for explicit account selection', async t => {
+  for (const saved of [
+    { pendingEnrollment: { requestId: REQUEST, label: 'Second device' } },
+    { pendingRecovery: { accountId: 'acct_saved', recoveryId: 'recovery_saved' } },
+    { profiles: [{ accountId: 'acct_saved', deviceId: 'dev_saved', revoked: false }] },
+  ]) {
+    const abort = new AbortController(), f = fixture(t, { state: { ...fakeState(null, null), ...saved } });
+    const ready = f.ensure({ signal: abort.signal });
+    await until(() => f.host.children.length > 0);
+    assert.equal(f.calls.bootstrap, 0); abort.abort();
+    await assert.rejects(ready, { code: 'ACTIVE_PROFILE_CHANGED' });
+  }
+});
+
+test('automatic entry requires a durable account and never turns a failed creation into an entry choice', async t => {
+  for (const failure of ['unconfirmed', 'network']) {
+    let attempts = 0;
+    const expected = new TypeError('Synthetic registration connection failure');
+    const f = fixture(t, { client: {
+      getLocalState: async () => fakeState(null, null),
+      async bootstrap() { attempts++; if (failure === 'network') throw expected; return { accountId: 'not_saved' }; },
+    } });
+    await assert.rejects(f.ensure(), failure === 'network' ? error => error === expected : /connection_account_unconfirmed/u);
+    assert.equal(attempts, 1); assert.equal(f.host.children.length, 0);
+  }
+});
+
+test('automatic entry cannot continue after its page is closed during account creation', async t => {
+  const created = deferred(); let saved = fakeState(null, null), attempts = 0;
+  const f = fixture(t, { client: {
+    getLocalState: async () => saved,
+    async bootstrap() { attempts++; await created.promise; saved = fakeState('acct_created', 'dev_created'); },
+  } });
+  const ready = f.ensure(); await until(() => attempts === 1);
+  f.invalidate(); created.resolve();
+  await assert.rejects(ready, { code: 'ACTIVE_PROFILE_CHANGED' }); assert.equal(f.host.children.length, 0);
+});
+
 test('camera acquisition is explicit; show and paste never request capture or bootstrap', async t => {
   const f = fixture(t); f.mount(); await until(() => f.calls.cards.length === 1);
   assert.equal(f.calls.acquire, 0); assert.equal(f.calls.bootstrap, 0);
@@ -331,7 +378,7 @@ async function realConnect(t) {
       await owner.extension('platform.admission.update', { requestId: 'policy_hub_fixture', expectedRevision: 0, inviteOnly: true, defaultQuota: 3 }, { expectedAccountId: ownerAccountId }); } };
 }
 
-test('genuine cold entry: invite-only existing-profile enrollment precedes bootstrap, preserves pending intent and survives lost finish ACK/reload/revoke', async t => {
+test('invite-only entry keeps existing-account recovery available after denied registration, including lost ACK/reload/revoke', async t => {
   const real = await realConnect(t), owner = real.client(), recipient = real.client();
   const original = await owner.client.bootstrap('Owner'); await real.inviteOnly(original.accountId, owner.client);
   const before = real.traffic.filter(op => op === 'bootstrap').length;
@@ -344,14 +391,14 @@ test('genuine cold entry: invite-only existing-profile enrollment precedes boots
   } } });
   const ready = f.ensure({ initialInput: contact }); let earlyFailure = null; void ready.catch(error => { earlyFailure = error; });
   await until(() => earlyFailure || descendants(f.host).some(node => node.textContent === 'Добавить человека'));
-  assert.equal(earlyFailure, null, 'existing-profile cold entry must not attempt new-account bootstrap');
-  assert.equal(real.traffic.filter(op => op === 'bootstrap').length, before);
+  assert.equal(earlyFailure, null, 'denied registration must not lock an existing account out of recovery');
+  assert.equal(real.traffic.filter(op => op === 'bootstrap').length, before + 1);
   // The first button belongs to the typed preview; its account action is explicit.
   const previewAction = descendants(f.host).find(node => node.tagName === 'BUTTON' && node.textContent === 'Открыть мой профиль'); previewAction.click();
   await until(() => descendants(f.host).some(node => node.tagName === 'BUTTON' && node.textContent === 'Продолжить'));
   f.find('Продолжить').click(); const result = await ready;
   assert.equal(result.state.accountId, original.accountId); assert.equal(result.intent.kind, 'contact'); assert.equal(result.intent.id, CARD);
-  assert.equal(real.traffic.filter(op => op === 'bootstrap').length, before);
+  assert.equal(real.traffic.filter(op => op === 'bootstrap').length, before + 1);
   const reloaded = real.client(recipient.store).client, confirmed = await reloaded.getLocalState();
   assert.equal(confirmed.accountId, original.accountId); assert.notEqual(confirmed.deviceId, original.deviceId);
   const quotas = await owner.client.extension('platform.invites.list', {}, { expectedAccountId: original.accountId }); assert.equal(quotas.used, 0);
@@ -370,14 +417,51 @@ test('genuine explicit new profile retains invite-only admission and never silen
   assert.equal(real.traffic.includes('enrollment.start'), false); handle.dispose();
 });
 
-test('genuine new-account registration happens only after the explicit create action and a durable reread', async t => {
+test('genuine new-account registration automatically commits once and is reused on the next opening', async t => {
   const real = await realConnect(t), newcomer = real.client(), f = fixture(t, { client: newcomer.client });
-  const ready = f.ensure(); await until(() => descendants(f.host).some(node => node.tagName === 'BUTTON' && node.textContent === 'Создать новый профиль' && !node.hidden));
-  assert.equal(real.traffic.includes('bootstrap'), false);
-  f.find('Создать новый профиль').click(); const result = await ready;
+  const ready = f.ensure(); await until(() => real.traffic.includes('bootstrap')); const result = await ready;
   assert.ok(result.state.accountId); assert.equal(result.intent, null);
   assert.equal((await newcomer.client.getLocalState()).accountId, result.state.accountId);
+  const reopened = fixture(t, { client: real.client(newcomer.store).client });
+  assert.equal((await reopened.ensure()).state.accountId, result.state.accountId);
   assert.equal(real.traffic.filter(op => op === 'bootstrap').length, 1);
+  assert.equal(f.host.children.length, 0); assert.equal(reopened.host.children.length, 0);
+});
+
+test('automatic entry resumes its existing device after a lost bootstrap acknowledgement', async t => {
+  const real = await realConnect(t), newcomer = real.client(); real.lose('bootstrap');
+  const first = fixture(t, { client: newcomer.client });
+  await assert.rejects(first.ensure(), { code: 'NETWORK_ERROR' });
+  const pending = await newcomer.client.getLocalState();
+  assert.equal(pending.accountId, null); assert.ok(pending.deviceId);
+  const reloaded = real.client(newcomer.store).client, next = fixture(t, { client: reloaded });
+  const opened = await next.ensure();
+  assert.equal(opened.state.deviceId, pending.deviceId); assert.ok(opened.state.accountId);
+  assert.equal(opened.state.profiles.length, 1);
+  assert.equal((await reloaded.status()).accountId, opened.state.accountId);
+  assert.equal(first.host.children.length, 0); assert.equal(next.host.children.length, 0);
+});
+
+test('an automatic account can recover an existing account while both devices and both saved profiles retain their data', async t => {
+  const real = await realConnect(t), first = real.client(), second = real.client();
+  const old = await first.client.bootstrap('First device');
+  await first.client.saveVault({ marker: 'Existing account data' });
+  const f = fixture(t, { client: second.client });
+  const ready = f.ensure(); await until(() => real.traffic.filter(op => op === 'bootstrap').length === 2);
+  const automatic = (await ready).state; assert.notEqual(automatic.accountId, old.accountId);
+  await second.client.saveVault({ marker: 'Automatic account data' });
+  const kit = await first.client.prepareRecovery(); await first.client.confirmRecovery(kit);
+  const recovered = await second.client.recover(kit, 'Second device');
+  assert.equal(recovered.accountId, old.accountId); assert.notEqual(recovered.deviceId, old.deviceId);
+  assert.equal((await first.client.status()).accountId, old.accountId);
+  assert.equal((await second.client.status()).accountId, old.accountId);
+  assert.equal((await second.client.loadVault()).payload.marker, 'Existing account data');
+  const reloaded = real.client(second.store).client;
+  assert.equal((await reloaded.getLocalState()).profiles.length, 2);
+  assert.equal((await reloaded.status()).accountId, old.accountId);
+  await reloaded.switchProfile(automatic.accountId);
+  assert.equal((await reloaded.loadVault()).payload.marker, 'Automatic account data');
+  assert.equal((await first.client.status()).accountId, old.accountId);
 });
 
 

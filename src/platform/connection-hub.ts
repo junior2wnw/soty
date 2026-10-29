@@ -328,11 +328,23 @@ export function openConnectionHub(options: ConnectionHubOptions): { close(): voi
   return { close: () => dialog.close(), closed, ready: handle.ready };
 }
 
-/** Both shells must await this before their first automatic bootstrap. */
+/** A new device opens immediately; saved profiles and transfers keep their explicit recovery path. */
 export async function ensureConnectionAccount(host: HTMLElement, options: ConnectionHubOptions): Promise<ConnectionEntryResult> {
   if (!options.isCurrent() || options.signal?.aborted) throw stale();
-  const state = checkedState(await options.client.getLocalState());
+  let state = checkedState(await options.client.getLocalState());
   if (!options.isCurrent() || options.signal?.aborted) throw stale();
+  if (!state.accountId && !state.profiles.length && !state.pendingEnrollment && !state.pendingRecovery) {
+    let invitationRequired = false;
+    try { await options.client.bootstrap('Мои соты'); }
+    catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'platform_invitation_required')) throw error;
+      invitationRequired = true;
+    }
+    if (!options.isCurrent() || options.signal?.aborted) throw stale();
+    state = checkedState(await options.client.getLocalState());
+    if (!options.isCurrent() || options.signal?.aborted) throw stale();
+    if (!state.accountId && !invitationRequired) throw new Error('connection_account_unconfirmed');
+  }
   if (state.accountId) return { state, intent: null };
   const page = el('main', 'connection-hub-entry'); host.replaceChildren(page);
   const handle = mountConnectionHub(page, { ...options, entry: true });
