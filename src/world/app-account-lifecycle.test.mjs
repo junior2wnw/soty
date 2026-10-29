@@ -70,6 +70,15 @@ const fieldDirectoryCompiled = ts.transpileModule(await readFile(new URL('./fiel
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const turn = () => new Promise(resolve => setImmediate(resolve));
+async function until(predicate, message) {
+  const deadline = performance.now() + 5000;
+  while (!predicate()) { assert.ok(performance.now() < deadline, message); await turn(); }
+}
+async function submitChat(composer) {
+  composer.requestSubmit();
+  assert.equal(composer.getAttribute('aria-busy'), 'true', 'the ready composer starts the submission');
+  await until(() => composer.getAttribute('aria-busy') === 'false', 'the submission reaches its success or error state');
+}
 const failure = code => Object.assign(new Error(code), { code });
 // Inline declarations used by the actual mounted controls; no layout or CSS parsing is simulated.
 function stylePort() {
@@ -1780,7 +1789,7 @@ for (const route of ['chat', 'app']) test(`cold ${route} link replays pending fi
   } else f.app.openApplication = () => navigation.promise;
   const refreshing = f.app.refresh();
   try {
-    for (let i = 0; i < 50 && h.local()?.pending.length; i++) await turn();
+    await until(() => h.local()?.pending.length === 0, 'background pending replay does not wait for the cold route');
     assert.equal(h.local().pending.length, 0, 'background pending replay does not wait for the cold route');
     assert.deepEqual(h.remote().document, document); assert.deepEqual(h.operations, ['world.field.get', 'world.field.put']);
   } finally {
@@ -2891,9 +2900,12 @@ for (const claimSucceeds of [false, true]) test(`chat attachment with unavailabl
     canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
     async request(action, args) { if (action === 'list') return { messages: [], hasMore: false }; if (action === 'send') { events.push('send'); return { message: { messageId: 'message_file', clientId: args.clientId, seq: 1, text: args.text, author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false } }; } throw Error(`Unexpected action ${action}`); }, setUnread() {} };
   const parent = f.makeElement('div'); f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
-  await turn(); await turn(); failing = true; parent.querySelector('.sw-composer').requestSubmit(); await turn(); await turn();
-  assert.deepEqual(events, claimSucceeds ? ['claim', 'send', 'ack'] : ['claim']);
-  f.app.chatCleanup();
+  try {
+    await f.app.chatDraftSession.ready;
+    assert.equal(parent.querySelector('textarea').disabled, false);
+    failing = true; await submitChat(parent.querySelector('.sw-composer'));
+    assert.deepEqual(events, claimSucceeds ? ['claim', 'send', 'ack'] : ['claim']);
+  } finally { f.app.chatCleanup(); }
 });
 
 for (const retryFrom of ['first', 'second']) for (const variant of ['different', 'identical-edited', 'identical-unchanged']) {
@@ -2916,9 +2928,10 @@ for (const retryFrom of ['first', 'second']) for (const variant of ['different',
     async request(action,args){if(action==='list')return {messages:[],hasMore:false};if(action==='send'){sends.push(args.clientId);const result=call(actor,'chat.send',{communityId:room,clientId:args.clientId,text:args.text,replyTo:args.replyTo});if(lost){lost=false;throw Object.assign(Error('Synthetic lost ACK'),{code:'NETWORK_ERROR'});}return result;}throw Error(`Unexpected action ${action}`);}};
   const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});
   try {
-    await turn();p1.querySelector('.sw-composer').requestSubmit();await turn();await turn();assert.equal(sends.length,1);
+    await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
+    await submitChat(p1.querySelector('.sw-composer'));assert.equal(sends.length,1);
     const input2=p2.querySelector('textarea');input2.value=nextText;if(variant!=='identical-unchanged')input2.emit('input');
-    (retryFrom==='first'?p1:p2).querySelector('.sw-composer').requestSubmit();await turn();await turn();
+    await submitChat((retryFrom==='first'?p1:p2).querySelector('.sw-composer'));
     assert.equal(sends.length,2);assert.equal(sends[1],sends[0]);
     assert.deepEqual(call(peer,'chat.list',{communityId:room}).messages.map(m=>m.text),['Первое сообщение']);
     assert.equal(second.app.chatDrafts.read('account-A',room).text,nextText);
@@ -2937,14 +2950,16 @@ for (const conflict of [false,true]) test(`old chat pending survives new queue s
   f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=()=>({ready:Promise.resolve(),canSend:()=>false,refs:()=>[],pendingIntent:()=>pending,acceptedIntent:()=>null,close(){},
     async prepareSend(value){events.push('claim');if(!pending)pending={clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]};return {state:'pending',intent:pending};},async acknowledge(_ids,value){events.push('ack');if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}});
   const target={kind:'community',id:'legacy_room',draftKey:'legacy_room',name:'Legacy',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push('send:'+args.clientId);return {message:{messageId:'message_'+args.clientId,clientId:args.clientId,seq:events.length,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
-  if(!conflict){assert.deepEqual(events,['claim']);assert.equal(pending.clientId,'legacy_intent');}
-  else {assert.deepEqual(events,[]);parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
-    assert.deepEqual(events,['claim','send:other_intent','ack']);assert.equal(pending,null);assert.equal(drafts.read('account-A','legacy_room').pending.clientId,'legacy_intent');
-    assert.equal(drafts.read('account-A','legacy_room').text,'Legacy text');assert.match(f.app.lastToast,/прежнее сообщение/u);
-    parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
-    assert.deepEqual(events,['claim','send:other_intent','ack','claim','send:legacy_intent','ack']);assert.equal(drafts.read('account-A','legacy_room').pending,null);}
-  f.app.chatCleanup();
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});
+  try {
+    await f.app.chatDraftSession.ready;
+    if(!conflict){await until(()=>pending?.clientId==='legacy_intent','the old intent is durably claimed');assert.deepEqual(events,['claim']);assert.equal(pending.clientId,'legacy_intent');}
+    else {assert.deepEqual(events,[]);await submitChat(parent.querySelector('.sw-composer'));
+      assert.deepEqual(events,['claim','send:other_intent','ack']);assert.equal(pending,null);assert.equal(drafts.read('account-A','legacy_room').pending.clientId,'legacy_intent');
+      assert.equal(drafts.read('account-A','legacy_room').text,'Legacy text');assert.match(f.app.lastToast,/прежнее сообщение/u);
+      await submitChat(parent.querySelector('.sw-composer'));
+      assert.deepEqual(events,['claim','send:other_intent','ack','claim','send:legacy_intent','ack']);assert.equal(drafts.read('account-A','legacy_room').pending,null);}
+  } finally { f.app.chatCleanup(); }
 });
 
 test('history acknowledgement clears the shared old intent without erasing a different locally retained one', async () => {
@@ -2969,11 +2984,14 @@ test('chat recreates the shared queue after an initial IndexedDB open failure wi
   const makeBox=f.ports['./attachment-outbox.mjs'].createAttachmentOutbox;let attempts=0;
   f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=options=>{attempts++;if(attempts===1)return {ready:Promise.reject(Object.assign(Error('Synthetic IDB open failure'),{code:'attachment_local_storage'})),canSend:()=>false,pendingIntent:()=>null,acceptedIntent:()=>null,close(){events.push('close failed');}};return makeBox(options);};
   const target={kind:'community',id:'room_recover',draftKey:'room_recover',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push('send:'+args.clientId);return {message:{messageId:'message_recovered',clientId:args.clientId,seq:1,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
-  assert.equal(attempts,1);assert.equal(parent.querySelector('textarea').value,'Keep and send');assert.equal(parent.querySelector('.sw-error').textContent,'chat_local_storage_unavailable');
-  parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
-  assert.equal(attempts,2);assert.deepEqual(events,['close failed','send:after_idb_recovery']);assert.equal(drafts.read('account-A','room_recover').pending,null);assert.equal(drafts.read('account-A','room_recover').text,'');
-  f.app.chatCleanup();
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});
+  try {
+    await f.app.chatDraftSession.ready;
+    await until(()=>parent.querySelector('.sw-error').textContent==='chat_local_storage_unavailable','the queue open failure is visible');
+    assert.equal(attempts,1);assert.equal(parent.querySelector('textarea').value,'Keep and send');assert.equal(parent.querySelector('.sw-error').textContent,'chat_local_storage_unavailable');
+    await submitChat(parent.querySelector('.sw-composer'));
+    assert.equal(attempts,2);assert.deepEqual(events,['close failed','send:after_idb_recovery']);assert.equal(drafts.read('account-A','room_recover').pending,null);assert.equal(drafts.read('account-A','room_recover').text,'');
+  } finally { f.app.chatCleanup(); }
 });
 
 test('queue reopening restores its earlier pending ID and retains the other local pending send', async () => {
