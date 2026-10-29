@@ -56,6 +56,7 @@ function fixture(
   t,
   { limit = 10, timeout = 100, query = () => ({ text: 'private synthetic result' }), fence } = {},
 ) {
+  const clock = () => 1_800_000_000_000;
   const parent = realpathSync(tmpdir()),
     directory = realpathSync(mkdtempSync(join(parent, 'soty-query-'))),
     file = join(directory, 'capabilities.sqlite');
@@ -79,6 +80,7 @@ function fixture(
     createCapabilitiesService({
       databasePath: file,
       projectId: 'query-test',
+      clock,
       actorActive: (actor) =>
         active && actor.accountId === OWNER.accountId && actor.deviceId === OWNER.deviceId,
       catalog: [{ ...CAP, executionEnabled: !paused }],
@@ -100,7 +102,7 @@ function fixture(
       resources: CAP.resources,
       effects: [],
       recipients: CAP.recipients,
-      expiresAt: Date.now() + 600000,
+      expiresAt: clock() + 600000,
       budget: { unit: 'invocations', limit },
     }).grant,
     credential = call('credentials.issue', { grantId: grant.id, audience: AUDIENCE });
