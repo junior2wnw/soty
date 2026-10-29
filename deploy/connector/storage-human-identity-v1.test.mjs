@@ -82,7 +82,7 @@ test('old v3/v4 readers refuse v5 evidence, while the current image reads histor
   assertStorageCompatible(image(reader4), v4); assertStorageCompatible(image(reader3), v3);
   assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'rooms', 'world']);
   assert.equal(JSON.parse(currentStorageReaders).version, 7);
-  assert.deepEqual(storageReaders(image()).connect, [3, 4]);
+  assert.deepEqual(storageReaders(image()).connect, [3, 4, 5]);
   for (const changed of [undefined, [], [4], ['1'], [1, 1]]) {
     const manifest = JSON.parse(currentStorageReaders); if (changed === undefined) delete manifest.readers.humanIdentity; else manifest.readers.humanIdentity = changed;
     assert.throws(() => storageReaders(image(JSON.stringify(manifest))), /storage_reader_unknown/u);

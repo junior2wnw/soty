@@ -109,7 +109,7 @@ test('v3 images cannot start new stores even when a container copies v4 labels; 
   }
   assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'rooms', 'world']);
   assert.equal(JSON.parse(currentStorageReaders).version, 7);
-  assert.deepEqual(storageReaders(image()).connect, [3, 4]);
+  assert.deepEqual(storageReaders(image()).connect, [3, 4, 5]);
 });
 
 test('v4 format/readers and start receipts are closed, typed and never silently downgraded to v3', () => {

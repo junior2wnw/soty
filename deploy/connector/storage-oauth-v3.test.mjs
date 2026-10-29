@@ -203,7 +203,7 @@ test('literal3 has all 64 pinned SQL objects and matches the committed baseline3
 test('all twelve independent store pairs are read-only; current image reads3 while image2 remains incompatible', async t => {
   const declared = JSON.parse(currentStorageReaders);
   assert.equal(declared.version, 7);
-  assert.deepEqual(declared.readers.connect, [3, 4]);
+  assert.deepEqual(declared.readers.connect, [3, 4, 5]);
   assert.deepEqual(declared.readers.apps, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   assert.deepEqual(declared.readers.world, [6, 7]);
   const independent = JSON.parse(reader3).readers;
