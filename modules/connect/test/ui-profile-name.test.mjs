@@ -181,3 +181,19 @@ test('the approving device shows the bound account and needs only its one explic
   await f.content.querySelector('[data-approve]').handlers.get('click')({ preventDefault() {} });
   assert.deepEqual(calls, [[requestId, 'original-account']]); assert.equal(f.dialog.open, false);
 });
+
+test('an immediate file choice is handled while the initial QR request is still pending', async () => {
+  let release; const request = new Promise(resolve => { release = resolve; }); let recoveries = 0;
+  const client = { getLocalState: async () => ({ accountId: 'automatic', deviceId: 'device', localRevision: 1, profiles: [] }),
+    startEnrollment: () => request, recover: async () => { recoveries++; return { accountId: 'existing' }; } };
+  const f = panelFixture(client, { initialTab: 'connect' });
+  try {
+    await until(() => f.content.querySelector('[data-entry-file]') && f.content.getAttribute('aria-busy') === 'false');
+    assert.equal(f.content.inert, false);
+    const file = f.content.querySelector('[data-entry-file]');
+    f.dialog.handlers.get('cancel')({ target: file });
+    file.files = [{ size: 20, text: async () => JSON.stringify({ fixture: true }) }];
+    await file.handlers.get('change')({ preventDefault() {} });
+    assert.equal(recoveries, 1); assert.equal(f.dialog.open, false); assert.equal(file.value, '');
+  } finally { f.panel.close(); release({ requestId: 'enroll_' + 'z'.repeat(32), expiresAt: Date.now() + 60000 }); }
+});

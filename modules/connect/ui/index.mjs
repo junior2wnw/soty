@@ -80,15 +80,16 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
   const note = text => { if (!stopped) message.textContent = text; };
   const guard = fn => async event => {
     event?.preventDefault(); if (busy || stopped || !dialog.open) return;
-    busy = true; content.setAttribute('aria-busy', 'true');
-    const buttons = [...content.querySelectorAll('button')]; buttons.forEach(b => b.disabled = true);
+    busy = true; content.setAttribute('aria-busy', 'true'); content.inert = true; dialog.querySelector('nav').inert = true;
+    const buttons = [...content.querySelectorAll('button')].map(button => [button, button.disabled]); buttons.forEach(([button]) => button.disabled = true);
     try {
       if (local?.accountId && (await client.getLocalState()).accountId !== local.accountId) {
         note(errors.active_profile_changed); await render(); return;
       }
       await fn(event);
     } catch (error) { note(friendly(error)); }
-    finally { busy = false; content.setAttribute('aria-busy', 'false'); buttons.forEach(b => { if (b.isConnected) b.disabled = false; }); }
+    finally { busy = false; content.setAttribute('aria-busy', 'false'); content.inert = false; dialog.querySelector('nav').inert = false;
+      buttons.forEach(([button, disabled]) => { if (button.isConnected) button.disabled = disabled; }); }
   };
   const on = (selector, fn) => content.querySelector(selector)?.addEventListener('click', guard(fn));
   const download = (filename, data) => {
@@ -103,7 +104,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
   function stopEntry() { deviceEntry?.stop(); deviceEntry = null; entryLifetime?.abort(); entryLifetime = null; }
   function stop() { platformInvitations?.destroy(); stopped = true; stopEntry(); dialog.remove(); if (previousFocus?.isConnected) previousFocus.focus(); }
   dialog.querySelector('[data-close]').addEventListener('click', () => { stopEntry(); dialog.close(); });
-  dialog.addEventListener('cancel', stopEntry);
+  dialog.addEventListener('cancel', event => { if (event.target === dialog) stopEntry(); });
   dialog.addEventListener('close', stop);
   dialog.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', guard(async () => { intent = null; tab = button.dataset.tab; await render(); })));
   async function refresh() {
@@ -225,10 +226,12 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       const resume = async () => { if (current()) await startQr(); };
       mountCredentialLogin(content.querySelector('[data-credential-login]'), { client, label: deviceLabel(), guard, begin, resume, signal: lifetime.signal, onComplete: complete });
       content.querySelector('[data-entry-file]').addEventListener('change', guard(async () => {
-        const kit = await readFile('[data-entry-file]'); if (!current()) return;
-        begin(); try { await client.recover(kit, deviceLabel(), { signal: lifetime.signal }); complete(); }
-        catch (error) { await resume(); throw error; }
-        finally { const input = content.querySelector('[data-entry-file]'); if (input) input.value = ''; }
+        const input = content.querySelector('[data-entry-file]');
+        try {
+          const kit = await readFile('[data-entry-file]'); if (!current()) return;
+          begin(); try { await client.recover(kit, deviceLabel(), { signal: lifetime.signal }); complete(); }
+          catch (error) { await resume(); throw error; }
+        } finally { if (input) input.value = ''; }
       }));
       on('[data-known-profiles]', async () => { tab = 'profiles'; await render(); });
       let expired = false;
@@ -256,7 +259,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
         });
         deviceEntry = watcher; await watcher.ready;
       }
-      await startQr();
+      void startQr().catch(error => { if (current()) note(friendly(error)); });
     } else if (tab === 'devices') {
       content.innerHTML = `<h3>Доступ к этому аккаунту</h3><p>Каждое устройство входит со своим ключом. Прежний аккаунт можно открыть здесь по QR.</p>
         <button data-enroll>Открыть прежний профиль здесь</button><div data-qr></div><div data-devices></div>
