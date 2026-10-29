@@ -461,13 +461,20 @@ test('the registered app can launch while feedback is locked and poll finishes f
 
 test('existing server heartbeat retries pending feedback even after the connector goes offline', { timeout: 30000 }, async t => {
   const f = await fixture(t), id = await f.create(), feedback = new DatabaseSync(join(f.dataDir, 'feedback', 'feedback.sqlite'));
+  const registrations = f.watchRegistration();
   feedback.exec('BEGIN IMMEDIATE');
   try {
     await f.submit(id);
-    await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value.autoRegistration.feedback === 'waiting'; });
+    await until(() => registrations() > 0);
+    const held = await f.read(id);
+    assert.equal(held.autoRegistration?.state, 'ready'); assert.equal(held.autoRegistration.feedback, 'waiting');
   } finally { feedback.exec('ROLLBACK'); feedback.close(); }
   f.stopRuntime();
-  const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.feedback === 'ready' && value; }, 14000);
+  const previousRegistrations = registrations();
+  // Observe the host heartbeat without exhausting the signed browser read budget.
+  await until(() => f.service().locals.connectorService.store.state.jobs.find(job => job.id === id)?.autoRegistrationFinal === 'ready', 14000);
+  assert.ok(registrations() > previousRegistrations);
+  const ready = await f.read(id); assert.equal(ready.autoRegistration.feedback, 'ready');
   assert.equal(ready.autoRegistration.appId, `app-${id.slice(4)}`);
 });
 
