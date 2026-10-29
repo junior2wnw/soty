@@ -139,6 +139,56 @@ test('lost setup and login acknowledgements resume the same durable intents and 
   await assert.rejects(reloaded.loginWithCredential('password', password), { code: 'credential_unavailable' });
 });
 
+test('the authenticated owner can replace an acknowledged-lost setup with a different password without knowing the previous secret', async t => {
+  const f = fixture(t), owner = f.client(); const account = await owner.client.bootstrap('Owner');
+  await owner.client.saveVault({ marker: 'owner data' });
+  f.lose('credentials.set');
+  await assert.rejects(owner.client.setAccountCredential('password', password, account.accountId), { code: 'NETWORK_ERROR' });
+  const previous = owner.store.inspect().extensions['connect.browser.credentials.v1'].actions[0];
+  const reloaded = f.client(owner.store).client;
+  const changed = await reloaded.setAccountCredential('password', replacement, account.accountId);
+  assert.equal(changed.password.revision, previous.args.expectedRevision + 2);
+  assert.equal(owner.store.inspect().extensions['connect.browser.credentials.v1'].actions.length, 0);
+  const changes = f.traffic.filter(item => item.op === 'credentials.set');
+  assert.equal(changes.length, 2); assert.notEqual(changes[1].args.requestId, previous.args.requestId);
+  assert.equal(changes[1].args.expectedRevision, previous.args.expectedRevision + 1);
+  await assert.rejects(reloaded.extension('credentials.set', previous.args, { expectedAccountId: account.accountId }), { code: 'revision_conflict' });
+  await assert.rejects(f.client().client.loginWithCredential('password', password), { code: 'credential_unavailable' });
+  assert.equal((await f.client().client.loginWithCredential('password', replacement)).accountId, account.accountId);
+  assert.deepEqual((await reloaded.loadVault()).payload, { marker: 'owner data' });
+});
+
+test('an acknowledged-lost removal can be replaced by a new owner setup even when the disabled method has no remove button', async t => {
+  const f = fixture(t), owner = f.client(), recipient = f.client();
+  const account = await owner.client.bootstrap('Owner');
+  await owner.client.setAccountCredential('password', password, account.accountId);
+  f.lose('credentials.remove');
+  await assert.rejects(owner.client.removeAccountCredential('password', account.accountId), { code: 'NETWORK_ERROR' });
+  assert.equal((await owner.client.credentialStatus(account.accountId)).password.enabled, false);
+  const replacement = { ...password, secret: 'A separate long replacement credential' };
+  const reloaded = f.client(owner.store).client;
+  await reloaded.setAccountCredential('password', replacement, account.accountId);
+  assert.equal((await recipient.client.loginWithCredential('password', replacement)).accountId, account.accountId);
+});
+
+test('a different password cannot replace an uncertain setup before its signed revision advances', async t => {
+  const f = fixture(t), owner = f.client(); const account = await owner.client.bootstrap('Owner');
+  f.after((body, result) => {
+    if (body.op === 'challenge' && body.args.operation === 'credentials.set' && result.ok) {
+      f.after(null); throw new TypeError('Synthetic lost challenge before the setup was sent');
+    }
+  });
+  await assert.rejects(owner.client.setAccountCredential('password', password, account.accountId), { code: 'NETWORK_ERROR' });
+  const previous = owner.store.inspect().extensions['connect.browser.credentials.v1'].actions[0];
+  const reloaded = f.client(owner.store).client;
+  await assert.rejects(reloaded.setAccountCredential('password', replacement, account.accountId), { code: 'credential_unavailable' });
+  assert.deepEqual(owner.store.inspect().extensions['connect.browser.credentials.v1'].actions[0], previous);
+  assert.equal(f.traffic.some(item => item.op === 'credentials.set'), false);
+  assert.equal((await reloaded.credentialStatus(account.accountId)).password.revision, previous.args.expectedRevision);
+  assert.equal((await reloaded.setAccountCredential('password', password, account.accountId)).password.revision, previous.args.expectedRevision + 1);
+  assert.deepEqual(f.traffic.find(item => item.op === 'credentials.set').args, previous.args);
+});
+
 test('closing during credential registration keeps the old selection and resumes the same remotely finished recipient', async t => {
   const f = fixture(t), owner = f.client(), recipient = f.client(), close = new AbortController();
   const first = await owner.client.bootstrap('Owner'), old = await recipient.client.bootstrap('Automatic');

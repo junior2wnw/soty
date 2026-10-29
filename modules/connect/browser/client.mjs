@@ -509,14 +509,30 @@ export function createClientWithStorage(options, storage) {
       let state = await read(); const actor = await installation();
       assertExpectedAccount(actor, requiredString(expectedAccountId, 'Expected account ID'));
       let pending = credentialLedger(state).actions.find(item => item.accountId === actor.accountId && item.kind === kind);
+      let current, obsoleteRequestId;
+      if (pending && pending.operation !== 'set') {
+        current = checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
+        if (current[kind].revision <= pending.args.expectedRevision) throw new ConnectError('CREDENTIAL_PENDING', 'Finish the saved sign-in change first.');
+        obsoleteRequestId = pending.args.requestId; pending = null;
+      }
       if (pending) {
-        if (pending.operation !== 'set') throw new ConnectError('CREDENTIAL_PENDING', 'Finish the saved sign-in change first.');
-        const opened = await unlockCredential(pending.record, captured, { projectId });
-        try { await withRoot(actor, raw => { if (!raw.every((byte, index) => byte === opened.raw[index])) throw new ConnectError('credential_unavailable', 'The saved sign-in change belongs to a different key.'); }); }
-        finally { opened.raw.fill(0); }
-        await assertSnapshot(state);
-      } else {
-        const current = checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
+        let opened;
+        try { opened = await unlockCredential(pending.record, captured, { projectId }); }
+        catch (error) {
+          if (error.code !== 'credential_unavailable') throw error;
+          current = checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
+          if (current[kind].revision <= pending.args.expectedRevision) throw error;
+          // An advanced revision fences the old request; this input is a new owner intent.
+          obsoleteRequestId = pending.args.requestId; pending = null;
+        }
+        if (opened) {
+          try { await withRoot(actor, raw => { if (!raw.every((byte, index) => byte === opened.raw[index])) throw new ConnectError('credential_unavailable', 'The saved sign-in change belongs to a different key.'); }); }
+          finally { opened.raw.fill(0); }
+          await assertSnapshot(state);
+        }
+      }
+      if (!pending) {
+        current ??= checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
         const record = await withRoot(actor, raw => makeCredential(raw, captured, { projectId, accountId: actor.accountId }));
         await assertSnapshot(state);
         pending = { accountId: actor.accountId, kind, operation: 'set', record,
@@ -524,7 +540,10 @@ export function createClientWithStorage(options, storage) {
             expectedRevision: current[kind].revision, credentialId: 'credential_' + base64url(cryptoApi().getRandomValues(new Uint8Array(24))),
             lookup: record.lookup, login: record.login, salt: record.salt, iterations: record.iterations,
             verifier: record.verifier, wrappedKey: record.wrappedKey } };
-        state = await mutate(draft => { sameSnapshot(draft, state); return editCredentialLedger(draft, ledger => { ledger.actions.push(pending); }); });
+        state = await mutate(draft => { sameSnapshot(draft, state); return editCredentialLedger(draft, ledger => {
+          if (obsoleteRequestId) ledger.actions = ledger.actions.filter(item => item.args.requestId !== obsoleteRequestId);
+          ledger.actions.push(pending);
+        }); });
       }
       let result;
       try { result = checkedCredentialStatus(await rpc('credentials.set', pending.args, actor, true, () => assertSnapshot(state)), actor.accountId); }
