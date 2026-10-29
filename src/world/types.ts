@@ -1,6 +1,7 @@
 import type { OtsovProjectArtifact, EditorReadback } from '../../modules/otsov-editor-handoff/wire.mjs';
 import type { AppLaunchRequest, AppResolvedEntry } from './app-launch.mjs';
 import type { NotificationsController } from '../platform/notifications-client.mjs';
+import type { ConnectTab } from '../../modules/connect/ui/index.mjs';
 
 export type WorldColor = 'honey' | 'sage' | 'lilac' | 'coral' | 'blue';
 export type WorldProfileAudience = 'private' | 'friends' | 'link' | 'public';
@@ -155,7 +156,7 @@ export interface WorldAppOptions {
   /** Sync the contact-card name for this controller's mounted account. */
   syncContactName?: (displayName: string) => Promise<void>;
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;
-  openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery' | 'data' | 'profiles') => void | Promise<void>;
+  openAccount: (tab?: ConnectTab) => void | Promise<void>;
   connectDevice: () => void | Promise<void>;
   openConnections?: () => void | Promise<void>;
   agentCreate: (communityId?: string, hostOrRestore?: HTMLElement | { hostDeviceId: string; connectorId: string; jobId: string }) => void | Promise<void>;

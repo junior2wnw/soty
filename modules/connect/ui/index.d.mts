@@ -1,5 +1,5 @@
 export interface ConnectIntent { kind: 'contact' | 'device'; id: string; }
-export type ConnectTab = 'profile' | 'people' | 'devices' | 'recovery' | 'data' | 'profiles';
+export type ConnectTab = 'profile' | 'people' | 'devices' | 'recovery' | 'data' | 'profiles' | 'connect';
 export function parseConnectLink(value: string, origin?: string): ConnectIntent | null;
 export function openConnectPanel(options: {
   client: unknown; label?: string; productName?: string;

@@ -83,13 +83,19 @@ export function createIndexedDbStorage({ dbName, projectId, endpoint, indexedDB 
     });
   }
 
-  async function transact(mode, update) {
+  async function transact(mode, update, { signal } = {}) {
+    const cancelled = () => new ConnectError('ACTIVE_PROFILE_CHANGED', 'The sign-in screen closed before its local activation committed.');
+    if (signal?.aborted) throw cancelled();
     const database = await open();
     try {
       return await new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(cancelled()); return; }
         let transaction, result, failure;
         try { transaction = database.transaction(STORE, mode); }
         catch (error) { reject(new ConnectError('STORAGE_TRANSACTION_FAILED', 'The local vault transaction could not start.', { cause: error })); return; }
+        const aborted = () => { try { transaction.abort(); failure = cancelled(); } catch { /* A completed transaction already won the race. */ } };
+        signal?.addEventListener('abort', aborted, { once: true });
+        const detach = () => signal?.removeEventListener('abort', aborted);
         const store = transaction.objectStore(STORE), request = store.get(key);
         request.onsuccess = () => {
           try {
@@ -100,10 +106,10 @@ export function createIndexedDbStorage({ dbName, projectId, endpoint, indexedDB 
             if (next?.write) { validateState(next.write, scope); store.put(next.write, key); }
           } catch (error) { failure = error; transaction.abort(); }
         };
-        request.onerror = () => { failure = new ConnectError('STORAGE_READ_FAILED', 'The local vault could not be read.', { cause: request.error }); };
-        transaction.oncomplete = () => resolve(result);
+        request.onerror = () => { failure ||= new ConnectError('STORAGE_READ_FAILED', 'The local vault could not be read.', { cause: request.error }); };
+        transaction.oncomplete = () => { detach(); resolve(result); };
         transaction.onerror = () => { failure ||= new ConnectError('STORAGE_WRITE_FAILED', 'The local vault could not be committed.', { cause: transaction.error }); };
-        transaction.onabort = () => reject(failure || new ConnectError('STORAGE_ABORTED', 'The local vault transaction was aborted. Existing data was not replaced.', { cause: transaction.error }));
+        transaction.onabort = () => { detach(); reject(failure || new ConnectError('STORAGE_ABORTED', 'The local vault transaction was aborted. Existing data was not replaced.', { cause: transaction.error })); };
       });
     } finally { database.close(); }
   }
@@ -111,7 +117,7 @@ export function createIndexedDbStorage({ dbName, projectId, endpoint, indexedDB 
   return {
     read: () => transact('readonly', value => ({ result: value })),
     claim: candidate => transact('readwrite', value => value ? { result: value } : { write: candidate, result: candidate }),
-    compareAndSwap: (expectedRevision, candidate) => transact('readwrite', value => {
+    compareAndSwap: (expectedRevision, candidate, { beforeCommit, signal } = {}) => transact('readwrite', value => {
       if (!value || value.localRevision !== expectedRevision) throw new ConnectError('LOCAL_CONFLICT', 'Another tab changed this profile. Read it again and retry.');
       if (candidate.localRevision !== expectedRevision + 1) throw new ConnectError('INVALID_LOCAL_REVISION', 'The local revision must advance exactly once.');
       for (const previous of value.installations) {
@@ -122,7 +128,8 @@ export function createIndexedDbStorage({ dbName, projectId, endpoint, indexedDB 
           throw new ConnectError('IMMUTABLE_PROFILE', 'An existing profile or device key cannot be silently replaced.');
         }
       }
+      beforeCommit?.();
       return { write: candidate, result: candidate };
-    }),
+    }, { signal }),
   };
 }

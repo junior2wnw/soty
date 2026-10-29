@@ -1,4 +1,6 @@
 import { mountPlatformInvitations } from './platform-invitations.mjs';
+import { watchDeviceEnrollment } from './device-enrollment.mjs';
+import { mountCredentialLogin, mountCredentialSettings } from './credential-forms.mjs';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const date = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
 const errors = {
@@ -20,8 +22,20 @@ const errors = {
   recovery_invalid: 'Файл не подходит или уже использован. Проверьте, что выбран последний сохранённый файл.',
   network_error: 'Нет связи с сервером. Ваши данные на устройстве сохранены; повторите позже.',
   storage_future_version: 'Данные созданы более новой версией. Обновите приложение — аккаунт не будет пересоздан.',
-  storage_corrupt: 'Не удалось прочитать данные входа. Используйте восстановление; существующие данные не перезаписываются.'
+  storage_corrupt: 'Не удалось прочитать данные входа. Используйте восстановление; существующие данные не перезаписываются.',
+  weak_password: 'Выберите уникальный пароль длиной от 15 символов.',
+  weak_phrase: 'Выберите длинную уникальную фразу: от 20 символов на любом языке.',
+  invalid_login: 'Проверьте логин: от 3 до 80 символов без пробелов.',
+  credential_unavailable: 'Не удалось войти. Проверьте логин, пароль или фразу.',
+  credential_exists: 'Этот логин уже занят. Выберите другой.',
+  credential_rate_limited: 'Слишком много попыток. Подождите и повторите вход.',
+  credential_pending: 'Предыдущая попытка входа ещё не завершена. Повторите её с теми же данными.',
+  recovery_pending: 'Восстановление из файла ещё не завершено. Повторите его с тем же файлом.',
 };
+function deviceLabel() {
+  const platform = globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform;
+  return platform === 'Win32' ? 'Windows' : platform === 'MacIntel' ? 'Mac' : platform?.startsWith('Linux') ? 'Linux' : platform || 'Браузер';
+}
 function friendly(error) {
   const code = String(error?.code || '').toLowerCase();
   if (['unsupported_local_state', 'unsupported_database'].includes(code)) return errors.storage_future_version;
@@ -60,11 +74,12 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
   document.body.append(dialog); dialog.showModal();
   const content = dialog.querySelector('.connect-content');
   const message = dialog.querySelector('.connect-message');
-  let tab = ['profile', 'people', 'devices', 'recovery', 'data', 'profiles'].includes(initialTab) ? initialTab : 'profile', busy = false, stopped = false, status, local, enrollment, recoveryKit, timer, intent = initialIntent;
+  let tab = ['profile', 'people', 'devices', 'recovery', 'data', 'profiles', 'connect'].includes(initialTab) ? initialTab : 'profile', busy = false, stopped = false, status, local, recoveryKit, intent = initialIntent;
+  let deviceEntry = null, entryLifetime = null, renderGeneration = 0;
   let platformInvitations = null;
   const note = text => { if (!stopped) message.textContent = text; };
   const guard = fn => async event => {
-    event?.preventDefault(); if (busy || stopped) return;
+    event?.preventDefault(); if (busy || stopped || !dialog.open) return;
     busy = true; content.setAttribute('aria-busy', 'true');
     const buttons = [...content.querySelectorAll('button')]; buttons.forEach(b => b.disabled = true);
     try {
@@ -85,38 +100,44 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     if (!file || file.size > 3_000_000) throw new Error('file_invalid');
     return JSON.parse(await file.text());
   };
-  function stop() { platformInvitations?.destroy(); stopped = true; clearTimeout(timer); dialog.remove(); if (previousFocus?.isConnected) previousFocus.focus(); }
-  dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
+  function stopEntry() { deviceEntry?.stop(); deviceEntry = null; entryLifetime?.abort(); entryLifetime = null; }
+  function stop() { platformInvitations?.destroy(); stopped = true; stopEntry(); dialog.remove(); if (previousFocus?.isConnected) previousFocus.focus(); }
+  dialog.querySelector('[data-close]').addEventListener('click', () => { stopEntry(); dialog.close(); });
+  dialog.addEventListener('cancel', stopEntry);
   dialog.addEventListener('close', stop);
   dialog.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', guard(async () => { intent = null; tab = button.dataset.tab; await render(); })));
   async function refresh() {
     local = await client.getLocalState();
-    if (local.accountId && tab !== 'profiles') {
+    if (local.accountId && tab !== 'profiles' && tab !== 'connect' && intent?.kind !== 'device') {
       try {
         const raw = await client.status();
         status = { ...raw, account: { id: raw.accountId, label: raw.label }, devices: (raw.devices || []).map(d => ({ ...d, id: d.deviceId })) };
       } catch (error) { status = null; note(friendly(error)); }
     }
   }
-  async function showQr(url, title) {
+  async function showQr(url, title, current = () => !stopped) {
     const host = content.querySelector('[data-qr]'); if (!host) return;
+    if (!current()) return;
     const caption = document.createElement('p'); caption.textContent = title; host.append(caption);
     if (qr) {
-      const src = await qr(url); if (stopped || !host.isConnected) return;
+      const src = await qr(url); if (!current() || !host.isConnected) return;
       const img = document.createElement('img'); img.src = src; img.alt = title; img.width = 224; img.height = 224; host.prepend(img);
     }
-    const input = document.createElement('input'); input.readOnly = true; input.value = url; input.setAttribute('aria-label', 'Ссылка для подключения'); host.append(input);
-    const copy = document.createElement('button'); copy.textContent = 'Скопировать ссылку'; copy.type = 'button'; host.append(copy);
+    const linkHost = tab === 'connect' ? content.querySelector('[data-other-ways]') || host : host;
+    const input = document.createElement('input'); input.readOnly = true; input.value = url; input.setAttribute('aria-label', 'Ссылка для подключения'); linkHost.append(input);
+    const copy = document.createElement('button'); copy.textContent = 'Скопировать ссылку'; copy.type = 'button'; linkHost.append(copy);
     copy.addEventListener('click', guard(async () => { await navigator.clipboard.writeText(url); note('Ссылка скопирована.'); }));
   }
   const link = (kind, id) => `${location.origin}/?connect=${kind}&${kind === 'contact' ? 'card' : 'request'}=${encodeURIComponent(id)}`;
   async function render() {
     platformInvitations?.destroy(); platformInvitations = null;
-    clearTimeout(timer);
+    stopEntry(); const generation = ++renderGeneration;
     if (stopped) return;
-    await refresh(); if (stopped) return;
-    const titles = { profile: 'Профиль', people: 'Контакты', devices: 'Устройства входа', recovery: 'Восстановление профиля', data: 'Копии данных', profiles: 'Выбрать профиль' };
+    await refresh(); if (stopped || generation !== renderGeneration) return;
+    const titles = { profile: 'Профиль', people: 'Контакты', devices: 'Устройства входа', recovery: 'Восстановление профиля', data: 'Копии данных', profiles: 'Выбрать профиль', connect: 'Открыть прежний аккаунт' };
     dialog.querySelector('h2').textContent = titles[tab]; dialog.setAttribute('aria-label', titles[tab]);
+    dialog.querySelector('nav').hidden = tab === 'connect' || intent?.kind === 'device';
+    dialog.classList.toggle('connect-entry', tab === 'connect' || intent?.kind === 'device');
     dialog.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'));
     if (intent) { await renderIntent(); return; }
     if (tab === 'profiles') {
@@ -129,13 +150,13 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
         row.addEventListener('click', guard(async () => { await client.switchProfile(profile.accountId); dialog.close(); }));
         content.querySelector('[data-profile-list]').append(row);
       }
-      on('[data-existing]', async () => { tab = 'devices'; await render(); });
+      on('[data-existing]', async () => { tab = 'connect'; await render(); });
       on('[data-recovery]', async () => { tab = 'recovery'; await render(); });
       return;
     }
     if (!local.accountId && (tab === 'profile' || tab === 'people')) {
       content.innerHTML = '<h3>Открыть существующий профиль</h3><p>Подтвердите новое устройство с вашего прежнего устройства или используйте файл восстановления.</p><button data-existing>Подключить по QR</button><button data-recovery>Открыть файл восстановления</button>';
-      on('[data-existing]', async () => { tab = 'devices'; await render(); });
+      on('[data-existing]', async () => { tab = 'connect'; await render(); });
       on('[data-recovery]', async () => { tab = 'recovery'; await render(); });
       return;
     }
@@ -149,7 +170,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       on('[data-card]', async () => { const card = await client.card(); content.querySelector('[data-qr]').replaceChildren(); await showQr(link('contact', card.cardId), 'Добавить меня в контакты'); });
       on('[data-name-save]', async () => { const name = content.querySelector('[data-name]').value, expectedAccountId = local.accountId; await client.rename(name, expectedAccountId); if (onRename) await onRename(name); note('Имя сохранено.'); await render(); });
       on('[data-edit-profile]', async () => { if (typeof onEditProfile !== 'function') return; onEditProfile(); dialog.close(); });
-      on('[data-existing]', async () => { tab = 'devices'; await render(); });
+      on('[data-existing]', async () => { tab = 'connect'; await render(); });
       on('[data-open-link]', async () => { const next = parseConnectLink(content.querySelector('[data-link]').value); if (!next) { note('Это не ссылка подключения этого проекта.'); return; } intent = next; await render(); });
       on('[data-select-profile]', async () => { tab = 'profiles'; await render(); });
       const invitationHost = document.createElement('section'); content.append(invitationHost);
@@ -187,9 +208,56 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       }], ['Убрать', async () => { await client.dismissContactInvite(r.invitationId); await render(); }]]);
       for (const r of list.blocked || []) row('[data-blocked]', r.label || 'Контакт', [['Разблокировать', async () => { await client.unblockContact(r.peerAccountId); note('Блокировка снята. Дружба автоматически не восстановлена.'); await render(); }]]);
       on('[data-rotate]', async () => { if (!confirm('Сменить адрес визитки? Старые QR и незавершённые запросы перестанут действовать. Контакты сохранятся.')) return; await client.rotateCard(); note('Адрес визитки изменён.'); await render(); });
+    } else if (tab === 'connect') {
+      content.innerHTML = `<p>Отсканируйте QR устройством, где уже открыт ваш аккаунт, и подтвердите вход. Здесь аккаунт откроется сам.</p>
+        <div data-qr></div><p data-pairing-code class="connect-pairing-code"></p>
+        <p data-entry-status role="status">Готовим QR…</p><button data-new-qr hidden>Обновить QR</button>
+        <details class="connect-other"><summary>Другой способ</summary><div data-other-ways></div>
+          <label>Файл восстановления<input type="file" accept="application/json,.json" data-entry-file></label>
+          <div data-credential-login></div><button data-known-profiles>Сохранённые аккаунты</button></details>`;
+      entryLifetime = new AbortController();
+      const lifetime = entryLifetime, current = () => !stopped && dialog.open && generation === renderGeneration && !lifetime.signal.aborted;
+      let qrGeneration = 0;
+      const begin = () => { qrGeneration++; deviceEntry?.stop(); deviceEntry = null;
+        if (current()) content.querySelector('[data-entry-status]').textContent = 'Открываем аккаунт…'; };
+      const complete = () => { if (current()) dialog.close(); };
+      const resume = async () => { if (current()) await startQr(); };
+      mountCredentialLogin(content.querySelector('[data-credential-login]'), { client, label: deviceLabel(), guard, begin, resume, signal: lifetime.signal, onComplete: complete });
+      content.querySelector('[data-entry-file]').addEventListener('change', guard(async () => {
+        const kit = await readFile('[data-entry-file]'); if (!current()) return;
+        begin(); try { await client.recover(kit, deviceLabel(), { signal: lifetime.signal }); complete(); }
+        catch (error) { await resume(); throw error; }
+        finally { const input = content.querySelector('[data-entry-file]'); if (input) input.value = ''; }
+      }));
+      on('[data-known-profiles]', async () => { tab = 'profiles'; await render(); });
+      let expired = false;
+      on('[data-new-qr]', async () => { if (expired) await client.discardPendingEnrollment(); await render(); });
+      async function startQr() {
+        deviceEntry?.stop(); const ticket = ++qrGeneration, currentQr = () => current() && ticket === qrGeneration;
+        const watcher = watchDeviceEnrollment({ client, label: deviceLabel(), isCurrent: currentQr,
+          onRequest: async request => {
+            if (!currentQr()) return;
+            content.querySelector('[data-qr]').replaceChildren(); content.querySelector('[data-other-ways]').replaceChildren();
+            await showQr(link('device', request.requestId), 'Вход в ваш аккаунт', currentQr);
+            if (!currentQr()) return;
+            content.querySelector('[data-pairing-code]').textContent = request.requestId.slice(-8).toUpperCase().match(/.{1,4}/g).join(' ');
+          },
+          onWaiting: (preview, error) => {
+            if (currentQr()) content.querySelector('[data-entry-status]').textContent = preview?.account
+              ? `Открываем аккаунт «${preview.account.label}»…` : error ? 'Нет связи. Проверим подтверждение, когда соединение восстановится.' : 'Ждём подтверждения на прежнем устройстве…';
+          },
+          onComplete: complete,
+          onError: error => { if (currentQr()) {
+            expired = ['enrollment_expired', 'request_expired'].includes(String(error?.code).toLowerCase());
+            content.querySelector('[data-entry-status]').textContent = friendly(error);
+            const retry = content.querySelector('[data-new-qr]'); retry.hidden = false; retry.textContent = expired ? 'Обновить QR' : 'Повторить';
+          } },
+        });
+        deviceEntry = watcher; await watcher.ready;
+      }
+      await startQr();
     } else if (tab === 'devices') {
-      content.innerHTML = `<h3>Доступ к этому профилю</h3><p>Здесь устройства входа, а не компьютеры с размещёнными приложениями. Чтобы открыть прежний профиль на этом устройстве, покажите QR телефону, где он уже открыт.</p>
-        <label>Название этого устройства<input data-device-label value="${escape(local.pendingEnrollment?.label || label)}" maxlength="64"></label>
+      content.innerHTML = `<h3>Доступ к этому аккаунту</h3><p>Каждое устройство входит со своим ключом. Прежний аккаунт можно открыть здесь по QR.</p>
         <button data-enroll>Открыть прежний профиль здесь</button><div data-qr></div><div data-devices></div>
         <p class="connect-muted">Отключение прекращает доступ к профилю и сохранённым копиям. Уже открытые старые комнаты и скачанные данные требуют отдельного управления.</p>`;
       for (const d of status?.devices || []) {
@@ -198,44 +266,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
         if (!d.revokedAt) { const b = document.createElement('button'); b.textContent = 'Отключить'; b.addEventListener('click', guard(async () => { if (!confirm('Завершить доступ этого устройства к профилю?')) return; await client.revokeDevice(d.id); note('Доступ устройства завершён.'); await render(); })); row.append(b); }
         content.querySelector('[data-devices]').append(row);
       }
-      const showEnrollment = async request => {
-        content.querySelector('[data-qr]').replaceChildren();
-        await showQr(link('device', request.requestId), 'Открыть ваш профиль на этом устройстве');
-        if (stopped) return;
-        content.querySelector('[data-enroll]').hidden = true;
-        const host = content.querySelector('[data-qr]');
-        const code = document.createElement('p'); code.textContent = `Сравните на обоих устройствах код: ${request.requestId.slice(-8).toUpperCase().match(/.{1,4}/g).join(' ')}`; host.append(code);
-        note(request.expiresAt <= Date.now() ? 'Срок QR закончился. Проверьте уже завершённое подтверждение или создайте новый QR.' : `Подтвердите на прежнем устройстве. Код действует до ${date(request.expiresAt)}.`);
-        const details = document.createElement('p'); host.append(details);
-        const finish = document.createElement('button'); finish.textContent = 'Проверить подтверждение'; host.append(finish);
-        let preview = null;
-        finish.addEventListener('click', guard(async () => {
-          if (!preview) {
-            const checked = await client.previewEnrollment(request.requestId);
-            if (!checked.account) { note('Подтверждения пока нет. Откройте этот QR на прежнем устройстве.'); return; }
-            preview = checked;
-            details.textContent = `Подтверждён профиль «${preview.account.label}» (${preview.account.accountId.slice(-8)}). Источник: ${preview.source.label}. Текущий локальный профиль сохранится отдельно. Если это не ваш профиль, создайте новый QR.`;
-            finish.textContent = `Открыть профиль ${preview.account.label}`;
-            note('Проверьте профиль и устройство, с которого пришло подтверждение.');
-            return;
-          }
-          try { await client.finishEnrollment(request.requestId, preview.account.accountId); }
-          catch (error) { preview = null; finish.textContent = 'Проверить подтверждение'; details.textContent = ''; throw error; }
-          tab = 'recovery'; note('Профиль открыт. Прежний локальный профиль сохранён отдельно. Можно загрузить его сохранённые комнаты.'); await render();
-        }));
-        const restart = document.createElement('button'); restart.textContent = 'Создать новый QR'; host.append(restart);
-        restart.addEventListener('click', guard(async () => {
-          if (!confirm('Оставить этот запрос и создать новый QR? Уже открытые профили сохранятся.')) return;
-          const nextLabel = content.querySelector('[data-device-label]').value || label;
-          await client.discardPendingEnrollment();
-          enrollment = await client.startEnrollment(nextLabel); await showEnrollment(enrollment);
-        }));
-      };
-      on('[data-enroll]', async () => {
-        enrollment = await client.startEnrollment(content.querySelector('[data-device-label]').value || label);
-        await showEnrollment(enrollment);
-      });
-      if (local.pendingEnrollment?.requestId) await showEnrollment(local.pendingEnrollment);
+      on('[data-enroll]', async () => { tab = 'connect'; await render(); });
     } else if (tab === 'recovery') {
       const verified = status?.recovery?.verified === true;
       content.innerHTML = `<h3>Не потерять профиль</h3><p>${verified ? 'Запасной способ входа проверен.' : 'Пока доступ зависит от ваших устройств. Сохраните и проверьте файл восстановления.'}</p>
@@ -249,6 +280,12 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
         note('Файл подготовлен. Проверьте его, чтобы включить восстановление.');
       });
       on('[data-recover]', async () => { const kit = await readFile('[data-recover-file]'); if (!confirm('Открыть профиль из выбранного файла? Текущий профиль будет сохранён отдельно.')) return; await client.recover(kit, label); note('Профиль восстановлен. Загрузите копию данных и создайте новый файл восстановления.'); await render(); });
+      if (local.accountId && typeof client.credentialStatus === 'function') {
+        const credentials = document.createElement('section'); credentials.className = 'connect-credential-settings'; content.append(credentials);
+        try { await mountCredentialSettings(credentials, { client, accountId: local.accountId, guard,
+          isCurrent: () => !stopped && generation === renderGeneration, onSaved: note }); }
+        catch (error) { if (!stopped && generation === renderGeneration) note(friendly(error)); }
+      }
     } else if (tab === 'data') {
       content.innerHTML = `<h3>Сохранённая копия данных</h3><p>${escape(snapshotDescription)}</p>
         ${snapshot ? '<button data-save>Сохранить текущие данные</button>' : ''}
@@ -283,18 +320,18 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       on('[data-request]', async () => { await client.requestContact(intent.id); intent = null; tab = 'people'; note('Запрос отправлен. Друг появится после принятия.'); await render(); });
     } else {
       const target = await client.inspectEnrollment(intent.id); if (stopped) return;
-      const expectedAccountId = status?.account?.id;
+      const expectedAccountId = local.accountId;
       if (!expectedAccountId || target.accountId !== expectedAccountId) throw Object.assign(new Error('profile_changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
       const pairingCode = target.requestId.slice(-8).toUpperCase().match(/.{1,4}/g).join(' ');
-      content.innerHTML = `<h3>Открыть ваш профиль на устройстве?</h3><p>Получатель: ${escape(target.label || 'Новое устройство')}.</p><p>Сравните код <strong>${escape(pairingCode)}</strong> с экраном, который подключаете.</p><p>Откроется профиль ${escape(status.account.label)} (${escape(expectedAccountId.slice(-8))}) и его сохранённые данные. Подтверждайте только свой запрос.</p><button data-approve>Открыть мой профиль</button><button data-cancel>Отмена</button>`;
-      on('[data-approve]', async () => { await client.approveEnrollment(target.requestId, expectedAccountId); intent = null; tab = 'devices'; note('Доступ разрешён. Проверьте имя профиля и завершите вход на новом устройстве.'); await render(); });
+      content.innerHTML = `<h3>Подключить новое устройство?</h3><p>Ваш аккаунт: <strong>${escape(local.label || label)}</strong> (${escape(expectedAccountId.slice(-8))}).</p><p>Устройство: ${escape(target.label || 'Новое устройство')}.</p><p>Сравните код <strong class="connect-pairing-code">${escape(pairingCode)}</strong> с новым устройством. Подтверждайте только свой запрос.</p><button data-approve>Подтвердить вход</button><button data-cancel>Отмена</button>`;
+      on('[data-approve]', async () => { await client.approveEnrollment(target.requestId, expectedAccountId); dialog.close(); });
     }
     on('[data-cancel]', async () => { intent = null; await render(); });
   }
   void guard(async () => {
     local = await client.getLocalState();
-    if (!local.accountId && bootstrapOnOpen && tab !== 'profiles') { try { await client.bootstrap(label); } catch (error) { note(friendly(error)); } }
+    if (!local.accountId && bootstrapOnOpen && tab !== 'profiles' && tab !== 'connect') { try { await client.bootstrap(label); } catch (error) { note(friendly(error)); } }
     await render();
   })();
-  return { close: () => dialog.close(), refresh: () => guard(render)() };
+  return { close: () => { stopEntry(); dialog.close(); }, refresh: () => guard(render)() };
 }

@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, createPublicKey, ECDH, randomBytes, timingSafeEqual, verify } from 'node:crypto';
+import { createHash, createHmac, createPublicKey, ECDH, randomBytes, timingSafeEqual, verify } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,7 @@ const OPERATIONS = new Set([
   'contacts.sendInvite', 'contacts.dismissInvite',
   'enrollment.start', 'enrollment.inspect', 'enrollment.approve', 'enrollment.preview', 'enrollment.finish',
   'device.revoke', 'vault.get', 'vault.put', 'recovery.set', 'recovery.confirm', 'recovery.use',
+  'credentials.status', 'credentials.set', 'credentials.remove', 'credentials.lookup', 'credentials.login',
 ]);
 
 export class ConnectError extends Error {
@@ -211,6 +212,13 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   const all = (sql, ...params) => db.prepare(sql).all(...params);
   const run = (sql, ...params) => db.prepare(sql).run(...params);
   const platformInvitations = createPlatformInvitations({ get, all, run, assert, exactArgs, textId, adminAccountIds: platformAdminAccountIds });
+  let credentialDecoyKey = null;
+  if (get('PRAGMA user_version').user_version >= 5) {
+    run('INSERT OR IGNORE INTO credential_security(id,decoy_key) VALUES(1,?)', randomBytes(32).toString('hex'));
+    const key = get('SELECT decoy_key FROM credential_security WHERE id=1')?.decoy_key;
+    assert(typeof key === 'string' && /^[a-f0-9]{64}$/u.test(key), 'connect_storage_corrupt');
+    credentialDecoyKey = Buffer.from(key, 'hex');
+  }
   function requireIdle() {
     assert(!closed, 'service_closed');
     assert(!transactionActive && !db.isTransaction, 'connect_transaction_nested');
@@ -317,6 +325,28 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     const account = get('SELECT id,label FROM accounts WHERE id=?', accountId);
     return { accountId: account.id, deviceId, label: account.label };
   }
+  function credentialKind(value) { assert(['password', 'phrase'].includes(value), 'credential_unavailable'); return value; }
+  function credentialState(accountId) {
+    const state = { schema: 'connect.credentials.v1', accountId };
+    for (const kind of ['password', 'phrase']) {
+      const method = get('SELECT enabled,revision,login FROM credential_methods WHERE account_id=? AND kind=?', accountId, kind);
+      state[kind] = { enabled: Boolean(method?.enabled), revision: method?.revision ?? 0,
+        ...(kind === 'password' ? { login: method?.enabled ? method.login : null } : {}) };
+    }
+    return state;
+  }
+  function credentialDescriptor(row) {
+    return { credentialId: row.id, projectId, accountId: row.account_id, kind: row.kind, lookup: row.lookup,
+      salt: row.salt, iterations: 600_000, wrappedKey: JSON.parse(row.wrapped_key) };
+  }
+  function decoyCredential(kind, lookup) {
+    const part = label => createHmac('sha256', credentialDecoyKey).update(canonicalJson([kind, lookup, label])).digest();
+    const accountId = 'acct_' + part('account').subarray(0, 24).toString('base64url'), salt = part('salt').toString('base64url');
+    const binding = { schema: 'connect.credential-key.v1', projectId, accountId, kind, lookup, salt, iterations: 600_000 };
+    return { credentialId: 'credential_' + part('id').subarray(0, 24).toString('base64url'), projectId, accountId, kind, lookup,
+      salt, iterations: 600_000, wrappedKey: { ...binding, iv: part('iv').subarray(0, 12).toString('base64url'),
+        ciphertext: Buffer.concat([part('ciphertext'), part('tag').subarray(0, 16)]).toString('base64url') } };
+  }
   function assertCandidate(deviceId, encryption) {
     const existing = installation(deviceId);
     assert(existing?.state !== 'revoked', 'device_revoked');
@@ -416,6 +446,38 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     return item;
   }
   function act(op, args, ctx, timestamp) {
+    if (op.startsWith('credentials.')) assert(get('PRAGMA user_version').user_version >= 5, 'unsupported_operation');
+    if (op === 'credentials.lookup') {
+      exactArgs(args, ['kind', 'lookup']); const kind = credentialKind(args.kind);
+      base64(args.lookup, 32, 'credential_unavailable');
+      const method = get('SELECT * FROM credential_methods WHERE kind=? AND lookup=? AND enabled=1', kind, args.lookup);
+      return method ? credentialDescriptor(method) : decoyCredential(kind, args.lookup);
+    }
+    if (op === 'credentials.login') {
+      exactArgs(args, ['kind', 'lookup', 'credentialId', 'authentication', 'encryptionPublicJwk', 'label']);
+      const kind = credentialKind(args.kind), lookup = args.lookup;
+      base64(lookup, 32, 'credential_unavailable'); base64(args.authentication, 32, 'credential_unavailable');
+      const encryption = canonicalJson(normalizePublicJwk(args.encryptionPublicJwk)), deviceLabel = label(args.label);
+      const known = installation(ctx.deviceId);
+      assert(known?.state !== 'revoked', 'device_revoked');
+      const receipt = get('SELECT * FROM credential_logins WHERE device_id=?', ctx.deviceId);
+      if (receipt) {
+        assert(known?.state === 'active' && known.account_id === receipt.account_id && known.encryption_jwk === encryption
+          && receipt.credential_id === args.credentialId && receipt.kind === kind && receipt.lookup === lookup
+          && same(receipt.digest, ctx.digest), 'credential_unavailable');
+        return JSON.parse(receipt.result_json);
+      }
+      const method = get('SELECT * FROM credential_methods WHERE id=? AND kind=? AND lookup=? AND enabled=1', textId(args.credentialId), kind, lookup);
+      const valid = same(method?.verifier ?? 'A'.repeat(43), sha256(args.authentication));
+      assert(method && valid, 'credential_unavailable');
+      assertCandidate(ctx.deviceId, encryption);
+      if (known) run("UPDATE installations SET account_id=?,label=?,state='active',activated_at=?,enrolled_by=? WHERE id=?", method.account_id, deviceLabel, timestamp, method.id, ctx.deviceId);
+      else insertInstallation(ctx, encryption, deviceLabel, timestamp, method.account_id, method.id);
+      const result = { ...accountReply(method.account_id, ctx.deviceId), wrappedKey: JSON.parse(method.wrapped_key), credentialId: method.id };
+      run('INSERT INTO credential_logins(device_id,credential_id,account_id,kind,lookup,digest,result_json,created_at) VALUES(?,?,?,?,?,?,?,?)',
+        ctx.deviceId, method.id, method.account_id, kind, lookup, ctx.digest, canonicalJson(result), timestamp);
+      return result;
+    }
     if (op === 'bootstrap') {
       exactArgs(args, ['label', 'encryptionPublicJwk'], ['invitationToken']);
       const deviceLabel = label(args.label);
@@ -522,6 +584,43 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     }
 
     const { device, account } = authenticated(ctx.deviceId);
+    if (op === 'credentials.status') { exactArgs(args); return credentialState(account.id); }
+    if (op === 'credentials.set' || op === 'credentials.remove') {
+      const setting = op === 'credentials.set';
+      exactArgs(args, setting ? ['kind', 'requestId', 'expectedRevision', 'credentialId', 'lookup', 'login', 'salt', 'iterations', 'verifier', 'wrappedKey']
+        : ['kind', 'requestId', 'expectedRevision']);
+      const kind = credentialKind(args.kind); textId(args.requestId);
+      assert(Number.isSafeInteger(args.expectedRevision) && args.expectedRevision >= 0, 'revision_conflict');
+      const previous = get('SELECT * FROM credential_methods WHERE account_id=? AND kind=?', account.id, kind);
+      if (previous?.request_id === args.requestId) {
+        assert(same(previous.digest, ctx.digest), 'request_conflict'); return credentialState(account.id);
+      }
+      assert((previous?.revision ?? 0) === args.expectedRevision, 'revision_conflict');
+      let credentialId = previous?.id ?? randomId('credential'), lookup = null, login = null, salt = null, verifier = null, wrapped = null;
+      if (setting) {
+        credentialId = textId(args.credentialId);
+        base64(args.lookup, 32, 'credential_unavailable'); base64(args.salt, 32, 'credential_unavailable'); base64(args.verifier, 32, 'credential_unavailable');
+        assert(args.iterations === 600_000, 'credential_unavailable');
+        if (kind === 'password') {
+          assert(typeof args.login === 'string' && args.login.isWellFormed() && args.login === args.login.normalize('NFC').trim().toLowerCase()
+            && [...args.login].length >= 3 && [...args.login].length <= 80 && !/[\p{C}\s]/u.test(args.login), 'invalid_login');
+          assert(args.lookup === sha256(canonicalJson(['connect.password.lookup.v1', projectId, args.login])), 'invalid_login'); login = args.login;
+        } else assert(args.login === null, 'credential_unavailable');
+        const occupied = get('SELECT account_id FROM credential_methods WHERE kind=? AND lookup=? AND enabled=1', kind, args.lookup);
+        assert(!occupied || occupied.account_id === account.id, 'credential_exists');
+        const binding = { schema: 'connect.credential-key.v1', projectId, accountId: account.id, kind, lookup: args.lookup, salt: args.salt, iterations: 600_000 };
+        assert(record(args.wrappedKey) && Object.keys(args.wrappedKey).length === 9
+          && Object.entries(binding).every(([key, value]) => args.wrappedKey[key] === value), 'credential_unavailable');
+        base64(args.wrappedKey.iv, 12, 'credential_unavailable'); base64(args.wrappedKey.ciphertext, 48, 'credential_unavailable');
+        lookup = args.lookup; salt = args.salt; verifier = args.verifier; wrapped = envelopeJson(args.wrappedKey, 2048);
+      }
+      run(`INSERT INTO credential_methods(account_id,kind,id,enabled,revision,login,lookup,salt,verifier,wrapped_key,request_id,digest,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,kind) DO UPDATE SET id=excluded.id,enabled=excluded.enabled,
+        revision=excluded.revision,login=excluded.login,lookup=excluded.lookup,salt=excluded.salt,verifier=excluded.verifier,
+        wrapped_key=excluded.wrapped_key,request_id=excluded.request_id,digest=excluded.digest,updated_at=excluded.updated_at`,
+        account.id, kind, credentialId, setting ? 1 : 0, args.expectedRevision + 1, login, lookup, salt, verifier, wrapped, args.requestId, ctx.digest, timestamp);
+      return credentialState(account.id);
+    }
     if (PLATFORM_INVITATION_OPERATIONS.includes(op)) {
       assert(get('PRAGMA user_version').user_version >= 4, 'unsupported_operation');
       return platformInvitations.dispatch(op, args, account.id, ctx.digest, timestamp);
@@ -863,6 +962,12 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
           try {
             hitLimit('signed:' + deviceId, 240, 60_000, timestamp);
             if (op === 'recovery.use') hitLimit('recovery:peer:' + peer, 120, 60_000, timestamp);
+            if (op === 'credentials.lookup' || op === 'credentials.login') {
+              try {
+                hitLimit('credentials:peer:' + peer, 60, 60_000, timestamp);
+                if (typeof args.lookup === 'string' && args.lookup.length === 43) hitLimit('credentials:lookup:' + args.lookup + ':peer:' + peer, 40, 15 * 60_000, timestamp);
+              } catch (error) { if (error.code === 'rate_limited') fail('credential_rate_limited'); throw error; }
+            }
           } catch (error) { return publicError(error); }
           db.exec('SAVEPOINT connect_action');
           try {

@@ -23,6 +23,16 @@
 .connect-panel .connect-row span { flex:1 1 180px; overflow-wrap:anywhere; }
 .connect-panel [data-qr] img { display:block; max-width:100%; height:auto; padding:8px; margin:16px auto 8px; background:white; border-radius:12px; }
 .connect-panel [data-qr] input { font-size:12px; }
+.connect-panel.connect-entry { width:min(420px,calc(100vw - 24px)); }
+.connect-panel.connect-entry [data-qr] img { margin:12px auto 8px; width:224px; }
+.connect-panel.connect-entry [data-qr] p { display:none; }
+.connect-panel .connect-pairing-code { text-align:center; font-variant-numeric:tabular-nums; font-weight:650; letter-spacing:.12em; }
+.connect-panel .connect-other { margin-top:18px; border-top:1px solid currentColor; padding-top:8px; }
+.connect-panel summary { cursor:pointer; min-height:44px; display:flex; align-items:center; gap:8px; }
+.connect-panel summary::before { content:'›'; }
+.connect-panel details[open]>summary::before { transform:rotate(90deg); }
+.connect-panel .connect-credential-settings { margin-top:18px; }
+.connect-panel form { padding:0 2px 12px; }
 .connect-update-notice { position:fixed; bottom:12px; right:12px; z-index:10020; max-width:calc(100vw - 24px); padding:12px 16px; border:1px solid #83b986; border-radius:12px; background:#112117; color:#eff9e8; font:14px/1.4 system-ui,sans-serif; box-shadow:0 4px 24px #0008; }
 .connect-update-notice button { display:block; margin-top:8px; background:#c1eb9f; color:#142411; border:0; border-radius:6px; padding:8px 12px; font:inherit; cursor:pointer; }
 @media(max-width:420px) { .connect-panel { padding:16px; } .connect-panel nav button { flex:1 1 40%; margin:0; } }

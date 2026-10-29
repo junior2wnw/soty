@@ -162,6 +162,16 @@ test('camera acquisition is explicit; show and paste never request capture or bo
   assert.equal(f.calls.intents[0].intent.kind, 'contact'); assert.equal(f.calls.acquire, 0); assert.equal(f.calls.bootstrap, 0);
 });
 
+test('scanning a device QR goes directly to its single approval view without a preliminary Continue', async t => {
+  const track = ownTrack(), f = fixture(t, { scanner: { acquire: async () => stream(track),
+    detect: async () => `/?connect=device&request=${REQUEST}`, file: async () => '' } });
+  f.mount(); await until(() => f.calls.cards.length === 1); f.find('Сканировать').click();
+  await until(() => f.calls.intents.length === 1);
+  assert.equal(f.calls.intents[0].intent.kind, 'device'); assert.equal(f.calls.intents[0].intent.id, REQUEST);
+  assert.equal(descendants(f.host).some(node => node.tagName === 'BUTTON' && node.textContent === 'Продолжить'), false);
+  assert.equal(track.stops, 1); assert.equal(f.captures.busy('camera'), false); assert.equal(f.calls.bootstrap, 0);
+});
+
 test('malformed and competing carriers do not dispatch; cancel is inert', async t => {
   const f = fixture(t); f.mount(); await until(() => f.calls.cards.length === 1);
   for (const value of [contact + '#profile/acct_other', 'https://other.test/?connect=contact&card=' + CARD, '/?j=room.A']) await f.paste(value);
@@ -383,7 +393,7 @@ test('invite-only entry keeps existing-account recovery available after denied r
   const original = await owner.client.bootstrap('Owner'); await real.inviteOnly(original.accountId, owner.client);
   const before = real.traffic.filter(op => op === 'bootstrap').length;
   const f = fixture(t, { client: recipient.client, options: { openAccount: async tab => {
-    assert.equal(tab, 'devices'); const request = await recipient.client.startEnrollment('Second device');
+    assert.equal(tab, 'connect'); const request = await recipient.client.startEnrollment('Second device');
     await owner.client.approveEnrollment(request.requestId, original.accountId);
     const preview = await recipient.client.previewEnrollment(request.requestId); assert.equal(preview.account.accountId, original.accountId);
     real.lose('enrollment.finish'); await assert.rejects(recipient.client.finishEnrollment(request.requestId, original.accountId), { code: 'NETWORK_ERROR' });

@@ -1064,6 +1064,7 @@ class WorldApplication {
     const actions: Record<AccountAction, () => void> = {
       'edit-profile': () => this.openProfileEditor(), 'profile-visibility': () => this.openVisibility(),
       'switch-profile': () => this.runHook(() => this.options.openAccount('profiles')),
+      'connect-profile': () => this.runHook(() => this.options.openAccount('connect')),
       appearance: () => this.openAppearance(), notifications: () => this.openNotifications(),
       'auth-devices': () => this.runHook(() => this.options.openAccount('devices')),
       recovery: () => this.runHook(() => this.options.openAccount('recovery')),

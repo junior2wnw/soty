@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { watchDeviceEnrollment } from '../ui/device-enrollment.mjs';
 
 // Exercise the actual panel's conditional render and Save callback. This port
 // reflects markup attributes; it does not claim native browser input coverage.
 class ElementPort {
   children = []; handlers = new Map(); attributes = new Map(); dataset = {}; value = ''; textContent = ''; isConnected = true; disabled = false;
   constructor(tagName) { this.tagName = tagName; }
+  classList = { toggle: (name, enabled) => { this.className = enabled ? `${this.className || ''} ${name}` : (this.className || '').split(' ').filter(value => value !== name).join(' '); } };
   set innerHTML(markup) {
     this.children = [];
     for (const match of markup.matchAll(/<([a-z][a-z0-9]*)\b([^>]*)>/giu)) {
@@ -43,8 +45,8 @@ async function until(predicate) {
   const deadline = Date.now() + 2000;
   while (!predicate()) { assert.ok(Date.now() < deadline, 'panel rendered its current view'); await new Promise(resolve => setImmediate(resolve)); }
 }
-const source = (await readFile(new URL('../ui/index.mjs', import.meta.url), 'utf8'))
-  .replace(/^import \{ mountPlatformInvitations \} from '\.\/platform-invitations.mjs';\r?\n/u, '')
+const source = (await readFile(new URL('../ui/credential-forms.mjs', import.meta.url), 'utf8')).replace(/^export /gmu, '') + '\n' + (await readFile(new URL('../ui/index.mjs', import.meta.url), 'utf8'))
+  .replace(/^import .*;\r?\n/gmu, '')
   .replace(/^export /gmu, '');
 
 test('fallback profile editor renders the 80-unit boundary and saves all 80 units through its real callback', { timeout: 5000 }, async () => {
@@ -56,7 +58,7 @@ test('fallback profile editor renders the 80-unit boundary and saves all 80 unit
   };
   const module = { exports: {} };
   vm.runInNewContext(`${source}\nmodule.exports.openConnectPanel = openConnectPanel;`, {
-    module, document, setTimeout, clearTimeout, mountPlatformInvitations: () => ({ destroy() {} }),
+    module, document, setTimeout, clearTimeout, AbortController, location: { origin: 'https://panel.test' }, watchDeviceEnrollment, mountPlatformInvitations: () => ({ destroy() {} }),
   });
   const panel = module.exports.openConnectPanel({ client, onRename: async name => { projected.push(name); } });
   try {
@@ -74,7 +76,7 @@ test('fallback profile editor renders the 80-unit boundary and saves all 80 unit
 function panelFixture(client, options = {}) {
   const document = { activeElement: null, body: new ElementPort('body'), createElement: tag => new ElementPort(tag) }, module = { exports: {} };
   vm.runInNewContext(`${source}\nmodule.exports.openConnectPanel = openConnectPanel;`, {
-    module, document, setTimeout, clearTimeout, confirm: () => true, mountPlatformInvitations: () => ({ destroy() {} }),
+    module, document, setTimeout, clearTimeout, AbortController, location: { origin: 'https://panel.test' }, watchDeviceEnrollment, confirm: () => true, mountPlatformInvitations: () => ({ destroy() {} }),
   });
   const panel = module.exports.openConnectPanel({ client, bootstrapOnOpen: false, ...options });
   const dialog = document.body.children[0], content = dialog.querySelector('.connect-content');
@@ -122,4 +124,59 @@ test('accepted contact offers a direct message only when the host supports it', 
   await until(()=>unsupported.content.querySelector('[data-contacts]')?.children.length===1);
   assert.equal(unsupported.content.querySelector('[data-contacts]').children[0].children.some(child=>child.textContent==='Написать'),false);
   unsupported.panel.close();
+});
+
+function enrollmentClient() {
+  const request = { requestId: 'enroll_' + 'q'.repeat(32), expiresAt: Date.now() + 60000 };
+  let local = { accountId: 'automatic', deviceId: 'automatic-device', localRevision: 1, profiles: [], pendingEnrollment: null }, approved = false;
+  const calls = { starts: 0, previews: 0, finishes: 0, passwords: 0 };
+  return { calls, approve() { approved = true; },
+    client: { getLocalState: async () => structuredClone(local),
+      status: async () => { throw Error('QR entry needs no unrelated status call'); },
+      startEnrollment: async () => { calls.starts++; local.pendingEnrollment = request; local.localRevision++; return request; },
+      previewEnrollment: async () => { calls.previews++; return { ...request, status: approved ? 'approved' : 'pending', account: approved ? { accountId: 'existing', label: 'Old account' } : null }; },
+      finishEnrollment: async () => { calls.finishes++; local = { ...local, accountId: 'existing', deviceId: 'joined-device', localRevision: local.localRevision + 1 }; return local; },
+      loginWithCredential: async () => { calls.passwords++; throw Object.assign(Error('Bad password'), { code: 'credential_unavailable' }); },
+    },
+  };
+}
+
+test('compact entry shows its QR immediately and finishes after one remote approval without extra recipient buttons', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const identity = enrollmentClient(), f = panelFixture(identity.client, { initialTab: 'connect' }); t.after(() => f.panel.close());
+  await until(() => identity.calls.previews === 1); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(identity.calls.starts, 1); assert.equal(identity.calls.finishes, 0);
+  assert.equal(f.dialog.querySelector('nav').hidden, true);
+  assert.equal(f.content.querySelector('[data-enroll]'), null);
+  assert.equal(f.content.querySelector('[data-entry-status]').textContent, 'Ждём подтверждения на прежнем устройстве…');
+  identity.approve(); t.mock.timers.tick(1200);
+  await until(() => f.dialog.open === false); assert.equal(identity.calls.finishes, 1);
+});
+
+test('an incorrect password resumes the same QR without losing the login form or starting another request', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const identity = enrollmentClient(), f = panelFixture(identity.client, { initialTab: 'connect' }); t.after(() => f.panel.close());
+  await until(() => identity.calls.previews === 1 && f.content.getAttribute('aria-busy') === 'false');
+  const form = f.content.querySelectorAll('form').find(node => node.dataset.credentialKind === 'password');
+  const [name, secret] = form.querySelectorAll('input'); name.value = 'my-login'; secret.value = 'not the correct password';
+  await form.handlers.get('submit')({ preventDefault() {} });
+  await until(() => identity.calls.previews >= 2); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(identity.calls.passwords, 1); assert.equal(identity.calls.starts, 1);
+  assert.equal(name.value, 'my-login'); assert.equal(secret.value, ''); assert.equal(form.isConnected, true);
+  assert.match(f.dialog.querySelector('.connect-message').textContent, /Не удалось войти/u);
+  identity.approve(); t.mock.timers.tick(1200); await until(() => f.dialog.open === false);
+  assert.equal(identity.calls.finishes, 1);
+});
+
+test('the approving device shows the bound account and needs only its one explicit confirmation', async () => {
+  const calls = [], requestId = 'enroll_' + 's'.repeat(32);
+  const client = { getLocalState: async () => ({ accountId: 'original-account', label: 'My account' }),
+    status: async () => { throw Error('approval needs no unrelated status screen'); },
+    inspectEnrollment: async () => ({ requestId, accountId: 'original-account', label: 'New device' }),
+    approveEnrollment: async (...args) => { calls.push(args); } };
+  const f = panelFixture(client, { initialIntent: { kind: 'device', id: requestId } });
+  await until(() => f.content.querySelector('[data-approve]') && f.content.getAttribute('aria-busy') === 'false');
+  assert.equal(f.dialog.querySelector('nav').hidden, true); assert.equal(calls.length, 0);
+  await f.content.querySelector('[data-approve]').handlers.get('click')({ preventDefault() {} });
+  assert.deepEqual(calls, [[requestId, 'original-account']]); assert.equal(f.dialog.open, false);
 });

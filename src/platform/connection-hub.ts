@@ -21,7 +21,7 @@ export interface ConnectionHubOptions {
   client: ConnectClient; origin: string; isCurrent(): boolean;
   onIntent?: (intent: ConnectionIntent, handoff?: ConnectionHandoff) => void | Promise<void>;
   onConnectComputer?: () => void | Promise<void>;
-  openAccount?: (tab: 'devices' | 'recovery' | 'profile', intent?: ConnectIntent) => Promise<void>;
+  openAccount?: (tab: 'connect' | 'devices' | 'recovery' | 'profile', intent?: ConnectIntent) => Promise<void>;
   observeAccount?: (listener: () => void) => () => void;
   onDispose?: () => void;
   qr?: (url: string) => Promise<string>; scanner?: ConnectionScanner; captures?: MediaCaptureCoordinator;
@@ -38,7 +38,7 @@ function checkedState(state: LocalState): LocalState {
 
 /** Existing account UI, with registration explicitly disabled. No bootstrap fallback. */
 export async function openConnectionAccountPanel(options: Pick<ConnectionHubOptions, 'client' | 'isCurrent' | 'observeAccount' | 'signal' | 'qr'>,
-  tab: 'devices' | 'recovery' | 'profile', intent?: ConnectIntent): Promise<void> {
+  tab: 'connect' | 'devices' | 'recovery' | 'profile', intent?: ConnectIntent): Promise<void> {
   if (!options.isCurrent() || options.signal?.aborted) throw stale();
   const state = await options.client.getLocalState();
   if (!options.isCurrent() || options.signal?.aborted) throw stale();
@@ -158,7 +158,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
     try { await action(); } catch (error) { note(friendly(error)); }
     finally { busy = false; if (live()) ui.setAttribute('aria-busy', 'false'); }
   };
-  async function openAccount(tab: 'devices' | 'recovery' | 'profile', intent?: ConnectIntent): Promise<void> {
+  async function openAccount(tab: 'connect' | 'devices' | 'recovery' | 'profile', intent?: ConnectIntent): Promise<void> {
     stopCamera();
     if (options.openAccount) await options.openAccount(tab, intent);
     else await openConnectionAccountPanel(options, tab, intent);
@@ -169,12 +169,17 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
   const clearPreview = (): void => {
     sequence++; pending = null; platformHandoff = null; proceedButton = null; preview.hidden = true; preview.replaceChildren();
   };
-  const previewIntent = (value: string, keepInput = false): void => {
+  const previewIntent = (value: string, keepInput = false, fromQr = false): void => {
     const intent = parseConnectionIntent(value, options.origin);
     if (!intent) { note('Это не поддерживаемая ссылка Сот. Проверьте полный адрес.'); return; }
     stopCamera(); sequence++; pending = intent; if (!keepInput) input.value = ''; qrHost.replaceChildren(); update();
     let held = intent.kind === 'platform-invitation' ? value.trim() : null;
     platformHandoff = held ? { takePlatformInvitationLink() { const result = held; held = null; return result; } } : null;
+    if (fromQr && intent.kind === 'device' && state?.accountId && !options.entry) {
+      const ticket = sequence; preview.hidden = true; preview.replaceChildren();
+      // The next view is the one explicit approval, not an automatic grant.
+      void run(() => finish(intent, ticket))(); return;
+    }
     const labels = { contact: 'Добавить человека', device: 'Подтвердить своё устройство', 'legacy-room': 'Открыть приглашение в комнату',
       profile: 'Посмотреть профиль', community: 'Открыть комнату', application: 'Открыть приложение', 'platform-invitation': 'Приглашение в Соты' };
     preview.replaceChildren(el('h2', '', labels[intent.kind]), el('p', '', 'Сначала проверим назначение. Подключение и доступ не выдаются сканированием.'));
@@ -186,7 +191,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
         if (!options.onIntent) throw new Error('connection_route_unavailable');
         await options.onIntent(intent, offeredHandoff ?? undefined); return;
       }
-      if (!current.accountId) { await openAccount('devices'); if (live() && ticket === sequence && pending === intent) previewIntent(value); return; }
+      if (!current.accountId) { await openAccount('connect'); if (live() && ticket === sequence && pending === intent) previewIntent(value); return; }
       await finish(intent, ticket);
     })(); });
     proceedButton = proceed;
@@ -236,7 +241,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
         try {
           const raw = await scanner.detect(video);
           if (!live() || camera !== capture || capture.cancelled) return;
-          if (raw) previewIntent(raw);
+          if (raw) previewIntent(raw, false, true);
         } catch { if (live() && camera === capture && !capture.cancelled) note('Не удалось прочитать кадр. Можно вставить ссылку или выбрать файл.'); }
         finally { decodePending = false; }
         if (live() && camera === capture && !capture.cancelled) capture.timer = setTimeout(() => { void scan(); }, 250);
@@ -261,7 +266,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
     picker.addEventListener('change', () => { const file = picker.files?.[0]; if (!file) return;
       if (filePending) { note('Файл ещё читается. Можно вставить ссылку.'); return; }
       filePending = true;
-      void scanner.file(file).then(raw => { if (live() && ticket === sequence) previewIntent(raw); }, error => { if (live() && ticket === sequence) note(friendly(error)); }).finally(() => { filePending = false; }); }); picker.click();
+      void scanner.file(file).then(raw => { if (live() && ticket === sequence) previewIntent(raw, false, true); }, error => { if (live() && ticket === sequence) note(friendly(error)); }).finally(() => { filePending = false; }); }); picker.click();
   });
   const paste = button('Открыть ссылку', 'next', '', () => { stopCamera(); if (live()) previewIntent(input.value); });
   input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); paste.click(); } });
@@ -270,7 +275,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
     clearPreview();
     if (!busy && state && (event as InputEvent).inputType === 'insertFromPaste' && parseConnectionIntent(input.value, options.origin)) previewIntent(input.value, true);
   });
-  const existing = button('Мой профиль на этом устройстве', 'phone', options.entry ? 'ch-primary' : '', () => { void run(() => openAccount('devices'))(); });
+  const existing = button('Мой профиль на этом устройстве', 'phone', options.entry ? 'ch-primary' : '', () => { void run(() => openAccount('connect'))(); });
   const recovery = button('Восстановить профиль', 'lock', '', () => { void run(() => openAccount('recovery'))(); });
   const computer = button('Приложения с компьютера', 'laptop', '', () => { void run(async () => {
     const current = await read(); if (!current.accountId || !options.onConnectComputer) throw new Error('connection_account_required');
