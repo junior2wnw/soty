@@ -356,7 +356,7 @@ test('failed probe remains explicit and never becomes a successful start receipt
 test('the full application image declares its readers beside its real module and dependency copies', async () => {
   const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
   assert.deepEqual(JSON.parse(currentStorageReaders), { version: 7,
-    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4], world: [6, 7] } });
+    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4, 5], world: [6, 7] } });
   assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
   assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);
   assert.match(source, /^COPY --from=build \/app\/node_modules \.\/node_modules$/mu);
@@ -389,7 +389,7 @@ test('Connect bridge snapshot preserves schema3; schema4 fences reader1 and reje
   assert.equal(await readConnectFormat(target), 3);
   assert.deepEqual(await readFile(path.join(target, 'connect', 'accounts.sqlite')), before);
   assert.deepEqual(await readFile(filename), before);
-  const upgraded = new DatabaseSync(filename); migrateDatabase(upgraded, 'soty'); upgraded.close();
+  const upgraded = new DatabaseSync(filename); migrateDatabase(upgraded, 'soty', { supportedVersion: 4 }); upgraded.close();
   const next = await readStorageFormat(root);
   assert.equal(next.schema, 'soty.storage-format.v7'); assert.equal(next.connect, 4); assert.equal(next.world, 'empty');
   assertStorageCompatible(image(2), next);

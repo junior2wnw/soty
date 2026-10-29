@@ -753,6 +753,7 @@ async function readUniversalFormat(dataDir, kind) {
 const connectLayouts = {
   3: { objects: 24, digest: 'aa2cd38526460fbd91eb55bd1775f2773945e9dd253e8b577f492e177e0fcdce' },
   4: { objects: 28, digest: '2888dbfccbf0c03810a0ae4e0a270e58ae4af4686ea462f925d077f4fa70a982' },
+  5: { objects: 32, digest: '539c33961b78d65018ace980c49e51138fce289d0aa0ebee0680eba511d6021a' },
 };
 export async function readConnectFormat(dataDir = '/data') {
   const file = await checkedStoreFile(dataDir, 'connect', 'accounts.sqlite');
@@ -760,14 +761,14 @@ export async function readConnectFormat(dataDir = '/data') {
   return inspectDatabase(file, db => {
     const version = db.prepare('PRAGMA user_version').get().user_version, expected = connectLayouts[version];
     if (!expected) fail('storage_format_unknown');
-    const rows = db.prepare("SELECT type,CASE WHEN length(name)<=128 THEN name END AS name,CASE WHEN length(tbl_name)<=128 THEN tbl_name END AS tbl_name,CASE WHEN length(sql)<=32768 THEN sql END AS sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT 29").all();
+    const rows = db.prepare("SELECT type,CASE WHEN length(name)<=128 THEN name END AS name,CASE WHEN length(tbl_name)<=128 THEN tbl_name END AS tbl_name,CASE WHEN length(sql)<=32768 THEN sql END AS sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT 33").all();
     const layout = rows.map(row => [row.type, row.name, row.tbl_name, typeof row.sql === 'string' ? row.sql.replace(/\s+/gu, ' ').trim() : null]);
     if (rows.length !== expected.objects || createHash('sha256').update(JSON.stringify(layout)).digest('hex') !== expected.digest) fail('storage_format_unreadable');
     const metadata = db.prepare('SELECT key,CASE WHEN length(value)<=128 THEN value END AS value FROM connect_meta LIMIT 5').all();
     const meta = Object.fromEntries(metadata.map(row => [row.key, row.value]));
     if (metadata.length !== 4 || meta.project_id !== 'soty' || meta.schema_lineage !== 'connect.sqlite.local.v1'
-      || meta.schema_version !== String(version) || meta.min_reader !== (version === 4 ? '2' : '1')) fail('storage_format_unknown');
-    if (version === 4) {
+      || meta.schema_version !== String(version) || meta.min_reader !== (version >= 4 ? '2' : '1')) fail('storage_format_unknown');
+    if (version >= 4) {
       const policy = db.prepare('SELECT id,invite_only,quota,revision FROM platform_admission LIMIT 2').all();
       if (policy.length !== 1 || policy[0].id !== 1 || ![0, 1].includes(policy[0].invite_only)
         || !Number.isSafeInteger(policy[0].quota) || policy[0].quota < 0 || policy[0].quota > 100
