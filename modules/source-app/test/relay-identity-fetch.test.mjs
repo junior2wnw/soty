@@ -70,11 +70,15 @@ test('missing, malformed, or untrusted Root config fails before messaging or app
   }
 });
 
-test('a stalled Root config is bounded and a later user action can request it again', async () => {
+test('a stalled Root config is bounded and a later user action can request it again', { timeout: 5000 }, async () => {
   const f = fixture(); let calls = 0;
+  let configAborted; const stopped = new Promise(resolve => { configAborted = resolve; });
   const client = createRelayIdentityFetch({ view: f.view, origin: 'https://app.example', timeoutMs: 100,
-    fetch: async path => { assert.equal(path, '/_soty/relay-identity-config'); calls++; return new Promise(() => {}); } });
+    fetch: async (path, options) => { assert.equal(path, '/_soty/relay-identity-config'); calls++;
+      if (options.signal.aborted) configAborted(); else options.signal.addEventListener('abort', configAborted, { once: true });
+      return new Promise(() => {}); } });
   await assert.rejects(client('/api'), { code: 'soty_identity_window_unavailable' });
+  await stopped;
   await new Promise(done => setImmediate(done));
   await assert.rejects(client('/api'), { code: 'soty_identity_window_unavailable' });
   assert.equal(calls, 2); assert.equal(f.posted.length, 0);
