@@ -144,9 +144,12 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     if (intent) { await renderIntent(); return; }
     if (tab === 'profiles') {
       content.innerHTML = '<h3>Ваши профили на этом устройстве</h3><p>Выберите, от чьего имени продолжить. Данные и разрешения каждого профиля хранятся отдельно.</p><div data-profile-list></div><button data-existing>Открыть профиль с другого устройства</button><button data-recovery>Восстановить из файла</button>';
-      const known = (local.profiles || []).filter(profile => !profile.revoked);
-      if (!known.length) content.querySelector('[data-profile-list]').textContent = 'Сохранённых профилей пока нет.';
-      for (const profile of known) {
+      const known = new Map();
+      for (const profile of local.profiles || []) {
+        if (!profile.revoked && (!known.has(profile.accountId) || profile.active)) known.set(profile.accountId, profile);
+      }
+      if (!known.size) content.querySelector('[data-profile-list]').textContent = 'Сохранённых профилей пока нет.';
+      for (const profile of known.values()) {
         const row = document.createElement('button'); row.type = 'button'; row.dataset.profileId = profile.accountId;
         row.textContent = `${profile.label || 'Профиль'}${profile.active ? ' · текущий' : ''}`; row.disabled = Boolean(profile.active);
         row.addEventListener('click', guard(async () => { await client.switchProfile(profile.accountId); dialog.close(); }));
@@ -273,7 +276,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       on('[data-enroll]', async () => { tab = 'connect'; await render(); });
     } else if (tab === 'recovery') {
       const verified = status?.recovery?.verified === true;
-      content.innerHTML = `<h3>Не потерять профиль</h3><p>${verified ? 'Запасной способ входа проверен.' : 'Пока доступ зависит от ваших устройств. Сохраните и проверьте файл восстановления.'}</p>
+      content.innerHTML = `<h3>Не потерять профиль</h3><p>${verified ? 'Файл восстановления проверен.' : 'Выберите запасной способ входа на случай, если прежнее устройство недоступно.'}</p>
         ${local.accountId ? '<button data-save-recovery>Создать файл восстановления</button>' : ''}<div data-recovery-confirm></div>
         <label>Открыть профиль из файла восстановления<input type="file" accept="application/json,.json" data-recover-file></label><button data-recover>Восстановить профиль</button>
         <p class="connect-muted">Файл восстановления открывает ваш профиль. Это не копия содержимого приложений. Храните его в надёжном месте, отдельно от устройства. После использования создайте новый.</p>`;

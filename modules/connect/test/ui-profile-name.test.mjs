@@ -94,6 +94,32 @@ test('known-profile selector needs no status/recovery request and closes after t
   assert.deepEqual(calls, ['B']); assert.equal(f.dialog.open, false);
 });
 
+test('profile selector shows each account once, prefers its active identity and retains the automatic account', async () => {
+  const calls = [], local = { accountId: 'existing-account', profiles: Object.freeze([
+    { accountId: 'automatic-account', label: 'Android', active: false },
+    { accountId: 'existing-account', label: 'Android', active: false },
+    { accountId: 'existing-account', label: 'Android', active: false },
+    { accountId: 'existing-account', label: 'Android', active: true },
+    { accountId: 'existing-account', label: 'Android', active: false },
+    { accountId: 'existing-account', label: 'Android', active: false },
+  ].map(Object.freeze)) };
+  const savedProfiles = structuredClone(local.profiles);
+  const f = panelFixture({ async getLocalState() { return local; }, async status() { throw Error('selector needs no status request'); },
+    async switchProfile(id) { calls.push(id); local.accountId = id; } }, { initialTab: 'profiles' });
+  try {
+    await until(() => f.content.querySelector('[data-profile-list]') && f.content.getAttribute('aria-busy') === 'false');
+    const rows = f.content.querySelector('[data-profile-list]').children;
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map(row => row.dataset.profileId), ['automatic-account', 'existing-account']);
+    assert.equal(rows[1].disabled, true); assert.equal(rows[1].textContent, 'Android · текущий');
+    assert.equal(rows[0].disabled, false); assert.equal(rows[0].textContent, 'Android');
+    assert.deepEqual(local.profiles, savedProfiles);
+    await rows[0].handlers.get('click')({ preventDefault() {} });
+    assert.deepEqual(calls, ['automatic-account']); assert.equal(f.dialog.open, false);
+    assert.deepEqual(local.profiles, savedProfiles);
+  } finally { f.panel.close(); }
+});
+
 test('recovery and data copies have separate views and preserve the selected-account vault contract', async () => {
   const calls = [], client = { async getLocalState() { return { accountId: 'A', profiles: [] }; }, async status() { return { accountId: 'A', label: 'A', recovery: { verified: true } }; },
     async saveVault(payload, revision, expectedAccountId) { calls.push({ payload, expectedAccountId }); return { revision: 2 }; } };
