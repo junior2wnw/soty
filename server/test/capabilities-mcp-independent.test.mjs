@@ -235,6 +235,8 @@ function mountFront(f, { catalog, origin = f.origin, limits, trustProxy = false 
 }
 
 test('independent wire catalog preserves private noninterference and maximal escaped registry declarations', { timeout: 20000 }, async t => {
+  const nativeWallNow = Date.now.bind(Date); let fixtureNow = nativeWallNow();
+  t.mock.method(Date, 'now', () => fixtureNow = Math.max(fixtureNow, nativeWallNow()));
   const f = await fixture(t, { enabled: false }), catalogs = catalogFixture(), transcripts = [];
   let baselineCursor;
   for (const catalog of [catalogs.baseline, catalogs.changed]) {
