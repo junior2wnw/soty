@@ -38,11 +38,25 @@ async function localTransit(body?: Record<string, unknown>): Promise<TransitRepl
 }
 
 function downloadProfile(profile: unknown): void {
-  const portable = structuredClone(profile) as { inbounds?: Record<string, unknown>[] };
+  const portable = structuredClone(profile) as {
+    inbounds?: Record<string, unknown>[];
+    route?: { default_domain_resolver?: string | { server?: string }; rules?: Record<string, unknown>[] };
+  };
   for (const inbound of portable.inbounds || []) {
     delete inbound.interface_name;
     // Portable downloads must also start in clients built without gVisor.
     if (inbound.type === 'tun') inbound.stack = 'system';
+  }
+  const route = portable.route;
+  const resolver = route?.default_domain_resolver;
+  const resolverTag = typeof resolver === 'string' ? resolver : resolver?.server;
+  if (typeof resolverTag === 'string' && resolverTag && Array.isArray(route?.rules)
+    && !route.rules.some(rule => rule.action === 'resolve' && rule.network === 'udp')) {
+    // Resolve through Transit before URLTest's UDP adapter and the IP deny rules.
+    // Pinned cores otherwise lose unresolved UDP destinations in outbound groups.
+    const deny = route.rules.findIndex(rule => rule.action === 'reject' && rule.network === 'udp');
+    route.rules.splice(deny < 0 ? route.rules.length : deny, 0,
+      { network: 'udp', action: 'resolve', server: resolverTag, strategy: 'ipv4_only' });
   }
   const url = URL.createObjectURL(new Blob([`${JSON.stringify(portable, null, 2)}\n`], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = 'transit.json';

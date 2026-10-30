@@ -155,6 +155,38 @@ test('downloading an already saved gVisor profile uses the system stack without 
   assert.equal(f.calls.length, 0); f.close();
 });
 
+test('portable UDP domains resolve through the Exit before private-address checks without replacing saved access', async () => {
+  const f = fixture({ paired: false });
+  const rules = [{ action: 'sniff' }, { protocol: 'dns', action: 'hijack-dns' },
+    { network: 'udp', ip_is_private: true, action: 'reject' }];
+  f.payload.transitClient.profile.route = { final: 'entry', default_domain_resolver: 'exit', rules };
+  const before = structuredClone(f.payload);
+  await f.open(); f.button('Скачать профиль sing-box').click();
+  const downloaded = JSON.parse(await f.downloads[0].text());
+  const resolve = { network: 'udp', action: 'resolve', server: 'exit', strategy: 'ipv4_only' };
+  assert.deepEqual(downloaded.route.rules, [rules[0], rules[1], resolve, rules[2]]);
+  assert.deepEqual(downloaded.outbounds, before.transitClient.profile.outbounds);
+  assert.deepEqual(downloaded.dns, before.transitClient.profile.dns);
+  assert.deepEqual(f.payload, before); assert.equal(f.calls.length, 0); f.close();
+
+  const again = fixture({ paired: false });
+  again.payload.transitClient.profile = downloaded;
+  await again.open(); again.button('Скачать профиль sing-box').click();
+  assert.deepEqual(JSON.parse(await again.downloads[0].text()), downloaded);
+  again.close();
+});
+
+test('portable export supports the object form of the default domain resolver', async () => {
+  const f = fixture({ paired: false });
+  f.payload.transitClient.profile.route = { final: 'entry', default_domain_resolver: { server: 'exit' },
+    rules: [{ network: 'udp', ip_is_private: true, action: 'reject' }] };
+  const before = structuredClone(f.payload);
+  await f.open(); f.button('Скачать профиль sing-box').click();
+  const downloaded = JSON.parse(await f.downloads[0].text());
+  assert.equal(downloaded.route.rules[0].server, 'exit');
+  assert.deepEqual(f.payload, before); f.close();
+});
+
 test('a delayed new profile cannot be saved after account A-B-A', async () => {
   const f = fixture({ paired: false, fresh: true, issuing: true }); await f.open();
   const held = f.holdProfile(); f.button('Получить профиль sing-box').click(); await f.settle(() => held.entered.settled);
