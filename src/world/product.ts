@@ -17,7 +17,7 @@ export const capabilities: readonly Capability[] = [
   { id: 'files', title: 'Файлы', detail: 'Вложения в ваших комнатах', symbol: 'folder', color: 'blue', category: 'Инструменты' },
   { id: 'chess', title: 'Шахматы', detail: 'С другом или компьютером', symbol: 'game', color: 'sage', category: 'Общение' },
   { id: 'terminal', title: 'Команды', detail: 'Управление подключённым устройством', symbol: 'tools', color: 'lilac', category: 'Инструменты' },
-  { id: 'internet', title: 'Интернет', detail: 'TRANSIT и доступ с ваших устройств', symbol: 'world', color: 'blue', category: 'Инструменты' },
+  { id: 'internet', title: 'TRANSIT', detail: 'Личный профиль sing-box для ваших устройств', symbol: 'world', color: 'blue', category: 'Инструменты' },
   { id: 'legacy-notes', title: 'Совместные тексты', detail: 'Общие заметки в комнате', symbol: 'chat', color: 'coral', category: 'Дела' },
   { id: 'appearance', title: 'Оформление', detail: 'Тема, яркость и движение', symbol: 'settings', color: 'sage', category: 'Инструменты' },
 ];

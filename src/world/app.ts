@@ -1007,7 +1007,7 @@ class WorldApplication {
     const tools = el('div', 'of-menu-tools');
     if (this.unifiedField) tools.append(item('Вид поля', 'sliders', () => this.unifiedField?.openView()));
     else tools.append(item('На моё поле', 'grid', () => this.navigate('mine')));
-    tools.append(item('Интернет', 'world', () => this.openCapability('internet')), this.coreSupportLink());
+    tools.append(item('TRANSIT · Интернет', 'world', () => this.openCapability('internet')), this.coreSupportLink());
     const grip = el('button', 'of-sheet-handle'); grip.type = 'button'; grip.setAttribute('aria-label', 'Свернуть меню');
     disposeGrip = bindSheetGripDismiss(grip, () => menu.close(), {
       isCurrent: () => !this.destroyed && this.fieldMenu === menu && menu.element.open && account === this.deskAccount && accountGeneration === this.accountGeneration,
@@ -1352,6 +1352,7 @@ class WorldApplication {
       await this.openApplication(app, intent, !known); return true;
     }
     if (route === 'notes') { this.openNotes(id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined, false); return true; }
+    if (route === 'internet') { this.navigate('mine'); this.openCapability('internet'); return true; }
     if (route === 'messages') { this.navigate('messages', id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined); return true; }
     if (route === 'apps') { this.navigate('mine'); return true; }
     if (route === 'world') {
@@ -1460,7 +1461,7 @@ class WorldApplication {
       onOpen: (item, record, source) => this.afterNoteSaved(() => {
         if (!isCurrent()) return;
         if (source) this.pendingReturnPresentation = source;
-        if (item.entity.kind === 'builtin') { if (item.entity.id === 'notes') this.openNotes(); else if (item.entity.id === 'chess') this.runHook(() => this.options.openLegacy('chess')); else if (item.entity.id === 'assistant') this.agentOrb?.open(document.activeElement instanceof HTMLElement ? document.activeElement : undefined); return; }
+        if (item.entity.kind === 'builtin') { if (item.entity.id === 'notes') this.openNotes(); else if (item.entity.id === 'chess') this.runHook(() => this.options.openLegacy('chess')); else if (item.entity.id === 'internet') this.openCapability('internet'); else if (item.entity.id === 'assistant') this.agentOrb?.open(document.activeElement instanceof HTMLElement ? document.activeElement : undefined); return; }
         if (item.entity.kind === 'app') {
           const app = record && 'entry' in record && 'id' in record ? record as DirectoryApp : null;
           void this.openApplication({ appId: item.entity.id, name: item.title, status: app?.state ?? 'unknown', ...(app ? { entry: app.entry, ownerAccountId: app.ownerAccountId } : {}) }, undefined, !app); return;
@@ -2952,6 +2953,8 @@ class WorldApplication {
 
   private async openApplication(app: WorldAppRecord, intent?: AppLaunchIntent, resolveMetadata = false): Promise<void> {
     if (this.destroyed || !this.deskAccount) return;
+    // The first-party Transit entry now opens account-owned access, independent of its former device listener.
+    if (app.appId === 'app-da4e2c0050f0557bf00ed83c82df6087' && !intent?.presentation) { this.openCapability('internet'); return; }
     const previousStage = this.appStage, sequenceBeforeOpen = this.screenSequence, accountBeforeOpen = this.deskAccount;
     if (previousStage?.requiresCloseCheck()) {
       try { await previousStage.flush(); } catch { this.toast('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.', true); return; }

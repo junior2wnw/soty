@@ -49,6 +49,7 @@ import { createHumanCallModule } from './human-call-module.js';
 import { createPushService, pushConfigurationFromEnvironment } from './push-service.js';
 import { createAccountAiService } from './account-ai.js';
 import { captureNativeSourceHandlers } from './native-source-handlers.js';
+import { createTransitAccess, loadTransitAccessConfiguration } from './transit-access.js';
 
 // Startup remains synchronous for callers. Its error privately retains the
 // asynchronous worker shutdown so supervisors can wait before retrying or
@@ -90,7 +91,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice, push,
-    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess, accountAiService, automaticApps;
+    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess, accountAiService, automaticApps, transitAccess;
   const appFeedback = universalEnabled ? createAppFeedbackCapabilities({ capabilities: () => capabilities,
     connect: () => connect, apps: () => apps, feedback: () => universal.feedback }) : null;
   const preparedAgent = universalEnabled ? createPreparedAgentManifest({ capabilities: () => capabilities, connect: () => connect, apps: () => apps }) : null;
@@ -184,7 +185,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     };
     close(() => automaticApps?.close()); close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [push, orbVoice, voice, personal, accountAiService, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [push, orbVoice, voice, personal, accountAiService, transitAccess, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -192,6 +193,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     if (error && (typeof error === 'object' || typeof error === 'function')) rejectedStarts.set(error, cleanup);
   };
   try {
+    transitAccess = createTransitAccess({ configuration: loadTransitAccessConfiguration(env, { dataDir }), getConnect: () => connect });
     if (accountAi) {
       accountAiService = createAccountAiService({ configuration: accountAi, getConnect: () => connect,
         admitNewWork: () => Boolean(connectors && !connectors.store.maintenance()),
@@ -345,7 +347,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     const preparedApps = createPreparedAppsExtension({ store: connectors.store, apps, universal,
       connect: { isActorActive: actor => connect?.isActorActive(actor) === true, withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback) } });
     const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, preparedApps, ...(preparedAgent ? [preparedAgent.extension] : []), notes, capabilities, humanCalls, push,
-      ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), ...(accountAiService ? [accountAiService] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
+      ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), ...(accountAiService ? [accountAiService] : []), transitAccess, sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
     app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions,
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     automaticApps = createAutomaticAppRegistration({ store: connectors.store, apps, universal, connect });
@@ -400,6 +402,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       await attempt(() => orbVoice.close());
       await attempt(() => personal.close());
       await attempt(() => accountAiService?.close());
+      await attempt(() => transitAccess?.close());
       await attempt(() => sourceAccess.close());
       await attempt(() => voice.close());
       await attempt(() => humanCalls.close());

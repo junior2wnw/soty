@@ -54,6 +54,7 @@ export interface UnifiedFieldScreen {
 const BUILTINS: DirectoryEntity[] = [
   { entity: { kind: 'builtin', id: 'notes' }, title: 'Записки', symbol: 'note', coverKey: 'notes', source: 'builtin' },
   { entity: { kind: 'builtin', id: 'chess' }, title: 'Шахматы', symbol: 'chess', coverKey: 'chess', source: 'builtin' },
+  { entity: { kind: 'builtin', id: 'internet' }, title: 'TRANSIT · Интернет', description: 'Личный профиль sing-box', symbol: 'world', source: 'builtin' },
   { entity: { kind: 'builtin', id: 'assistant' }, title: 'Помощник', symbol: 'assistant', coverKey: 'assistant', source: 'builtin' },
 ];
 const labels: Record<FieldFilter, string> = { all: 'Всё', app: 'Приложения', person: 'Люди', community: 'Комнаты', device: 'Устройства' };
