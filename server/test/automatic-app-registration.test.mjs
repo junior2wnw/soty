@@ -83,6 +83,7 @@ async function fixture(t) {
   let sequence = 0;
   async function create(autoRegister = true, extra = {}) {
     const result = await owner.extension('apps.agent.create', { ...target, requestId: `auto-request-${++sequence}`, text: 'Создать список', cwd: '', ...extra, ...(autoRegister ? { autoRegister: true } : {}) });
+    assert.ok(result.job, result.admission?.reason ?? 'job_missing');
     const leased = await app.locals.connectorService.store.poll(auth, 0, undefined, { automaticOwnerGuard: true }); assert.equal(leased.jobs[0]?.id, result.job.id);
     return result.job.id;
   }
@@ -886,6 +887,8 @@ test('a failed archive receipt write rolls back cancellation and keeps the old-r
 });
 
 test('revoking the current actor before archive commit preserves the pending result', { timeout: 30000 }, async t => {
+  const nativeWallNow = Date.now.bind(Date); let fixtureNow = nativeWallNow();
+  t.mock.method(Date, 'now', () => fixtureNow = Math.max(fixtureNow, nativeWallNow()));
   const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
   await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
   await second.finishEnrollment(enrollment.requestId, preview.account.accountId); const secondDevice = (await second.getLocalState()).deviceId;
