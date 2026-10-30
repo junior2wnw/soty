@@ -1,0 +1,162 @@
+{
+  "schema": "transit.dns-udp-audit.v1",
+  "date": "2026-10-31",
+  "sources": {
+    "soty": "e023407007a5d430168b3cfc50b6da15da42a8fc",
+    "transit": "c41cfe9f240b0a112a7dc80e4d277fd6075d7335"
+  },
+  "dns": {
+    "rootCauseEstablished": false,
+    "previousSingleEofReproduced": false,
+    "freshQueriesThroughTransit": 180,
+    "successfulQueriesThroughTransit": 180,
+    "directExitQueries": 54,
+    "successfulDirectExitQueries": 54,
+    "concurrentQueriesIncluded": 72,
+    "clientCoreVersion": "1.13.15",
+    "tcpConnectionPoolingInThisVersion": false,
+    "liveUnboundIncomingTcpLimitPerNode": 10,
+    "observedEstablishedDnsTcpRange": [
+      0,
+      1
+    ],
+    "capacityExhaustionProven": false,
+    "productionDnsChanged": false
+  },
+  "udp": {
+    "defect": "Unresolved domain destinations are lost in pinned 1.13.15 outbound groups; literal IP and direct leaf pass. Resolve before URLTest is a tested compatibility workaround.",
+    "upstreamFix": "https://github.com/SagerNet/sing-box/commit/ca7216a3811f0f99d52ffda911a114178721dbae",
+    "portableFix": "UDP resolve through existing exit-dns, ipv4_only, after DNS hijack and before private-address deny rules.",
+    "nativeNetworkRoutingChanged": false,
+    "policy": "One sticky Exit per Entry for new associations; no per-flow or per-user balancing.",
+    "observedEntryToExit": {
+      "ger1": "stiff",
+      "stiff": "ger1",
+      "ugly": "stiff"
+    },
+    "testedForcedLeaves": [
+      "ger1-hysteria2",
+      "stiff-vless",
+      "stiff-hysteria2",
+      "ugly-vless",
+      "ugly-hysteria2"
+    ],
+    "automaticSelectionTested": true,
+    "initialFixedAssociations": 18,
+    "initialSuccessfulAssociations": 17,
+    "initialStunTimeouts": 1,
+    "additionalUglyHy2Associations": 3,
+    "additionalUglyHy2Success": 3,
+    "successfulStunRepliesTotal": 66,
+    "sameAssociationExitStableAfter16Seconds": true,
+    "privateMixedMetadataIpv6AndReflectionRejected": 5,
+    "ger1VlessStillUnqualified": "Existing transport path timeout from this PC; not counted as passing.",
+    "financialMeteringProof": false
+  },
+  "validation": {
+    "controllerTestsPassed": 12,
+    "profileServiceTestsPassed": 6,
+    "typecheckPassed": true,
+    "uiBuildPassed": true,
+    "actualControllerBlobVerified": true,
+    "credentialsVaultAndPoolUnchanged": true,
+    "exactCoreFullProfileParserPassed": true,
+    "newBrowserRun": false,
+    "systemVpnChanged": false,
+    "agentChanged": false
+  },
+  "deployment": {
+    "uiRelease": "8192139f0d48e6e4cdaac173a64f63f16a9c312143e2ef11159efbb61a7c99ab",
+    "previousUiReleaseRetained": "07667f821c3846e273d567e6bb8f70129806edb60dffd32b6e15fe287585370b",
+    "transaction": "7648ab19f5bee66ed735423d484f672f",
+    "files": 514,
+    "signalsSent": 0,
+    "publicInventoryByteReadbackPassed": true,
+    "rootAndIssuerExactContainersUnchanged": true,
+    "firstAttempt": "Operator deadline before pointer switch. No publisher remained; current unchanged; complete sealed candidate independently verified; original journal retained. Fresh attempt then completed. No replay of unknown outcome."
+  },
+  "excludedEvidence": [
+    {
+      "file": "udp-fixed-matrix-20261031.safe.json",
+      "reason": "Harness SOURCE assignment targeted contextmanager wrapper rather than generator globals; it still used old profile. Superseded by explicitly corrected v2 fixture."
+    }
+  ],
+  "evidence": [
+    {
+      "file": "dns-exit-local-20261031.safe.json",
+      "sha256": "2588bcb2b1606d3409ab649e46cad41cfb5b3d131e624f43b96ef71c7064656e"
+    },
+    {
+      "file": "dns-udp-isolation-20261031.safe.json",
+      "sha256": "9a8fccb570902b771dcd8e8f0f54baabbd10e5c847a96f71072dd9a11524989b"
+    },
+    {
+      "file": "dns-auto-debug-20261031.safe.json",
+      "sha256": "6c3b07adefcbdb810427232640108ea6aa6d4c2b5c2fe9d9c47f4050d931e8fd"
+    },
+    {
+      "file": "dns-concurrent-20261031.safe.json",
+      "sha256": "dded22c5d787714d419f1756b786636f55975dc39f25adbaf8d24b5f4fa0f1f6"
+    },
+    {
+      "file": "dns-live-limits-20261031.safe.json",
+      "sha256": "5bbc4bb0a15f61cae3ce140dc678b0fef2922ddc75b8cb10361526c14ae86da3"
+    },
+    {
+      "file": "udp-client-variants-20261031.safe.json",
+      "sha256": "d6c434034f8fe3f27cea298a56a39bef6deddb479ed1a29bb55d75ef46c6371a"
+    },
+    {
+      "file": "udp-client-resolve-20261031.safe.json",
+      "sha256": "a6c078cc9b9ac548d585efd0d7e91283ef13313ed62d9475d0e09536d2825ac3"
+    },
+    {
+      "file": "udp-fixed-matrix-20261031-v2.safe.json",
+      "sha256": "b92fe9774b6f16a7e0d74be9ed7f8c6293d06a072d788cb355048af459ad55b5"
+    },
+    {
+      "file": "udp-fixed-ugly-hy2-recheck-20261031.safe.json",
+      "sha256": "3e07a8f43b3051b34d83ea915355b2b296ca0a0a5882e256807cb8bfb3dec0d4"
+    },
+    {
+      "file": "udp-fixed-private-deny-20261031-v2.safe.json",
+      "sha256": "83e630db3a2561abc8bca90718eacc3577d506187f54db6a78b1c036108bfaed"
+    },
+    {
+      "file": "udp-controller-tests.log",
+      "sha256": "ada3fd9b0da84ccf1166add29676d5180933cec70b9e661da921a9318727df7f"
+    },
+    {
+      "file": "udp-pool-tests.log",
+      "sha256": "baac13cfb03b0fec1690ec0fafeb6e32ce08e264b8a87fa6de9958e78e3c1e55"
+    },
+    {
+      "file": "udp-ui-build.log",
+      "sha256": "142becb90cbff66544968fabe97a7b2e03cc375cfed3e4040c972ec62c34fe25"
+    },
+    {
+      "file": "udp-ui-recovery.safe.json",
+      "sha256": "e712dec4ebbb8b6e3c1d63b17c8b3138ae723f5fd67bc251cec7f79c0c57e35a"
+    },
+    {
+      "file": "udp-ui-v2-execute.safe.json",
+      "sha256": "c9134a974a0a59ca1bf2cadce6007669278574e1baf580d53e6852f6c94634c9"
+    },
+    {
+      "file": "udp-ui-v2-inspect.safe.json",
+      "sha256": "851946e75a4199d78949ece34f7dcac2bec349b5999593daffa62410e45514d6"
+    },
+    {
+      "file": "udp-public-20261031.safe.json",
+      "sha256": "6a423059263e176f904c3e0041494428b1be07e3a55811a2407e7d0ef16eadda"
+    },
+    {
+      "file": "udp-final-services.safe.json",
+      "sha256": "41b063ce112c43e459b278b8b4a06a33271c7b245178d4d194cea175656f5bf0"
+    },
+    {
+      "file": "dns-udp-final-live-20261031.safe.json",
+      "sha256": "1bc7401d084165560bc88f39a39130197fe18fa7cc3fcd071ad2fff55b89ad27"
+    }
+  ]
+}
