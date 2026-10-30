@@ -772,6 +772,21 @@ export function createClientWithStorage(options, storage) {
       // Keep the unregistered keys archived: abandoning a screen must never delete an existing profile.
       await mutate(draft => { if (draft.pendingEnrollment?.requestId) enrollmentPreviews.delete(draft.pendingEnrollment.requestId); draft.pendingEnrollment = null; return draft; }); await notify();
     }),
+    discardPendingEnrollmentIfCurrent: (requestId, { localRevision, deviceId, accountId } = {}, { signal } = {}) => serialize(async () => {
+      requestId = requiredString(requestId, 'Request ID'); revision(localRevision);
+      if (deviceId !== null) requiredString(deviceId, 'Expected device ID');
+      if (accountId !== null) requiredString(accountId, 'Expected account ID');
+      const checkOpen = () => { if (signal?.aborted) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The device connection was closed.'); };
+      const state = await mutate(draft => {
+        checkOpen(); sameSnapshot(draft, { localRevision, activeDeviceId: deviceId });
+        const active = draft.installations.find(item => item.deviceId === draft.activeDeviceId);
+        if ((active?.accountId ?? null) !== accountId || draft.pendingEnrollment?.requestId !== requestId) {
+          throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The pending request changed. It was not discarded.');
+        }
+        draft.pendingEnrollment = null; return draft;
+      }, { beforeCommit: checkOpen, signal });
+      enrollmentPreviews.delete(requestId); await notify(); return view(state);
+    }),
     switchProfile: accountId => serialize(async () => {
       accountId = requiredString(accountId, 'Account ID');
       const state = await read();

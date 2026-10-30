@@ -146,6 +146,8 @@ export interface ConnectClient {
   finishEnrollment(requestId: string, expectedAccountId: string, options?: { signal?: AbortSignal }): Promise<AccountResult>;
   /** Abandons only local enrollment UI state; it does not delete keys or revoke a server grant. */
   discardPendingEnrollment(): Promise<void>;
+  /** Clears exactly the displayed pending request in the same local revision; keeps all device keys. */
+  discardPendingEnrollmentIfCurrent(requestId: string, expected: Pick<LocalState, 'localRevision' | 'deviceId' | 'accountId'>, options?: { signal?: AbortSignal }): Promise<LocalState>;
   switchProfile(accountId: string): Promise<LocalState>;
   revokeDevice(deviceId: string): Promise<{ revoked: true; deviceId?: string }>;
   /** Pass the displayed account before asynchronously preparing a product snapshot. */
