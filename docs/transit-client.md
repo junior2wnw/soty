@@ -1,4 +1,4 @@
-# TRANSIT in Soty Agent 1.4.9
+# Personal TRANSIT access and Soty Agent
 
 ## Public personal profiles (30 October 2026)
 
