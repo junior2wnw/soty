@@ -136,10 +136,12 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     const state = local?.runtime;
     const status = node('div', '', 'transit-client-state');
     status.dataset.active = String(state?.active === true);
-    status.append(node('strong', mobile ? (saved ? 'Профиль доступен' : 'Добавьте ваш доступ')
-      : !state ? 'Агент недоступен или требует обновления' : state.active ? 'Включён на этом компьютере'
+    status.append(node('strong', saved ? 'Личный профиль готов' : 'Получите личный профиль'));
+    if (!mobile && state && (state.configured || state.running || state.phase !== 'off')) {
+      status.append(node('span', state.active ? 'Включён на этом компьютере'
         : state.running || state.phase === 'unknown' || state.phase === 'error' ? 'Подключение требует проверки' : 'Выключен на этом компьютере'));
-    if (!mobile && state?.version) status.append(node('span', `sing-box ${state.version} · выходов: ${state.entryCount}`));
+      status.append(node('span', `sing-box ${state.version} · выходов: ${state.entryCount}`));
+    }
     if (state?.active && state.availableEntryCount && state.availableEntryCount < state.entryCount)
       status.append(node('span', `Проверку прошли ${state.availableEntryCount} из ${state.entryCount} выходов. Остальные временно исключены.`));
     body.append(status, notice);
@@ -172,8 +174,9 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
         await saveTransitAccountProfile(accountClient, owner, normalizeTransitClientProfile(exported.profile));
       }, 'Доступ сохранён в зашифрованном профиле Сот. На телефоне откройте тот же профиль.'));
     } else if (!mobile) {
-      body.append(node('p', 'Нужен обновлённый агент Сот с клиентом TRANSIT. Сетевое подключение включается отдельной кнопкой.'));
-      actionButton(local ? 'Разрешить управление этим компьютером' : 'Обновить агент Сот', () => void perform(pairComputer, 'Запустите скачанный установщик, затем обновите состояние. Подключение включается отдельной кнопкой.'), true);
+      body.append(node('p', local ? 'Чтобы включать VPN на этом компьютере через агент Сот, разрешите управление. Для приложения sing-box достаточно скачать профиль.'
+        : 'Для управления VPN через Соты установите агент. Скачать профиль и подключиться в sing-box можно без него.'));
+      actionButton(local ? 'Разрешить управление этим компьютером' : 'Обновить агент Сот', () => void perform(pairComputer, 'Запустите скачанный установщик, затем обновите состояние. Подключение включается отдельной кнопкой.'), !issuingEnabled && !saved);
     }
     const file = node('input'); file.type = 'file'; file.accept = 'application/json,.json'; file.hidden = true;
     file.addEventListener('change', () => {
