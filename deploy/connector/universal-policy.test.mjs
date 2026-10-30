@@ -501,10 +501,10 @@ test('actual host factories initialize feature stores/HTTP; storageReady alone a
   f.beforeRemove.push(() => app.locals.closeServices());
   const dto = runtime(f, app, profile); assert.equal(assertUniversalPreparedness(handle, dto, { allowFixture: true }).ok, true);
   const format = await readStorageFormat(data); assert.equal(format.schema, 'soty.storage-format.v7'); assert.equal(format.humanIdentity, 1);
-  assert.equal(format.connect, 4);
+  assert.equal(format.connect, 5);
   const connectDb = new DatabaseSync(path.join(data, 'connect', 'accounts.sqlite'), { readOnly: true });
   try {
-    assert.equal(connectDb.prepare("SELECT value FROM connect_meta WHERE key='schema_version'").get().value, '4');
+    assert.equal(connectDb.prepare("SELECT value FROM connect_meta WHERE key='schema_version'").get().value, '5');
     assert.equal(connectDb.prepare("SELECT value FROM connect_meta WHERE key='min_reader'").get().value, '2');
   } finally { connectDb.close(); }
   assertStorageCompatible(image('1'), format); assert.throws(() => assertStorageCompatible(image('0', reader3), format), failCode('storage_reader_incompatible'));
