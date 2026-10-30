@@ -121,7 +121,7 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, standard
     };
     realm.finishNative = async callback => {
       if (embedOidc) {
-        const linked = await realm.request(callback.pathname + callback.search); assert.equal(linked.status, 200);
+        const linked = await realm.request(callback.pathname + callback.search); assert.equal(linked.status, 200, linked.value?.error?.code);
         const locator = realm.embedJar.get('soty_rp_link'), completed = await realm.request('/api/embed/complete-link?intent=' + locator); assert.equal(completed.status, 200); return completed;
       }
       const result = await realm.request(callback.pathname + callback.search, { native: true }); assert.equal(result.status, 303);
