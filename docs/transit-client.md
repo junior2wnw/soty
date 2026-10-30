@@ -8,6 +8,10 @@ card opens the same personal-profile controller. `Получить профил�
 claims a distinct preinstalled traffic identity; repeat requests and another
 device on that Soty account receive the same profile. Existing imported access
 is preserved. The download is a portable TUN JSON without a Windows interface name.
+Its TUN stack is explicitly `system`, including downloads of previously saved
+`mixed`/`gvisor` profiles: desktop clients may omit the optional gVisor build tag.
+This export-only conversion preserves the vault, credentials, peer pins, DNS and
+route policy. It does not change the Agent's pinned runtime policy.
 
 Root's `transit.access.profile` extension accepts only the current Connect actor
 and matching expected account. It signs a short-lived request to the private

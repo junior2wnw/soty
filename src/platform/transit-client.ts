@@ -39,7 +39,11 @@ async function localTransit(body?: Record<string, unknown>): Promise<TransitRepl
 
 function downloadProfile(profile: unknown): void {
   const portable = structuredClone(profile) as { inbounds?: Record<string, unknown>[] };
-  for (const inbound of portable.inbounds || []) delete inbound.interface_name;
+  for (const inbound of portable.inbounds || []) {
+    delete inbound.interface_name;
+    // Portable downloads must also start in clients built without gVisor.
+    if (inbound.type === 'tun') inbound.stack = 'system';
+  }
   const url = URL.createObjectURL(new Blob([`${JSON.stringify(portable, null, 2)}\n`], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = 'transit.json';
   document.body.append(link); link.click(); link.remove();

@@ -41,7 +41,7 @@ function fixture({ paired = true, fresh = false, issuing = false } = {}) {
   if (fresh) delete payload.transitClient;
   let heldProfile;
   const issuedProfiles = [];
-  const calls = [], installers = [], intervals = new Map(); let nextTimer = 0, dialog;
+  const calls = [], installers = [], downloads = [], intervals = new Map(); let nextTimer = 0, dialog;
   const state = { configured: false, running: false, active: false, phase: 'off', version: '1.13.15', entryCount: 1 };
   const response = value => ({ ok: true, async json() { return value; } });
   const client = {
@@ -79,7 +79,9 @@ function fixture({ paired = true, fresh = false, issuing = false } = {}) {
   const exported = { exports: {} };
   const context = vm.createContext({ module: exported, exports: exported.exports,
     require(name) { assert.ok(Object.hasOwn(ports, name), `unexpected controller import ${name}`); return ports[name]; },
-    document: { visibilityState: 'visible', createElement: tag => new ElementPort(tag) },
+    document: { visibilityState: 'visible', body: new ElementPort('body'), createElement: tag => new ElementPort(tag) },
+    structuredClone, Blob, URL: { createObjectURL(blob) { downloads.push(blob); return 'blob:profile-fixture'; }, revokeObjectURL() {} },
+    window: { setTimeout() {} },
     navigator: { userAgent: 'Windows', platform: 'Win32' },
     setInterval(fn) { const id = ++nextTimer; intervals.set(id, fn); return id; }, clearInterval(id) { intervals.delete(id); },
     AbortSignal: { timeout() {} }, TextEncoder, Uint8Array, btoa: value => Buffer.from(value, 'binary').toString('base64'),
@@ -105,7 +107,7 @@ function fixture({ paired = true, fresh = false, issuing = false } = {}) {
   function hold(slot) { const wait = { entered: deferred(), release: deferred() }; slot(wait); return wait; }
   const descendants = node => [node, ...node.children.flatMap(descendants)];
   return {
-    calls, installers, state, open: () => exported.exports.openTransitClient(),
+    calls, installers, downloads, state, open: () => exported.exports.openTransitClient(),
     issuedProfiles, get payload() { return payload; }, holdProfile: () => hold(wait => { heldProfile = wait; }),
     close: () => dialog.close(),
     select(next) { accountId = next; observer?.({ accountId }); },
@@ -136,6 +138,21 @@ test('a new person obtains their profile without enrolling, importing into or st
   await f.settle(() => !!f.payload.transitClient); await f.settle();
   assert.deepEqual(f.issuedProfiles, ['account-A']); assert.equal(f.installers.length, 0);
   assert.equal(f.calls.length, 0); assert.ok(f.button('Скачать профиль sing-box')); f.close();
+});
+
+test('downloading an already saved gVisor profile uses the system stack without changing its credentials or vault', async () => {
+  const f = fixture({ paired: false });
+  f.payload.transitClient.profile.inbounds = [{ type: 'tun', tag: 'transit-soty', interface_name: 'SotyTransit', stack: 'mixed' }];
+  const before = structuredClone(f.payload);
+  await f.open(); f.button('Скачать профиль sing-box').click();
+  const downloaded = JSON.parse(await f.downloads[0].text());
+  assert.equal(downloaded.inbounds[0].stack, 'system');
+  assert.equal(downloaded.inbounds[0].interface_name, undefined);
+  assert.deepEqual(downloaded.outbounds, before.transitClient.profile.outbounds);
+  assert.deepEqual(downloaded.dns, before.transitClient.profile.dns);
+  assert.deepEqual(downloaded.route, before.transitClient.profile.route);
+  assert.deepEqual(f.payload, before);
+  assert.equal(f.calls.length, 0); f.close();
 });
 
 test('a delayed new profile cannot be saved after account A-B-A', async () => {
