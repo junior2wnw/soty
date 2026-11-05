@@ -15,7 +15,8 @@ export function vaultBase64(bytes){let binary='';for(let offset=0;offset<bytes.l
 export function vaultBytes(value,max=CANVAS_VAULT_LOCAL_LIMITS.recordBytes){
   vaultCheck(typeof value==='string'&&/^[A-Za-z0-9_-]*$/u.test(value)&&value.length<=Math.ceil(max*4/3),'vault_content_invalid');
   let binary;try{binary=atob(value.replaceAll('-','+').replaceAll('_','/'));}catch{throw new CanvasVaultError('vault_content_invalid');}
-  const bytes=Uint8Array.from(binary,char=>char.charCodeAt(0));vaultCheck(bytes.length<=max&&vaultBase64(bytes)===value,'vault_content_invalid');return bytes;
+  const bytes=new Uint8Array(binary.length);for(let index=0;index<binary.length;index++)bytes[index]=binary.charCodeAt(index);
+  vaultCheck(bytes.length<=max&&vaultBase64(bytes)===value,'vault_content_invalid');return bytes;
 }
 function passwordBytes(value){vaultCheck(typeof value==='string'&&value.isWellFormed()&&value.length>=8&&encoder.encode(value).length<=1024,'vault_password_invalid');return encoder.encode(value);}
 function cryptoPort(value=globalThis.crypto){vaultCheck(value?.subtle&&typeof value.getRandomValues==='function','vault_secure_context_required');return value;}
