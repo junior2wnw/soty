@@ -92,7 +92,7 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
   const denied = error => error?.status === 401 || error?.status === 403 || denialCodes.has(error?.code);
   const state = value => { if (!disposed) onState(value); };
   const live = binding => {
-    const accepted = !disposed && isCurrent() && readBinding()?.slot === binding.slot;
+    const accepted = !disposed && isCurrent() && readBinding()?.slot === binding.slot && readBinding()?.frameId===binding.frameId;
     if (!accepted) witness = null;
     return accepted;
   };
@@ -155,6 +155,7 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
         action = pending; state('pending');
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }
         const reply = action.reply ?? await request({ handle: action.binding.handle, requestId: action.requestId,
+          ...(action.binding.frameId?{frameId:action.binding.frameId,...(action.binding.entry?{currentEntryPath:action.binding.entry.path}:{})}:{}),
           ...(action.shortSessionHandoff?{shortSessionHandoff:true}:{}) });
         action.reply = reply;
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }

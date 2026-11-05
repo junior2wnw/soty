@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Компактный Glass UI — переносимый пример</title>
+<link rel="stylesheet" href="/assets/ui.css">
+
+<main class="glass-ui glass-ui__widget" data-glass-material="working" data-glass-tone="light" data-glass-role="card" data-glass-safe-area="off" data-glass-render-mode="static">
+  <section class="glass-ui__widget-content" aria-label="Содержимое списка">
+    <p class="glass-ui__widget-identity">Мой список</p>
+    <section class="glass-ui__widget-glance" aria-label="Количество записей">
+      <output id="count" aria-live="polite">3</output>
+      <span>небольшие идеи на сегодня</span>
+    </section>
+    <form class="demo-form" id="add">
+      <label>Новая идея<input id="idea" name="idea" data-glass-role="field" data-glass-safe-area="off" required maxlength="120" autocomplete="off"></label>
+    </form>
+    <ol class="demo-list" id="items"><li>Прогуляться</li><li>Записать мысль</li><li>Попробовать новое</li></ol>
+  </section>
+  <footer class="glass-ui__widget-actions" aria-label="Действия со списком">
+    <button id="reset" type="button" data-glass-role="control" data-glass-safe-area="off" aria-label="Вернуть пример"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8a8 8 0 1 1-1 7M5 3v5h5" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+    <button id="save" form="add" data-glass-role="accent" data-glass-safe-area="off">Добавить</button>
+  </footer>
+</main>
+<script src="/assets/ui.js"></script>
+</html>

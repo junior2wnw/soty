@@ -5,6 +5,9 @@ import assert from 'node:assert/strict';
 import ts from 'typescript';
 import { mountAppFullscreen } from './app-fullscreen.mjs';
 import * as feedbackMedia from './feedback-media.mjs';
+import * as glassRoles from './glass-roles.mjs';
+import * as opticalUiKit from '../../vendor/optical-glass/src/ui-kit.js';
+import * as nativeLocal from '../../modules/notes/browser/native-local.mjs';
 
 // Production modules, synthetic DOM/native-close/pointer ports. No browser,
 // iframe runtime, SDK, model, Dev, server or network is started by this suite.
@@ -14,6 +17,7 @@ const pointerGuardCode = compile(read('./iframe-pointer-guard.ts'));
 const orbCode = compile(read('./agent-orb.ts')), positionCode = compile(read('./agent-orb-position.ts')), dialogsCode = compile(read('./dialogs.ts'));
 const appCode = compile(`${read('./app.ts')}\nexports.TestController = WorldApplication;`);
 const feedbackCode = compile(read('./app-feedback.ts'));
+const shellGlassCode = compile(read('./shell-glass.ts'));
 const stageAst = ts.createSourceFile('app-stage.ts', read('./app-stage.ts'), ts.ScriptTarget.Latest, true);
 let fullscreenCallback, feedbackModalCallback;
 function visit(node) {
@@ -26,6 +30,8 @@ function visit(node) {
   ts.forEachChild(node, visit);
 }
 visit(stageAst); assert.ok(fullscreenCallback);
+const stageMount=stageAst.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='mountAppStage');
+const presentedExpression=stageMount.body.statements.filter(ts.isVariableStatement).flatMap(node=>[...node.declarationList.declarations]).find(node=>node.name.getText(stageAst)==='presented').initializer.getText(stageAst);
 const worldAst = ts.createSourceFile('app.ts', read('./app.ts'), ts.ScriptTarget.Latest, true); let worldModalCallback;
 function visitWorld(node) {
   if (ts.isCallExpression(node) && node.expression.getText(worldAst) === 'mountAppStage') {
@@ -36,7 +42,7 @@ function visitWorld(node) {
 visitWorld(worldAst); assert.ok(feedbackModalCallback); assert.ok(worldModalCallback);
 function bindModalCallback(source, receiver, current, options = {}) {
   const module = { exports: {} };
-  vm.runInNewContext(compile(`exports.bind = function(ports) { const { current, options } = ports; return ${source}; };`), { module, exports: module.exports });
+  vm.runInNewContext(compile(`exports.bind = function(ports) { const { current, options } = ports; const presented=${presentedExpression}; return ${source}; };`), { module, exports: module.exports });
   return module.exports.bind.call(receiver, { current, options });
 }
 
@@ -116,7 +122,8 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
   const button = (label, _symbol, className, action) => { const node = el('button', className ?? '', label); node.append(el('span', '', label)); if (action) node.addEventListener('click', action); return node; };
   const dom = { el, button, iconButton: (label, symbol, action) => button(label, symbol, 'sw-icon-button', action), emptyState: (title, detail) => el('div', 'sw-empty', `${title}: ${detail}`),
     labeledField: (label, control) => { const wrapper = el('label', '', label); wrapper.append(control); return wrapper; } };
-  const ports = { './dom': dom, './agent-orb.css': {}, './app-feedback.css': {}, './feedback-media.mjs': feedbackMedia };
+  const ports = { './dom': dom, './agent-orb.css': {}, './app-feedback.css': {}, './feedback-media.mjs': feedbackMedia,
+    './glass-roles.mjs':glassRoles,'../../vendor/optical-glass/src/ui-kit.js':opticalUiKit,'../../vendor/optical-glass/src/ui-kit.css':{},'./shell-glass.css':{},'../../modules/notes/browser/native-local.mjs':nativeLocal };
   function evaluate(code, controllerOnly = false) {
     const module = { exports: {} };
     vm.runInNewContext(code, { module, exports: module.exports, require: name => {
@@ -127,6 +134,7 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
     URLSearchParams, setTimeout, clearTimeout, clearInterval, crypto: { randomUUID: () => `synthetic-${++nextId}` } });
     return module.exports;
   }
+  ports['./shell-glass']=evaluate(shellGlassCode);
   const positions = evaluate(positionCode); ports['./agent-orb-position'] = positions;
   ports['./floating-layout'] = evaluate(compile(read('./floating-layout.ts')));
   const dialogs = evaluate(dialogsCode); ports['./dialogs'] = dialogs;

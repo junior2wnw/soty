@@ -1,0 +1,34 @@
+/* Canvas owns its compact controls. Other screens keep their existing navigation. */
+.uf-screen[data-shell=canvas]{--uf-canvas-dock-height:56px;--uf-canvas-dock-bottom:max(12px,env(safe-area-inset-bottom))}
+:root[data-soty-theme=light] .sw-app[data-field=unified] { --of-paper:#f4f5f8;--sw-focus:#6657ed; }
+:root[data-soty-theme=dark] .sw-app[data-field=unified] { --of-paper:#111319;--sw-focus:#aaa0ff; }
+.sw-app[data-experience=one-field][data-field=unified]:has(>.sw-main>.uf-screen[data-shell=canvas])>:is(.of-field-navigation,.sw-topbar,.of-connect-button,.sw-mobile-nav) { display:none; }
+.sw-app[data-experience=one-field] .uf-screen[data-shell=canvas] .uf-workspace-tools { display:none; }
+.sw-app[data-experience=one-field][data-field=page]>:is(.of-field-navigation,.sw-topbar,.of-connect-button,.sw-mobile-nav) { display:none; }
+.uf-canvas-dock { position:absolute;z-index:25;top:max(20px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:8px;width:min(440px,calc(100% - 40px));min-height:var(--uf-canvas-dock-height,56px);box-sizing:border-box;padding:5px;border:1px solid color-mix(in srgb,var(--sw-ink) 12%,transparent);border-radius:32px;background:color-mix(in srgb,var(--sw-surface) 85%,transparent);backdrop-filter:blur(24px) saturate(1.15);box-shadow:0 8px 32px #11182708; }
+.uf-canvas-dock>.sw-button { position:relative;flex:none;min-width:44px;min-height:44px;border:0;border-radius:24px;margin:0;background:transparent;color:var(--sw-ink); }
+.uf-canvas-dock>.uf-canvas-search { flex:1;justify-content:flex-start;min-width:0;padding:10px 12px;gap:10px;color:var(--sw-muted);font-size:14px; }
+.uf-canvas-search>span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.uf-canvas-dock>.uf-canvas-profile { width:44px;height:44px;padding:3px; }
+.uf-canvas-dock>.uf-canvas-profile>.sw-avatar { display:grid;place-items:center;width:36px;height:36px;min-width:36px;font-size:13px;background:var(--sw-surface-subtle); }
+.uf-canvas-dock>.uf-canvas-profile>.sw-avatar>span { display:block;width:auto;height:auto;line-height:1;font-size:12px;font-weight:600;letter-spacing:-.03em;overflow:visible; }
+.uf-canvas-dock>.uf-canvas-add { width:44px;height:44px;padding:10px;background:var(--sw-ink);color:var(--sw-surface); }
+.uf-canvas-dock .sw-icon { width:20px;height:20px; }
+.uf-canvas-scale.sw-button { position:absolute;z-index:20;right:24px;bottom:max(20px,env(safe-area-inset-bottom));display:flex;gap:8px;min-height:44px;padding:8px 14px;border:1px solid var(--sw-line);border-radius:24px;background:var(--of-paper);color:var(--sw-muted);font-size:12px;font-variant-numeric:tabular-nums; }
+.uf-canvas-scale>.sw-icon { width:17px;height:17px; }
+.uf-screen[data-shell=canvas] .uf-undo { left:24px;right:auto;bottom:max(20px,env(safe-area-inset-bottom)); }
+.uf-canvas-dock .sw-button:focus-visible,.uf-canvas-scale:focus-visible { outline:3px solid var(--sw-focus);outline-offset:3px; }
+.sw-app[data-experience=one-field] .uf-screen[data-shell=canvas]>.uf-local-search { top:88px; }
+.uf-screen[data-shell=canvas][data-search=open]>.uf-canvas-dock { visibility:hidden;pointer-events:none; }
+.uf-screen[data-shell=canvas][data-search=open]>.uf-canvas-scale { visibility:hidden;pointer-events:none; }
+.uf-screen[data-shell=canvas]>.uf-local-search:has(>.uf-own-apps:not([hidden])) { flex-wrap:wrap; }
+.uf-screen[data-shell=canvas]>.uf-local-search>.uf-own-apps { flex:1 0 100%;width:100%;padding:4px 0 0; }
+@media(max-width:720px) {
+  .uf-canvas-dock { top:auto;bottom:var(--uf-canvas-dock-bottom,max(12px,env(safe-area-inset-bottom)));width:calc(100% - 24px);max-width:440px; }
+  .uf-screen[data-shell=canvas] .uf-undo{position:fixed;left:12px;right:auto;bottom:calc(var(--uf-canvas-dock-bottom) + var(--uf-canvas-dock-height) + 16px)}
+  .uf-canvas-scale.sw-button { top:max(12px,env(safe-area-inset-top));right:12px;bottom:auto; }
+  .sw-app[data-experience=one-field] .uf-screen[data-shell=canvas]>.uf-local-search { top:max(12px,env(safe-area-inset-top)); }
+  .uf-screen[data-shell=canvas] .uf-empty { padding-bottom:84px; }
+  html[data-soty-keyboard=true] .uf-canvas-dock { display:none; }
+}
+@media(forced-colors:active) { .uf-canvas-dock,.uf-canvas-scale.sw-button { background:Canvas;border:1px solid CanvasText; } .uf-canvas-dock>.uf-canvas-add { background:ButtonFace;color:ButtonText;border:1px solid ButtonText; } }

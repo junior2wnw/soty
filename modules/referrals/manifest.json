@@ -1,0 +1,14 @@
+{
+  "schema": "soty.referrals.module.v1",
+  "id": "soty.referrals",
+  "version": 1,
+  "runtime": "node:sqlite",
+  "entry": "server/index.mjs",
+  "descriptorFactory": "descriptor.mjs#createReferralDescriptor",
+  "contract": "soty.app-agent.v1",
+  "defaults": { "ratesBps": [1000, 1000, 1000], "maximumLevels": 10, "maximumTotalBps": 10000 },
+  "rights": { "read": "referrals.read", "configure": "referrals.configure", "internalCredit": "trusted-host-only" },
+  "publicOperations": ["referrals.config.get", "referrals.config.put", "referrals.attribution.get", "referrals.ledger.list", "referrals.balance.get"],
+  "internalOperations": ["applyEvent"],
+  "payoutsEnabled": false
+}

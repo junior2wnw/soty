@@ -457,9 +457,15 @@ export function createP2pPeer(id: string, events: {
   return link;
 }
 
+/** Current WS-bound identities; microphone is publication, not speech activity. */
+export interface HumanCallParticipant {
+  readonly accountId: string; readonly deviceId: string; readonly label: string;
+  readonly microphone: boolean; readonly isSelf: boolean;
+}
 export interface HumanCallConnectionState {
   connection: 'idle' | 'connecting' | 'admitted' | 'connected' | 'reconnecting' | 'closed' | 'error';
   peers: number; playbackBlocked: boolean; turnConfigured: boolean; iceWaiting: boolean;
+  participants: readonly HumanCallParticipant[];
 }
 interface HumanCallScope { accountId: string; deviceId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number;
   expectedCallId?: string; expectedEpoch?: number }
@@ -501,11 +507,27 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
       expectedJoinRef: reply.grantRef, requestId: 'ice_' + expectedRevision, expectedRevision }, { expectedAccountId: reply.accountId });
     return validateCallIceReply(mediaDto(raw, ['schema', 'accountId', 'deviceId', 'callId', 'epoch', 'joinRef', 'revision', 'expiresAt', 'iceServers']), iceScope(reply));
   }
-  let state: HumanCallConnectionState = { connection: 'idle', peers: 0, playbackBlocked: false, turnConfigured: false, iceWaiting: false };
+  const emptyParticipants: readonly HumanCallParticipant[] = Object.freeze([]);
+  let state: HumanCallConnectionState = { connection: 'idle', peers: 0, participants: emptyParticipants, playbackBlocked: false, turnConfigured: false, iceWaiting: false };
   const emit = (patch: Partial<HumanCallConnectionState>) => {
     state = { ...state, ...patch }; for (const observer of [...observers]) { try { void Promise.resolve(observer({ ...state })).catch(() => {}); } catch {} }
   };
   function fail(code = 'human_call_stale'): never { throw Object.assign(new Error(code), { code }); }
+  function participantRoster(value: unknown, reply: HumanCallAdmission): readonly HumanCallParticipant[] {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 4) fail();
+    const ids = new Set<string>(), id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/u.test(v);
+    const rows = value.map(peer => {
+      if (!peer || typeof peer !== 'object' || Array.isArray(peer) || !id(peer.accountId) || !id(peer.deviceId)
+        || ids.has(peer.deviceId) || typeof peer.microphone !== 'boolean'
+        || peer.label !== undefined && (typeof peer.label !== 'string' || peer.label.length > 160 || !peer.label.isWellFormed())) fail();
+      ids.add(peer.deviceId);
+      return Object.freeze({ accountId: peer.accountId, deviceId: peer.deviceId,
+        label: (peer.label ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim(),
+        microphone: peer.microphone, isSelf: peer.accountId === reply.accountId && peer.deviceId === reply.deviceId });
+    });
+    if (!rows.some(row => row.isSelf)) fail();
+    return Object.freeze(rows);
+  }
   const nonce = () => crypto.randomUUID();
   async function authorize(scope: HumanCallScope, purpose: string, { signal }: { signal: AbortSignal }) {
     if (signal.aborted) fail();
@@ -771,7 +793,7 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
       for (const id of [...links.keys()]) { try { removePeer(id); } catch { cleanupUnknown = true; } }
       for (const track of [...receivers.keys()]) stopPlayback(track);
       waitingAudioPeers.clear();
-      if (active === session) active = null; emit({ connection: 'closed', peers: 0, turnConfigured: false, iceWaiting: false });
+      if (active === session) active = null; emit({ connection: 'closed', peers: 0, participants: emptyParticipants, turnConfigured: false, iceWaiting: false });
       rejectJoin(new Error('human_call_closed'));
       try { if (ws.readyState === 3) observedClose(); else ws.close(); } catch { clearTimeout(closeTimer); closeReject?.(new Error('human_call_close_unknown')); }
       void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch, expectedJoinRef: reply.grantRef }, { expectedAccountId: scope.accountId }).catch(() => {});
@@ -834,14 +856,16 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
       try {
         const message = JSON.parse(event.data); if (message.callId !== reply.callId || message.epoch !== reply.epoch) return;
         if (message.type === 'call.ready' || message.type === 'call.peers') {
-          if (!Array.isArray(message.peers) || message.peers.length > 4) fail();
+          if (message.type === 'call.peers' && !ready) fail();
+          const participants = participantRoster(message.peers, reply);
           if (message.type === 'call.ready') {
             if (message.self?.accountId !== scope.accountId || message.self?.deviceId !== scope.deviceId) fail();
-            ready = true; clearTimeout(joinTimer); emit({ connection: 'admitted' }); resolveJoin(session);
+            ready = true; clearTimeout(joinTimer); emit({ connection: 'admitted', participants });
+            if (!live()) return; resolveJoin(session);
             heartbeat = setInterval(() => { try { send('call.ping'); } catch { void close().catch(() => {}); } }, 8000);
-          }
+          } else { emit({ participants }); if (!live()) return; }
           const ids = new Set<string>();
-          for (const peer of message.peers) if (peer.deviceId !== reply.deviceId) { if (typeof peer.deviceId !== 'string' || ids.has(peer.deviceId) || typeof peer.microphone !== 'boolean') fail(); ids.add(peer.deviceId); ensurePeer(peer.deviceId, peer.microphone); }
+          for (const peer of participants) if (!peer.isSelf) { ids.add(peer.deviceId); ensurePeer(peer.deviceId, peer.microphone); }
           for (const id of [...links.keys()]) if (!ids.has(id)) removePeer(id);
           for (const id of waitingAudioPeers.keys()) if (!ids.has(id)) waitingAudioPeers.delete(id);
           if (video) { video.setRoster(message.peers); negotiatedPeers = message.peers.filter((peer: any) => peer.deviceId !== reply.deviceId && peer.mediaProtocol === 2).length; }
@@ -852,7 +876,7 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
         else if (message.type.startsWith('video.') || message.type.startsWith('call.video.')) video?.receive(message);
       } catch { void close().catch(() => {}); }
     };
-    emit({ connection: 'connecting', peers: 0, playbackBlocked: false,
+    emit({ connection: 'connecting', peers: 0, participants: emptyParticipants, playbackBlocked: false,
       iceWaiting: false, turnConfigured: Boolean(callIce?.iceServers.some(server => server.urls.some(url => /^turns?:/u.test(url)))) }); return session;
   }
   return {

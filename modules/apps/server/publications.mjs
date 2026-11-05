@@ -4,8 +4,9 @@ import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, 
 import { syncDiscussionAudienceInTransaction } from './discussions.mjs';
 import { hasAudienceSchema, readAppAudience, writeAppAudience, normalizeAppAudience, audienceMatchesPolicy } from './audience.mjs';
 import { readPairedNativeEntry, nativeEntryView } from './native-entry.mjs';
+import { SELF_IP_PROFILE, readRuntimeEndpoint, targetFromRow } from './endpoint-targets.mjs';
 
-export const publicationOperations = new Set(['apps.publication.get', 'apps.publication.update']);
+export const publicationOperations = new Set(['apps.publication.get', 'apps.publication.update', 'apps.publication.receipt']);
 export const PUBLICATION_RECEIPTS_PER_APP = 64;
 const maxActiveDomains = 100, accountTtl = 3_600_000, publicTtl = 30_000;
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -41,8 +42,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     assertApps(policy && policy.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
     const target = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(app.id, policy.active_target_revision);
     assertApps(target && target.owner_account_id === app.owner_account_id && supportedRuntimeProfile(target.profile)
-      && target.digest === runtimeTargetDigest({ appId: target.app_id, revision: target.revision, ownerAccountId: target.owner_account_id,
-        connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
+      && target.digest === runtimeTargetDigest(targetFromRow(db, target)), 'apps_registry_corrupt', 500);
     const device = db.prepare('SELECT owner_account_id FROM app_devices WHERE connector_key=?').get(target.connector_key);
     assertApps(device?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
     return { app, policy, target, requiredBindingVersion: requiredBindingVersion(db, app.id) };
@@ -57,7 +57,8 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       launchPolicy: policy.launch_policy, listed: Boolean(policy.listed), policyEpoch: policy.policy_epoch,
       ...(hasAudienceSchema(db) ? { audience: readAppAudience(db, app.id) } : {}),
       activeTargetRevision: target.revision, requiredBindingVersion, activeDomainIds: activeIds(app.id),
-      target: { revision: target.revision, digest: target.digest, profile: target.profile, port: target.port, entryPath: target.entry_path },
+      target: { revision: target.revision, digest: target.digest, profile: target.profile, port: target.port, entryPath: target.entry_path,
+        ...(target.profile === SELF_IP_PROFILE ? { endpoint: readRuntimeEndpoint(db, target) } : {}) },
       ...(nativeEntry ? { nativeEntry } : {}),
       updatedAt: policy.updated_at, runtimeReady: false, receiptRetention: { perApp: PUBLICATION_RECEIPTS_PER_APP } };
   }
@@ -88,7 +89,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       exact(args.exposureAck, ['scope', 'targetRevision', 'targetDigest', 'profile']);
       assertApps(args.exposureAck.targetRevision === targetRevision
         && typeof args.exposureAck.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(args.exposureAck.targetDigest)
-        && (args.exposureAck.scope === 'whole-port' && args.exposureAck.profile === RUNTIME_PROFILE
+        && (args.exposureAck.scope === 'whole-port' && [RUNTIME_PROFILE, SELF_IP_PROFILE].includes(args.exposureAck.profile)
           || args.exposureAck.scope === 'authenticated-workspace' && args.exposureAck.profile === 'soty.selected-human-embed.v2'), 'app_exposure_ack_required');
       exposureAck = { scope: args.exposureAck.scope, targetRevision, targetDigest: args.exposureAck.targetDigest, profile: args.exposureAck.profile };
     } else assertApps(args.exposureAck === undefined || args.exposureAck === null, 'unexpected_exposure_ack');
@@ -153,6 +154,18 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     if (!result.replayed) onChanged({ appId: intent.id, policyEpoch: result.receipt.policyEpoch });
     return { requestId: intent.requestId, ...result };
   }
+  /** Exact historical outcome only. Current owner/installation checks still
+   * apply; neither an absent receipt nor this read executes/rebases an update. */
+  function readReceipt(actor, args) {
+    return snapshot(() => {
+      const intent = normalize(args), app = own(actor, intent.id);
+      const prior = db.prepare('SELECT intent_hash,value_json FROM app_publication_receipts WHERE account_id=? AND request_key=?')
+        .get(actor.accountId, intent.requestKey);
+      if (!prior) return { found: false };
+      assertApps(prior.intent_hash === intent.intentHash, 'app_publication_request_conflict', 409);
+      return { found: true, result: { requestId: intent.requestId, receipt: JSON.parse(prior.value_json), replayed: true, current: view(app) } };
+    });
+  }
   function ttl(value, subject) {
     assertApps(Number.isSafeInteger(value) && value >= 1 && value <= (subject === 'public' ? publicTtl : accountTtl), 'invalid_app_access_ttl');
     return value;
@@ -205,9 +218,10 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     execute({ op, actor, args = {} }) {
       assertApps(publicationOperations.has(op), 'unsupported_operation');
       if (op === 'apps.publication.get') { exact(args, ['appId']); return read(actor, appId(args.appId)); }
+      if (op === 'apps.publication.receipt') return readReceipt(actor, args);
       return update(actor, args);
     },
-    initForApp(app) { ensureInitialPublication(db, app); syncDiscussionAudienceInTransaction(db, app.id, now()); },
+    initForApp(app, target) { ensureInitialPublication(db, app, target); syncDiscussionAudienceInTransaction(db, app.id, now()); },
     sourceStateInTransaction(id) {
       assertApps(db.isTransaction, 'apps_transaction_required', 500);
       const app = appRow(appId(id)); assertApps(app, 'apps_registry_corrupt', 500);

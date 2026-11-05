@@ -11,4 +11,7 @@ export function blobAttachment(blob: Blob, kind: 'image' | 'audio', name: string
 export function rasterFile(file: File, maxBytes: number, signal?: AbortSignal): Promise<FeedbackAttachment>;
 export function editRaster(attachment: FeedbackAttachment, rect: RasterRect, operation: 'crop' | 'redact', maxBytes: number, signal?: AbortSignal): Promise<FeedbackAttachment>;
 export function captureSelectedDisplay(maxBytes: number, signal?: AbortSignal): Promise<FeedbackAttachment>;
-export function createFeedbackRecorder(options: { maxBytes: number; maxSeconds?: number; signal?: AbortSignal; onTick?(seconds: number): void }): { start(): Promise<FeedbackAttachment>; stop(): void; cancel(): void; active(): boolean };
+export interface FeedbackRecorderOptions { maxBytes: number; maxSeconds?: number; signal?: AbortSignal; onTick?(seconds: number): void; }
+export interface FeedbackRecorder<T> { start(): Promise<T>; stop(): void; cancel(): void; active(): boolean; }
+export function createFeedbackRecorder(options: FeedbackRecorderOptions & { output: 'blob' }): FeedbackRecorder<Blob>;
+export function createFeedbackRecorder(options: FeedbackRecorderOptions & { output?: 'attachment' }): FeedbackRecorder<FeedbackAttachment>;

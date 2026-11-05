@@ -6,7 +6,7 @@ import { normalizeFieldCamera } from './unified-field-camera.mjs';
 import type { UnifiedFieldViewState } from './unified-field';
 
 export type CapabilityId = 'notes' | 'apps' | 'devices' | 'agent' | 'communities' | 'contacts' | 'files' | 'chess' | 'terminal' | 'internet' | 'legacy-notes' | 'appearance';
-export interface Capability { id: CapabilityId; title: string; detail: string; symbol: string; color: string; category: 'Дела' | 'Общение' | 'Инструменты'; }
+export interface Capability { id: CapabilityId; title: string; detail: string; symbol: string; color: string; category: 'Дела' | 'Общение' | 'Инструменты'; legacyAppIds?: readonly string[]; }
 export const capabilities: readonly Capability[] = [
   { id: 'notes', title: 'Записки', detail: 'Идеи, планы и списки', symbol: 'list', color: 'honey', category: 'Дела' },
   { id: 'apps', title: 'Приложения', detail: 'Проекты с ваших устройств', symbol: 'grid', color: 'lilac', category: 'Дела' },
@@ -17,7 +17,7 @@ export const capabilities: readonly Capability[] = [
   { id: 'files', title: 'Файлы', detail: 'Вложения в ваших комнатах', symbol: 'folder', color: 'blue', category: 'Инструменты' },
   { id: 'chess', title: 'Шахматы', detail: 'С другом или компьютером', symbol: 'game', color: 'sage', category: 'Общение' },
   { id: 'terminal', title: 'Команды', detail: 'Управление подключённым устройством', symbol: 'tools', color: 'lilac', category: 'Инструменты' },
-  { id: 'internet', title: 'Интернет', detail: 'TRANSIT и доступ с ваших устройств', symbol: 'world', color: 'blue', category: 'Инструменты' },
+  { id: 'internet', title: 'Транзит', detail: 'TRANSIT: личный профиль sing-box для ваших устройств', symbol: 'world', color: 'blue', category: 'Инструменты', legacyAppIds: ['app-da4e2c0050f0557bf00ed83c82df6087'] },
   { id: 'legacy-notes', title: 'Совместные тексты', detail: 'Общие заметки в комнате', symbol: 'chat', color: 'coral', category: 'Дела' },
   { id: 'appearance', title: 'Оформление', detail: 'Тема, яркость и движение', symbol: 'settings', color: 'sage', category: 'Инструменты' },
 ];

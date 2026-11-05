@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import * as intents from './connection-intent.mjs';
 import * as nativeVoiceDescriptor from './native-voice-descriptor.mjs';
 import * as navigation from './connection-navigation.mjs';
+import {createPlatformLiveTestPort} from './test-support/platform-live-port.mjs';
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
@@ -21,6 +22,7 @@ async function fixture(shell){
     './connection-hub':{ensureConnectionAccount(_host,options){entryOptions=options;return gate.promise;}},
     '../platform/connection-hub':{ensureConnectionAccount(_host,options){entryOptions=options;return gate.promise;}},
     './native-voice-descriptor.mjs':nativeVoiceDescriptor,
+    './platform-live-client.mjs':createPlatformLiveTestPort(),
     './connection-intent.mjs':intents,'../platform/connection-intent.mjs':intents,
     './connection-navigation.mjs':navigation,'../platform/connection-navigation.mjs':navigation,
     './call-identity':{bindCallIdentity(){return ()=>{detached++;};}},

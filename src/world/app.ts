@@ -1,4 +1,5 @@
 import type { WorldProjectEditorPort } from './types';
+import { mountShellGlass, type ShellGlassHandle } from './shell-glass';
 import './world.css';
 import './product.css';
 import './shell.css';
@@ -20,6 +21,12 @@ import { createHome, createAppCard, type AppCardData, type HomeFilter } from './
 import { resolveAppArt } from './app-art.mjs';
 import { createUnifiedFieldScreen, type FieldFilter, type UnifiedFieldScreen } from './unified-field-screen';
 import type { UnifiedFieldViewState } from './unified-field';
+import type {FieldNode} from './unified-field-layout.mjs';
+import {createCommunityFieldObject,type CommunityFieldObjectView} from './community-field-object';
+import type { LiveWatch } from '../platform/platform-live-client.mjs';
+import {isLiveIdentityLoss} from '../platform/platform-live-client.mjs';
+import {createSocialInbox,type SocialInbox} from './social-inbox.mjs';
+import {hasRetainedNativeDrafts,flushRetainedNativeDrafts} from '../../modules/notes/browser/native-local.mjs';
 import type { DirectoryApp, DirectoryContact, DirectoryPerson } from './field-directory';
 import { createBrandMark } from './brand';
 import { createOriginContinuityLinks } from '../platform/origin-continuity';
@@ -33,7 +40,7 @@ import { createApplicationCard } from './application-card';
 import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
 import { createAudienceControl } from './audience-control';
 import { createProfileAudienceState } from './profile-audience-state.mjs';
-import { formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent, type AppResolvedEntry, type AppLaunchBinding } from './app-launch.mjs';
+import { formatAppLaunchRoute, parseAppLaunchRoute, isScopedRuntimeProfile, type AppLaunchIntent, type AppResolvedEntry, type AppLaunchBinding, type AppHostSession } from './app-launch.mjs';
 import { mountAppSettings } from './app-settings';
 import { mountAccountCenter, type AccountAction } from './account-center';
 import type { AppEntry } from './app-saved-state.mjs';
@@ -49,6 +56,7 @@ import { loadPreferences, savePreferences, type WorldPreferences, type WorldView
 import { entityId, entityName, worldColor, worldColors, type WorldApi, type WorldAppOptions, type WorldAppRecord, type WorldAssistantHandle, type WorldCommunity, type WorldDevice, type WorldEntity, type WorldHumanCallState, type WorldMember, type WorldMessage, type WorldIdentity, type WorldProfile, type WorldSearch } from './types';
 import type { AppFeedbackGrantTarget } from './access-panel';
 import './one-field.css';
+import './canvas-shell.css';
 import { bindSheetGripDismiss } from './sheet-grip-dismiss';
 import { createCommunityConversation, createDirectConversation, type ConversationTarget } from './conversation-target.mjs';
 import type { WorldDirectThread } from './types';
@@ -57,8 +65,18 @@ import { mountCoverEditor } from './cover-editor';
 import { createCoverApi, type CoverKind } from './cover-api.mjs';
 import { createAppCoverPresenter, mountAppCoverField, type AppCoverPresenter } from './app-cover-presenter.mjs';
 import { mountNotifications } from '../platform/notifications';
-import { mountPreparedAppDialog } from './prepared-app-dialog';
+import { mountAppConnectDialog } from './app-connect-dialog';
+import type {CanvasWidgetView} from './canvas-field-content';
+import {openCanvasCreateDialog,type CanvasCreateDialog,type CanvasCreateDialogOptions} from './canvas-create-dialog';
 import type { NotificationTarget } from '../platform/notifications-client.mjs';
+import {createCanvasPageScreen,type CanvasPageScreen} from './canvas-page-screen';
+import {mountCanvasPageShare} from './canvas-page-share';
+import type {AppInspection} from './app-settings.types';
+import {parseCanvasPageRoute} from './canvas-page-client.mjs';
+import {openCanvasVaultCreateDialog,type CanvasVaultCreateDialog} from './canvas-vault-create-dialog';
+import {createRetainedAppRuntimes,type RetainedAppRuntimes} from './app-retained-runtime.mjs';
+import {closeAppRuntime,type AppRuntimeCloseRequest} from './app-runtime-close.mjs';
+import type {MonitoringDialogHandle} from './monitoring-dialog';
 
 type GroupTab = 'about' | 'chat' | 'apps';
 type CatalogKind = 'all' | 'people' | 'communities';
@@ -71,7 +89,13 @@ const coreSupportLinks = new WeakSet<HTMLElement>();
 type HomeSection = 'devices' | 'apps' | 'communities' | 'notes';
 interface NotesHandle { dispose(): void; focus(): void; flush(): Promise<void>; reconnect(): void; hasUnsavedChanges(): boolean; }
 interface ChatMenuAction { label: string; symbol: string; run(): void; danger?: boolean; disabled?: boolean }
+interface MountedConversation { isCurrent():boolean;flush():Promise<void>;hasUnsavedChanges():boolean;dispose():void }
+interface MainRuntimeOwner {
+  host:HTMLElement;stage:AppStageHandle|null;appId:string;closeEpoch:number;accountId:string;accountGeneration:number;
+  returnView:'mine'|'world';returnWorkspace:WorkspaceReturn|null;
+}
 interface ConversationPresentation {
+  surface?:'screen'|'canvas';
   showHeader: boolean; emblem(): HTMLElement; identityLabel(): string; onIdentity(): void;
   extraActions(): ChatMenuAction[]; callButton?(): HTMLButtonElement | null; invite?(): void;
   notify(chat: HTMLElement, message: WorldMessage | undefined, readAcknowledged: boolean): void;
@@ -79,6 +103,8 @@ interface ConversationPresentation {
 
 export type ContactMessageTarget = Pick<DirectoryContact, 'peerAccountId' | 'relationshipId' | 'label'>;
 export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void;
+  prepareAccountChange():Promise<boolean>;
+  liveWatch?():LiveWatch[]; invalidateLive?(options?:{reset:boolean}):Promise<void>;loseAccess?(error:unknown):void;
   supportsDirectMessages(): boolean; openDirectContact(contact: ContactMessageTarget): Promise<void>;
   openNotification(target: NotificationTarget, context: { assertCurrent(): Promise<void>; signal: AbortSignal }): Promise<void>;
   followConnection(intent: ConnectionIntent, navigate?: () => void, continueIf?: () => boolean): Promise<void>; }
@@ -87,6 +113,8 @@ export function mountWorldApp(root: HTMLElement, options: WorldAppOptions): Worl
   const app = new WorldApplication(root, options);
   void app.refresh();
   return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor(),
+    prepareAccountChange:()=>app.prepareAccountChange(),
+    liveWatch:()=>app.liveWatch(),invalidateLive:options=>app.invalidateLive(options),loseAccess:error=>app.loseAccess(error),
     supportsDirectMessages: () => app.supportsDirectMessages(), openDirectContact: contact => app.openDirectContact(contact),
     openNotification: (target, context) => app.openNotification(target, context),
     followConnection: (intent, navigate, continueIf) => app.followConnection(intent, navigate, continueIf) };
@@ -112,7 +140,7 @@ class WorldApplication {
   private readonly humanCallIncomingAccept = button('Принять', undefined, 'sw-button-quiet', () => { void this.acceptHumanIncomingCall(); });
   private readonly humanCallIncomingDecline = button('Отклонить', undefined, 'sw-button-quiet', () => { void this.declineHumanIncomingCall(); });
   private readonly humanCallLive = el('div', 'sw-human-call-live');
-  private readonly humanCallTarget = el('span', 'sw-human-call-target');
+  private readonly humanCallTarget = button('',undefined,'sw-button-quiet sw-human-call-target',()=>{const state=this.humanCallState;if(state?.roomId){if(state.mode==='group')void this.openGroup(state.roomId);else this.openPersonDialog(state.roomId);}});
   private readonly humanCallStatus = el('strong', 'sw-human-call-status');
   private readonly humanCallMicStatus = el('span', 'sw-human-call-mic-status');
   private readonly humanCallActions = el('div', 'sw-human-call-actions');
@@ -141,10 +169,12 @@ class WorldApplication {
   private coverTargetCurrent: (() => boolean) | null = null;
   private fieldCoverPresenter: AppCoverPresenter | null = null;
   private fieldCoverBinding: { dispose(): void } | null = null;
-  private fieldCoverTimer: ReturnType<typeof setInterval> | null = null;
   private appPlacementDialog: WorldDialog | null = null;
   private appPlacementController: AppFieldPlacementController | null = null;
   private appPlacementRouteClose: ((resume?: () => void) => void) | null = null;
+  private monitoringPanel:MonitoringDialogHandle|null=null;
+  private monitoringOpening=false;
+  private monitoringOpenEpoch=0;
   private readonly theme: ThemeController;
   private readonly pwa = getPwaController();
   private readonly formEdits = watchFormEdits();
@@ -163,8 +193,11 @@ class WorldApplication {
   private assistantMode: 'create' | 'chat' = 'create';
   private accessHandle: WorldAssistantHandle | null = null;
   private appStage: AppStageHandle | null = null;
+  private retainedMainApps:RetainedAppRuntimes<MainRuntimeOwner>|null=null;
+  private mainOpenEpoch=0;
   private appReturnView: 'mine' | 'world' = 'mine';
   private applicationReturn: WorkspaceReturn | null = null;
+  private initialApplicationReturn: WorldAppOptions['initialWorkspaceReturn'] | null = null;
   private pendingReturnPresentation: Pick<WorkspaceReturn, 'presentation' | 'listQuery' | 'libraryPages' | 'libraryScroll' | 'libraryFocus'> | null = null;
   private savedLibraryView: AppLibraryViewState = { pages: 1, scroll: 0 };
   private activeRoute = location.hash || '#mine';
@@ -186,6 +219,10 @@ class WorldApplication {
   private discoveryPages: (string | null)[] = [null];
   private selected: WorldEntity | null = null;
   private group: WorldCommunity | null = null;
+  private communitySurface:{communityId:string;tab:GroupTab;returnRoute:string}|null=null;
+  private communityOpenTicket=0;
+  private communityPending=0;
+  private communityReturnRoute:string|null=null;
   private groupTab: GroupTab = 'about';
   private groupReturn: 'mine' | 'world' | 'messages' = 'mine';
   private field: HexField | null = null;
@@ -207,6 +244,9 @@ class WorldApplication {
   private selectedChat: string | undefined;
   private directThreads: WorldDirectThread[] = [];
   private directThreadsLoaded = false;
+  private socialInbox:SocialInbox|null=null;
+  private incomingContactRequests=0;
+  private directInboxUnavailable=false;
   private applicationDiscussions: AppDiscussionInboxRow[] = [];
   private applicationInboxEntries: AppEntry[] = [];
   private applicationFieldEntries: AppEntry[] = [];
@@ -236,10 +276,15 @@ class WorldApplication {
   private widgets: MicroWidgetsHandle | null = null;
   private visibilityOpen = false;
   private fieldMenu: WorldDialog | null = null;
+  private canvasComposer:CanvasCreateDialog|null=null;
+  private canvasVaultComposer:CanvasVaultCreateDialog|null=null;
+  private canvasPage:CanvasPageScreen|null=null;
+  private readonly canvasPageViews=new Map<string,UnifiedFieldViewState>();
   private fieldBackdrop: HTMLElement | null = null;
   private routeLoaded = false;
   private restoreLastRoute = !location.hash;
   private readonly releaseViewport: () => void;
+  private readonly shellGlass: ShellGlassHandle | null;
 
   constructor(root: HTMLElement, options: WorldAppOptions) {
     this.root = root; this.options = options; this.api = options.api;
@@ -250,6 +295,7 @@ class WorldApplication {
     this.theme = createThemeController({ initial: this.preferences, onChange: next => { Object.assign(this.preferences, next); this.persist(); } });
     if (!location.hash) history.replaceState({ soty: true }, '', `#${this.view}`);
     root.classList.add('sw-app'); root.dataset.experience = 'one-field'; root.dataset.motion = this.preferences.motion ? 'on' : 'off'; root.dataset.compact = String(this.preferences.compact);
+    this.shellGlass = root.ownerDocument?.defaultView?.HTMLCanvasElement ? mountShellGlass(root) : null;
     root.dataset.assistantShortcut = String(this.preferences.assistantShortcut);
     this.live.setAttribute('role', 'status'); this.live.setAttribute('aria-live', 'polite'); this.mobileNav.setAttribute('aria-label', 'Главная навигация');
     this.main.id = 'soty-main'; this.main.tabIndex = -1;
@@ -272,7 +318,7 @@ class WorldApplication {
     this.humanCallLive.append(humanCallCopy, this.humanCallActions);
     this.humanCallStrip.append(this.humanCallIncoming, this.humanCallLive);
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
-    skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
+    skip.addEventListener('click', event => { event.preventDefault(); (this.retainedMainApps?.active()?.host??this.main).focus(); });
     this.connectionButton.classList.add('of-connect-button');
     this.connectionButton.setAttribute('aria-haspopup', 'dialog');
     this.connectionButton.title = 'QR · люди, устройства и приглашения';
@@ -325,9 +371,9 @@ class WorldApplication {
       }
     });
     this.unregisterUpdateGuard = registerUpdateGuard(async () => {
-      await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush();
-      if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges() || this.chatDrafts.hasVolatile() || [...(this.chatDraftSessions??[])].some(session=>session.hasUnsavedChanges())) return 'work';
-      if (this.appStage?.hasUnconfirmedWork() || this.widgets?.hasUnconfirmedWork()) return 'app';
+      await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush();await flushRetainedNativeDrafts().catch(()=>{});
+      if (hasRetainedNativeDrafts() || this.appRuntimeStages().some(stage=>stage.hasUnsavedChanges()) || this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges() || this.chatDrafts.hasVolatile() || [...(this.chatDraftSessions??[])].some(session=>session.hasUnsavedChanges())) return 'work';
+      if (this.appRuntimeStages().some(stage=>stage.hasUnconfirmedWork()) || this.widgets?.hasUnconfirmedWork()||this.monitoringPanel?.hasUnconfirmedWork()) return 'app';
       if (this.formEdits.hasUnsavedChanges()) return 'form';
       if (document.querySelector('dialog[open] form')) return 'dialog';
       return true;
@@ -350,14 +396,14 @@ class WorldApplication {
     this.avatars = new AvatarHydrator(this.api, root);
     this.renderNavigation(); this.main.append(this.loading('Открываем Соты'));
     window.addEventListener('popstate', () => { void this.openRoute(); }, { signal: this.controller.signal });
-    window.addEventListener('pagehide', () => { this.stopIncomingCallPolling(); this.mountFieldCovers(null); }, { signal: this.controller.signal });
+    window.addEventListener('pagehide', () => { this.stopIncomingCallPolling(); this.mountFieldCovers(null);void flushRetainedNativeDrafts().catch(()=>{}); }, { signal: this.controller.signal });
     window.addEventListener('pageshow', event => { if (event.persisted) this.startIncomingCallPolling(); this.mountFieldCovers(this.unifiedField); }, { signal: this.controller.signal });
-    document.addEventListener('visibilitychange', () => this.mountFieldCovers(this.unifiedField), { signal: this.controller.signal });
-    window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || [...(this.chatDraftSessions??[])].some(session=>session.hasUnsavedChanges()) || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
+    document.addEventListener('visibilitychange', () => {this.mountFieldCovers(this.unifiedField);if(document.visibilityState==='visible')void this.refreshSocialInbox().catch(()=>{});}, { signal: this.controller.signal });
+    window.addEventListener('beforeunload', event => { if (hasRetainedNativeDrafts() || this.appRuntimeStages().some(stage=>stage.hasUnsavedChanges()||stage.hasUnconfirmedWork()) || this.monitoringPanel?.hasUnconfirmedWork() || this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || [...(this.chatDraftSessions??[])].some(session=>session.hasUnsavedChanges()) || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
     window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key,event.newValue), { signal: this.controller.signal });
     root.addEventListener('soty:chat-updated', event => {
       const group=(event as CustomEvent<{community:WorldCommunity}>).detail?.community;
-      if(!group)return;const known=this.communities.find(value=>value.communityId===group.communityId);if(known)known.unreadCount=group.unreadCount;this.updateNavUnread();
+      if(!group)return;this.communityEpoch++;const known=this.communities.find(value=>value.communityId===group.communityId);if(known)known.unreadCount=group.unreadCount;this.updateNavUnread();
     },{signal:this.controller.signal});
     root.addEventListener('soty:inbox-updated', event => {
       const groups = (event as CustomEvent<{ communities: WorldCommunity[] }>).detail?.communities;
@@ -611,14 +657,63 @@ class WorldApplication {
   }
 
   destroy(): void {
+    this.monitoringOpenEpoch++;this.monitoringOpening=false;this.monitoringPanel?.forceClose();this.monitoringPanel=null;
     this.stopIncomingCallPolling();
+    this.socialInbox?.dispose();this.socialInbox=null;
     this.destroyed = true; this.requestSequence++; this.screenSequence++; this.unsubscribeNotifications?.(); this.agentOrb?.dispose(); this.agentOrb = null; this.widgets?.dispose(); this.widgets = null;
     this.unsubscribeHumanCall?.(); this.unsubscribeHumanCall = null;
-    this.controller.abort(); this.accountField?.dispose(); this.accountField = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
+    this.controller.abort(); this.accountField?.dispose(); this.accountField = null; this.retainedMainApps?.clear(); this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
     if (this.searchTimer) clearTimeout(this.searchTimer);
     if (this.toastTimer) clearTimeout(this.toastTimer);
     for (const dialog of this.dialogs) dialog.close({ restoreFocus: false });
     this.dialogs.clear(); delete this.root.dataset.humanCallActive; this.root.replaceChildren(); this.root.classList.remove('sw-app');
+    this.shellGlass?.dispose();
+  }
+
+  liveWatch():LiveWatch[]{
+    const refs:LiveWatch[]=(this.retainedMainApps?.all()??[]).map(owner=>({kind:'app' as const,id:owner.appId}));
+    for(const ref of this.unifiedField?.watchEntities()||[])if(ref.kind==='app'||ref.kind==='person'||ref.kind==='community'||ref.kind==='object')refs.push({kind:ref.kind,id:ref.id});
+    if(this.group)refs.push({kind:'community',id:this.group.communityId});
+    if(this.communitySurface)refs.push({kind:'community',id:this.communitySurface.communityId});
+    if(this.profile)refs.push({kind:'person',id:this.profile.profileId});
+    for(const node of this.root.querySelectorAll<HTMLElement>('[data-profile-id]'))if(node.dataset.profileId)refs.push({kind:'person',id:node.dataset.profileId});
+    const launch=parseAppLaunchRoute(location.hash);if(launch)refs.push({kind:'app',id:launch.target.appId});
+    return [...new Map(refs.map(ref=>[`${ref.kind}:${ref.id}`,ref])).values()].slice(0,256);
+  }
+
+  async invalidateLive(options?:{reset:boolean}):Promise<void>{
+    if(this.destroyed||!this.deskAccount)return;
+    const current=this.accountTask(),field=this.unifiedField,stages=this.appRuntimeStages();
+    // Refresh display authority without navigating or remounting an active app/editor.
+    const stageUpdate=Promise.all(stages.map(stage=>stage.invalidateLive?.(options)));
+    const hostUpdate=options?.reset?Promise.all([...stages.map(stage=>stage.renewHostSession?.('reset')),field?.renewHostSessions?.('reset')])
+      .catch(error=>{if(isLiveIdentityLoss(error))throw error;}):Promise.resolve();
+    this.fieldCoverPresenter?.invalidateAll();
+    this.avatars.setContext(this.group?.membership?.state==='active'?this.group.communityId:undefined);
+    // Each owner rechecks independently. An optional profile read cannot leave
+    // a revoked object or iframe on screen, or postpone its fresh ACL check.
+    const results=await Promise.allSettled([
+      this.api.request<{profile:WorldProfile}>('world.profile.get',{}).then(result=>{
+        if(!current())return;if(!this.profile||result.profile.revision>=this.profile.revision)this.profile=result.profile;this.renderNavigation();
+      }),stageUpdate,hostUpdate,
+      field&&field===this.unifiedField?field.refresh({preserveView:true}):Promise.resolve(),
+      this.refreshSocialInbox(),
+    ]);
+    if(!current())return;
+    const errors=results.filter((value):value is PromiseRejectedResult=>value.status==='rejected');
+    const identityLoss=errors.find(value=>isLiveIdentityLoss(value.reason));
+    if(identityLoss){this.loseAccess(identityLoss.reason);throw identityLoss.reason;}
+    if(errors.length)throw errors[0]!.reason;
+    this.fieldCoverPresenter?.refreshVisible();
+  }
+
+  loseAccess(error:unknown):void{
+    if(this.destroyed)return;
+    // Retire synchronous display state before any network recovery. Local
+    // account-bound drafts stay on disk for a later authorized reopening.
+    this.requestSequence++;if(!this.transitionAccount(null))this.cleanScreen();this.renderNavigation();
+    const box=emptyState('Доступ к аккаунту изменился',errorText(error),button('Подключиться снова','refresh','sw-button-primary',()=>{void this.refresh();}));
+    box.append(button('Мой аккаунт','person','sw-button-quiet',()=>this.runHook(()=>this.options.openAccount('recovery'))));this.main.replaceChildren(box);
   }
 
   async refresh(preserveNote = false): Promise<void> {
@@ -675,6 +770,7 @@ class WorldApplication {
       this.syncFieldOutbox();
       this.renderNavigation();
       if (this.applicationInboxStatus === 'unknown') this.queueApplicationInbox(false);
+      void this.refreshSocialInbox().catch(()=>{});
       // A chat deep link needs its membership result; other screens can render now.
       if (!this.routeLoaded && /^#messages(?:\/|\?|$)/u.test(location.hash)) {
         const requestedRoute = location.hash;
@@ -687,6 +783,7 @@ class WorldApplication {
       }
       // A same-account shell refresh is not navigation. The owner window and
       // its running app keep their draft, selection and existing connection.
+      if(sameAccount&&this.canvasPage){this.routeLoaded=true;await settleCommunities();return;}
       if (sameAccount && (this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open || this.coverDialog?.element.open)) { this.routeLoaded = true; await settleCommunities(); return; }
       // Recover the authenticated shell after an offline launch without replacing the live editor.
       if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; await settleCommunities(); return; }
@@ -749,17 +846,24 @@ class WorldApplication {
     if (next === this.deskAccount) return false;
     const previousAccount = this.deskAccount;
     this.deskAccount = next; this.accountGeneration++; this.homeRequest++; this.agentOrb?.setAccount(next);
-    this.applicationReturn = null; this.pendingReturnPresentation = null;
+    this.monitoringOpenEpoch++;this.monitoringOpening=false;this.monitoringPanel?.forceClose();this.monitoringPanel=null;
+    this.applicationReturn = null; this.pendingReturnPresentation = null;this.canvasPageViews?.clear();
+    const initialReturn=this.accountGeneration===1?this.options.initialWorkspaceReturn:undefined;
+    const initialDestination=initialReturn?.isCurrent()?readWorkspaceReturn(initialReturn.destination,next):null;
+    this.initialApplicationReturn=initialReturn&&initialDestination?{...initialReturn,destination:initialDestination}:null;
+    if(initialDestination?.canvasView)this.canvasPageViews.set(initialDestination.route,initialDestination.canvasView);
     this.savedLibraryView = { pages: 1, scroll: 0 };
     this.applicationInboxSequence++; this.applicationInboxPending = false; this.applicationInboxEntries = []; this.applicationFieldEntries = [];
     this.applicationInboxNextCursor = null; this.applicationInboxPages = 1; this.applicationInboxDirty = false;
     this.applicationInboxAttemptedAt = 0;
     this.applicationInboxScheduled = false; this.applicationReadState = 'synced';
     this.applicationDiscussions = []; this.applicationInboxStatus = 'unknown'; this.messagesView = { query: '', unreadOnly: false, scroll: 0 };
+    void flushRetainedNativeDrafts().catch(()=>{});
     this.widgets?.setAccount(next);
     this.accountField?.dispose(); this.accountField = null;
-    this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close({ restoreFocus: false });
+    this.retainedMainApps?.clear(); this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close({ restoreFocus: false });
     this.profile = null; this.communities = []; this.directThreads = []; this.directLabels = new Map(); this.directThreadsLoaded = false; this.humanCallJoinPending = false; this.apps = []; this.devices = []; this.homeNotes = null;
+    this.socialInbox?.dispose();this.socialInbox=null;this.incomingContactRequests=0;this.directInboxUnavailable=false;
     this.group = null; this.selected = null; this.selectedChat = undefined; this.groupReturn = 'mine'; this.groupTab = 'about';
     this.homeState.slots.clear(); this.homeState.scroll = 0; this.homeState.fieldX = 0; this.homeState.fieldY = 0;
     this.homeState.communityId = null; this.homeState.focusId = null; this.homeState.focusControl = null; this.homeState.lens = 'all';
@@ -803,14 +907,80 @@ class WorldApplication {
     const node = el('div', 'sw-loading'); node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
     node.append(el('span', '', label)); return node;
   }
-  private cleanScreen(): void { this.aiSettingsDialog?.close({ restoreFocus: false }); this.aiSettingsDialog = null; this.coverDialog?.close({ restoreFocus: false }); this.coverHandle?.dispose(); this.coverHandle = null; this.coverDialog = null; this.coverTargetCurrent = null; this.mountFieldCovers(null); this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
-  private screenHasUnsavedChanges(): boolean { return !!(this.chatDraftSession?.hasUnsavedChanges() || this.coverHandle?.hasUnsavedChanges() || this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
-  private async flushScreen(): Promise<void> { await Promise.all([this.chatDraftSession?.flush(), this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
+  private cleanScreen(): void {
+    this.monitoringOpenEpoch++;this.monitoringOpening=false;this.monitoringPanel?.suspend(); this.communityOpenTicket++;this.communityPending=0;this.communitySurface=null;this.communityReturnRoute=null; this.canvasVaultComposer?.dispose();this.canvasVaultComposer=null;this.canvasPage?.dispose();this.canvasPage=null;this.canvasComposer?.dispose(); this.canvasComposer=null; this.aiSettingsDialog?.close({ restoreFocus: false }); this.aiSettingsDialog = null; this.coverDialog?.close({ restoreFocus: false }); this.coverHandle?.dispose(); this.coverHandle = null; this.coverDialog = null; this.coverTargetCurrent = null; this.mountFieldCovers(null); this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.hideMainApplication(); this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
+  private screenHasUnsavedChanges(): boolean { return !!(this.monitoringPanel?.hasUnsavedChanges() || this.canvasComposer?.hasUnsavedChanges?.() || this.canvasVaultComposer?.hasUnsavedChanges?.() || this.canvasPage?.hasUnsavedChanges() || this.chatDraftSession?.hasUnsavedChanges() || this.coverHandle?.hasUnsavedChanges() || this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || (!this.isRetainedMain(this.appStage)&&this.appStage?.hasUnsavedChanges())); }
+  private async flushScreen(options?:{allowMonitoringDurablePending?:boolean}): Promise<void> { await Promise.all([this.monitoringPanel?.flush({allowDurablePending:options?.allowMonitoringDurablePending===true}),this.canvasPage?.flush(),this.chatDraftSession?.flush(), this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), ...this.appRuntimeStages().map(stage=>stage.flush(options))]); }
+  private appRuntimeStages():AppStageHandle[]{return [...new Set([...(this.retainedMainApps?.all()??[]).flatMap(owner=>owner.stage?[owner.stage]:[]),...(this.appStage?[this.appStage]:[])])];}
+  private isRetainedMain(stage:AppStageHandle|null):boolean{return !!stage&&!!this.retainedMainApps?.all().some(owner=>owner.stage===stage);}
+  private mainRuntimeOwners():RetainedAppRuntimes<MainRuntimeOwner>{
+    return this.retainedMainApps??=createRetainedAppRuntimes<MainRuntimeOwner>(owner=>{
+      this.appStage=owner?.stage??null;this.main.inert=!!owner;this.main.classList.toggle('of-app-runtime-background',!!owner);
+      if(owner)this.main.setAttribute('aria-hidden','true');else this.main.removeAttribute('aria-hidden');this.agentOrb?.resetScreen();
+    });
+  }
+  private hideMainApplication():void{
+    this.mainOpenEpoch=(this.mainOpenEpoch??0)+1;
+    const previous=this.appStage,retained=this.isRetainedMain(previous);this.retainedMainApps?.present(null);
+    if(previous&&!retained)previous.dispose();this.appStage=null;
+  }
+  private returnMainToCanvas(owner:MainRuntimeOwner):void{
+    if(this.destroyed||this.deskAccount!==owner.accountId||this.accountGeneration!==owner.accountGeneration)return;
+    this.mainOpenEpoch=(this.mainOpenEpoch??0)+1;this.retainedMainApps?.present(null);this.applicationReturn=owner.returnWorkspace;this.appReturnView=owner.returnView;
+    const destination=readWorkspaceReturn(owner.returnWorkspace,this.deskAccount);
+    if(destination&&!/^#(?:mine|world)(?:\?|$)/u.test(destination.route)){
+      const current=this.accountTask();this.writeRoute(destination.route.slice(1));void this.openRoute().then(handled=>{if(current()&&!handled)this.navigateReady(owner.returnView);});return;
+    }
+    this.navigateReady(owner.returnView);
+  }
+  private async closeMainApplication(owner:MainRuntimeOwner,request:AppRuntimeCloseRequest):Promise<void>{
+    const stage=owner.stage;if(!stage)return;const intent=++owner.closeEpoch;
+    const current=()=>!this.destroyed&&this.deskAccount===owner.accountId&&this.accountGeneration===owner.accountGeneration
+      &&this.retainedMainApps?.active()===owner&&this.retainedMainApps.has(owner)&&owner.closeEpoch===intent&&request.isCurrent();
+    await closeAppRuntime({stage,isCurrent:current,confirmUnknown:request.confirmUnknown,
+      onFailure:()=>{if(current())this.toast('Сохранение не подтверждено. Приложение остаётся открытым.',true);},
+      commit:()=>{this.retainedMainApps?.retire(owner);this.returnMainToCanvas(owner);}});
+  }
+  private async openProfilesSafely():Promise<boolean>{await this.options.openAccount('profiles');return true;}
+  async prepareAccountChange():Promise<boolean>{
+    const account=this.accountTask(),screen=this.screenSequence,intent=this.mainOpenEpoch??0,stages=this.appRuntimeStages();
+    const monitoring=this.monitoringPanel,field=this.unifiedField,page=this.canvasPage,widgets=this.widgets,fieldEpoch=field?.readRuntimeEpoch(),pageEpoch=page?.readRuntimeEpoch();
+    const frames=()=>[...this.root.querySelectorAll<HTMLIFrameElement>('.sa-runtime iframe')],before=frames(),abort=new AbortController();let loaded=false;
+    for(const frame of before)frame.addEventListener('load',()=>{loaded=true;},{signal:abort.signal});
+    const current=()=>account()&&screen===this.screenSequence&&intent===(this.mainOpenEpoch??0)&&!loaded
+      &&monitoring===this.monitoringPanel&&field===this.unifiedField&&page===this.canvasPage&&widgets===this.widgets&&fieldEpoch===field?.readRuntimeEpoch()&&pageEpoch===page?.readRuntimeEpoch()
+      &&stages.length===this.appRuntimeStages().length&&stages.every((stage,index)=>this.appRuntimeStages()[index]===stage)
+      &&before.length===frames().length&&before.every((frame,index)=>frames()[index]===frame);
+    const unknown=()=>monitoring?.hasUnconfirmedWork()||stages.some(stage=>stage.hasUnconfirmedWork())||field?.hasUnconfirmedWork()||page?.hasUnconfirmedWork()||widgets?.hasUnconfirmedWork();
+    try{
+      let confirmed=false;
+      if(unknown())confirmed=await new Promise<boolean>(resolve=>{
+        let settled=false;const dialog=this.dialog('Переключить аккаунт?',()=>finish(false));
+        const finish=(accepted:boolean)=>{if(settled)return;settled=true;dialog.close({restoreFocus:!accepted});resolve(accepted&&current());};
+        const stay=button('Остаться','back','sw-button-primary',()=>finish(false));
+        dialog.body.append(el('p','','Сохранение внутри некоторых открытых приложений не подтверждено. При смене аккаунта их незавершённая работа может пропасть.'),stay,
+          button('Переключить без сохранения','person','sw-button-quiet',()=>finish(true)));stay.focus();
+      });
+      if(!current()||unknown()&&!confirmed)return false;
+      await this.flushScreen({allowMonitoringDurablePending:confirmed});await this.widgets?.flush();await this.agentOrb?.flush();await flushRetainedNativeDrafts();
+      if(!current())return false;
+      if(this.screenHasUnsavedChanges()||stages.some(stage=>stage.hasUnsavedChanges())||unknown()&&!confirmed||this.widgets?.hasUnsavedChanges()
+        ||this.agentOrb?.hasUnsavedChanges()||hasRetainedNativeDrafts()||this.chatDrafts.hasVolatile()||this.formEdits?.hasUnsavedChanges()
+        ||[...(this.chatDraftSessions??[])].some(session=>session.hasUnsavedChanges())){
+        this.toast('Сохранение не подтверждено. Работа и аккаунт остаются прежними.',true);return false;
+      }
+      return true;
+    }catch{if(current())this.toast('Сохранение не подтверждено. Работа и аккаунт остаются прежними.',true);return false;}
+    finally{abort.abort();}
+  }
   private persist(): void { savePreferences(this.preferences); }
   private announce(message: string): void { this.live.textContent = message; }
-  private toast(message: string, isError = false, action?: { label: string; run(): void }): void {
+  private toast(message: string, isError = false, action?: { label: string; run(): void },noticeOwner?:string): void {
+    const noticeHost=noticeOwner?this.root.querySelector<HTMLElement>(`[data-notice-owner="${CSS.escape(noticeOwner)}"]`):this.root;
+    if(!noticeHost||noticeOwner&&(!noticeHost.isConnected||noticeHost.closest('[hidden],[inert]')||!noticeHost.getClientRects().length))return;
     this.root.querySelector('.sw-toast')?.remove(); if (this.toastTimer) clearTimeout(this.toastTimer);
-    const toast = el('div', `sw-toast${isError ? ' is-error' : ''}`, message); toast.setAttribute('role', isError ? 'alert' : 'status'); this.root.append(toast);
+    const toast = el('div', `sw-toast${isError ? ' is-error' : ''}`, message); toast.setAttribute('role', isError ? 'alert' : 'status');
+    noticeHost.append(toast);
     if (action) {
       toast.classList.add('has-action');
       toast.append(button(action.label, 'refresh', 'sw-button-quiet', () => { toast.remove(); action.run(); }),
@@ -829,7 +999,7 @@ class WorldApplication {
       this.appPlacementRouteClose(() => this.afterNoteSaved(action)); return;
     }
     const sequence = this.screenSequence;
-    if (!this.screenHasUnsavedChanges() && !this.appStage?.requiresCloseCheck()) { action(); return; }
+    if (!this.screenHasUnsavedChanges() && !(!this.isRetainedMain(this.appStage)&&this.appStage?.requiresCloseCheck())) { action(); return; }
     this.noteActionPending = true;
     void this.flushScreen().then(() => {
       this.noteActionPending = false;
@@ -982,6 +1152,21 @@ class WorldApplication {
     renderer = mountNotifications(dialog.body, controller);
   }
 
+  private async openMonitoring():Promise<void>{
+    const account=this.accountTask(),screen=this.screenSequence,route=this.activeRoute,routeHash=location.hash,accountId=this.deskAccount;if(!accountId||!account())return;
+    if(this.monitoringPanel){this.monitoringPanel.focus();return;}if(this.monitoringOpening)return;this.monitoringOpening=true;const ticket=++this.monitoringOpenEpoch;
+    const opening=()=>account()&&screen===this.screenSequence&&route===this.activeRoute&&routeHash===location.hash&&ticket===this.monitoringOpenEpoch;
+    try{const {openMonitoringDialog}=await import('./monitoring-dialog');if(!opening())return;
+      let opened:MonitoringDialogHandle;
+      opened=openMonitoringDialog({api:this.api,accountId,scope:{kind:'platform'},isCurrent:account,title:'Состояние Сот',
+        returnTarget:{isCurrent:()=>account()&&!this.appStage,resolve:()=>isDialogFocusTarget(this.main)?this.main:null},
+        onClosed:()=>{if(this.monitoringPanel===opened)this.monitoringPanel=null;},
+        onModalChange:(dialog,open)=>{if(open)this.agentOrb?.setModal(dialog);else this.agentOrb?.releaseModal(dialog);}});
+      this.monitoringPanel=opened;
+    }catch{if(opening())this.toast('Не удалось открыть состояние Сот. Попробуйте ещё раз.',true);}
+    finally{if(ticket===this.monitoringOpenEpoch)this.monitoringOpening=false;}
+  }
+
   private openFieldMenu(): void {
     if (this.fieldMenu?.element.open) { this.fieldMenu.close(); return; }
     let disposeGrip = (): void => {}, disposeTheme = (): void => {};
@@ -1004,10 +1189,20 @@ class WorldApplication {
     const world = this.view === 'world';
     grid.append(item('Создать', 'plus', () => this.openAddMenu()), item('Все возможности', 'grid', () => this.openWorkMenu()),
       item(world ? 'Моё' : 'Мир и каталог', world ? 'grid' : 'world', () => this.navigate(world ? 'mine' : 'world')));
+    const messages=item('Сообщения','chat',()=>this.navigate('messages'));messages.dataset.navView='messages';
+    const contacts=item('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people')));contacts.dataset.inboxRequests='true';
+    grid.prepend(item('Мой профиль','person',()=>this.openProfileMenu()),messages,contacts);
     const tools = el('div', 'of-menu-tools');
-    if (this.unifiedField) tools.append(item('Вид поля', 'sliders', () => this.unifiedField?.openView()));
+    const stateAction=item('Состояние Сот','activity',()=>{void this.openMonitoring();});stateAction.hidden=true;
+    tools.append(stateAction);
+    const menuCurrent=this.accountTask();
+    void this.api.request<{permissions:{read:boolean}}>('monitoring.describe',{expectedAccountId:account,scope:{kind:'platform'}}).then(value=>{
+      if(menuCurrent()&&this.fieldMenu===menu&&menu.element.open)stateAction.hidden=value.permissions.read!==true;
+    }).catch(()=>{});
+    if (this.unifiedField) tools.append(item('Вид поля', 'sliders', () => this.unifiedField?.openView()),item('Скрытые объекты','layers',()=>this.unifiedField?.openHiddenObjects()));
     else tools.append(item('На моё поле', 'grid', () => this.navigate('mine')));
-    tools.append(item('Интернет', 'world', () => this.openCapability('internet')), this.coreSupportLink());
+    tools.append(item('Поделиться полотном','external',()=>this.openCanvasShare()));
+    tools.append(item('Подключить по QR','qr',()=>{void this.openConnections();}),item('Интернет', 'world', () => this.openCapability('internet')), this.coreSupportLink());
     const grip = el('button', 'of-sheet-handle'); grip.type = 'button'; grip.setAttribute('aria-label', 'Свернуть меню');
     disposeGrip = bindSheetGripDismiss(grip, () => menu.close(), {
       isCurrent: () => !this.destroyed && this.fieldMenu === menu && menu.element.open && account === this.deskAccount && accountGeneration === this.accountGeneration,
@@ -1031,13 +1226,63 @@ class WorldApplication {
     menu.body.append(actions);
   }
 
+  private openCanvasShare():void {
+    if(!this.deskAccount)return;const current=this.accountTask();let view:ReturnType<typeof mountCanvasPageShare>|undefined;
+    const dialog=this.dialog('Поделиться полотном',()=>view?.dispose());
+    const field=this.unifiedField;
+    view=mountCanvasPageShare(dialog,{api:this.api,accountId:this.deskAccount,isCurrent:()=>current()&&dialog.element.open,
+      prepare:async()=>{await field?.preparePublication();if(!current())throw Object.assign(new Error('canvas_page_cancelled'),{code:'canvas_page_cancelled'});},
+      onOpenObjectAccess:async objectId=>{if(current()&&this.unifiedField===field)await field?.openObjectSettings(objectId);},
+      onOpenAppAccess:async appId=>{
+        const accountId=this.deskAccount;
+        const snapshot=await this.api.request<AppInspection>('apps.inspect',{expectedAccountId:accountId,appId});
+        if(!current()||!dialog.element.open)return;
+        if(!snapshot.actions.canEdit)throw Object.assign(new Error('apps_access_denied'),{code:'apps_access_denied'});
+        const entry=preferredInspectionEntry(snapshot),app:WorldAppRecord={appId,name:snapshot.app.name,ownerAccountId:accountId,
+          status:snapshot.app.state==='revoked'?'revoked':({offline:'offline',unknown:'starting',responding:'ready',unreachable:'stopped'} as const)[snapshot.source.observation.state],
+          grants:snapshot.app.grants,publication:publicationFromInspection(snapshot),...(entry?{entry}:{})};
+        const settings=this.openAppSettings(app,()=>{},this.dialogReturnTarget(()=>dialog.element),undefined,true);
+        if(settings)await new Promise<void>(resolve=>settings.element.addEventListener('close',()=>resolve(),{once:true}));
+      },
+      onPreview:pageId=>this.afterNoteSaved(()=>{if(current()){this.writeRoute('space/'+pageId+'?view=public');void this.openRoute();}})});
+  }
+
   private updateNavUnread(): void {
     const unread=this.communities.filter(group=>group.membership?.state==='active'&&!group.membership.muted).reduce((sum,group)=>sum+Math.max(0,group.unreadCount),0)
       +(this.directThreads ?? []).filter(thread=>!thread.preferences.muted).reduce((sum,thread)=>sum+Math.max(0,thread.unreadCount),0)
       +this.applicationDiscussions.reduce((sum, row) => sum + (row.unreadCount ?? 0), 0);
-    const incomplete = !!this.applicationInboxNextCursor || this.applicationReadState === 'unavailable' || this.applicationInboxStatus !== 'ready';
-    for (const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')) nav.setAttribute('aria-label', unread ? `Сообщения · непрочитанных${incomplete ? ' не меньше' : ':'} ${unread}` : 'Сообщения');
-    for(const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')){let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!unread){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=unread>99?'99+':String(unread)+(incomplete?'+':'');}
+    const invitations=this.communities.filter(group=>group.membership?.state==='invited').length;
+    const incomplete = !!this.applicationInboxNextCursor || this.applicationReadState === 'unavailable' || this.applicationInboxStatus !== 'ready'
+      ||this.profile?.directMessagesVersion===1&&(!this.directThreadsLoaded||this.directInboxUnavailable);
+    this.unifiedField?.setInboxSummary?.({messages:unread,requests:this.incomingContactRequests??0,invitations,incomplete});
+    const messagesLabel=`Сообщения${unread?` · непрочитанных${incomplete?' не меньше':':'} ${unread}`:''}${invitations?` · приглашений в комнаты: ${invitations}`:''}`,total=unread+invitations;
+    const navigationRoots=[this.root,...(this.fieldMenu?.element.open?[this.fieldMenu.element]:[])];
+    const controls=(selector:string)=>[...new Set(navigationRoots.flatMap(root=>Array.from(root.querySelectorAll<HTMLElement>(selector))))];
+    for (const nav of controls('[data-nav-view="messages"]')) nav.setAttribute('aria-label', messagesLabel);
+    for(const nav of controls('[data-nav-view="messages"]')){let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!total){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=total>99?'99+':String(total)+(incomplete?'+':'');}
+    for(const nav of controls('[data-inbox-requests]')){const count=this.incomingContactRequests??0;nav.setAttribute('aria-label',count?`Контакты · новых запросов: ${count}`:'Контакты');let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!count){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=count>99?'99+':String(count);}
+  }
+
+  private refreshSocialInbox():Promise<void>{
+    if(this.destroyed||!this.deskAccount||!this.profile)return Promise.resolve();
+    if(!this.socialInbox){
+      const accountId=this.deskAccount,current=this.accountTask();
+      this.socialInbox=createSocialInbox({api:this.api,accountId,isCurrent:current,directEnabled:()=>this.profile?.directMessagesVersion===1,
+        epochs:()=>({direct:this.directProjectionEpoch,community:this.communityEpoch,communityRead:++this.communityReadSequence}),
+        onDirect:(threads,epoch)=>{if(!current())return;if(epoch.direct!==this.directProjectionEpoch)return;
+          const previous=new Map(this.directThreads.map(thread=>[thread.threadId,thread]));
+          const changed=threads.filter(thread=>{const old=previous.get(thread.threadId);return !old||old.revision!==thread.revision||old.unreadCount!==thread.unreadCount||old.relationshipId!==thread.relationshipId;}).map(thread=>thread.threadId);
+          this.directThreads=threads;this.directThreadsLoaded=true;this.directInboxUnavailable=false;this.updateNavUnread();this.root.dispatchEvent(new CustomEvent('soty:social-inbox-updated',{detail:{direct:changed}}));},
+        onCommunities:(communities,epoch)=>{if(!current())return;if(epoch.community!==this.communityEpoch)return;
+          if(epoch.communityRead<this.communityAppliedReadSequence)return;
+          const previous=new Map(this.communities.map(group=>[group.communityId,group]));
+          const changed=communities.filter(group=>{const old=previous.get(group.communityId);return !old||old.revision!==group.revision||old.unreadCount!==group.unreadCount||old.membership?.revision!==group.membership?.revision;}).map(group=>group.communityId);
+          this.communities=communities;this.communityAppliedReadSequence=epoch.communityRead;this.updateNavUnread();this.root.dispatchEvent(new CustomEvent('soty:social-inbox-updated',{detail:{communities:changed}}));},
+        onContacts:incoming=>{if(!current())return;this.incomingContactRequests=incoming;this.updateNavUnread();},
+        onFailure:(kind,reason)=>{if(!current())return;if(isLiveIdentityLoss(reason)){this.loseAccess(reason);return;}if(kind==='direct'){this.directInboxUnavailable=true;this.updateNavUnread();}},
+      });
+    }
+    return this.socialInbox.refresh();
   }
 
   private openHumanSignins(): void {
@@ -1063,7 +1308,8 @@ class WorldApplication {
     const menu = this.dialog('Профиль и настройки', () => center?.dispose()); menu.element.classList.add('sw-account-dialog');
     const actions: Record<AccountAction, () => void> = {
       'edit-profile': () => this.openProfileEditor(), 'profile-visibility': () => this.openVisibility(),
-      'switch-profile': () => this.runHook(() => this.options.openAccount('profiles')),
+      'switch-profile': () => this.runHook(async() => {await this.openProfilesSafely();}),
+      'connect-profile': () => this.runHook(()=>this.options.openAccount('connect')),
       appearance: () => this.openAppearance(), notifications: () => this.openNotifications(),
       'auth-devices': () => this.runHook(() => this.options.openAccount('devices')),
       recovery: () => this.runHook(() => this.options.openAccount('recovery')),
@@ -1242,6 +1488,8 @@ class WorldApplication {
   }
 
   private navigateReady(view: WorldView, chatId?: string, appFeedback?: AppFeedbackGrantTarget): void {
+    this.hideMainApplication();this.closeCommunitySurface();
+    if(this.canvasPage)this.cleanScreen();
     if (view === 'mine' || view === 'world') this.unifiedFieldFilter = this.unifiedFieldFilters[view];
     this.selectedChat = view === 'messages' ? chatId : undefined;
     if (view === 'world') this.discoveryStatus = 'loading';
@@ -1259,10 +1507,16 @@ class WorldApplication {
   private writeRoute(route: string): void {
     this.widgets?.clearActive();
     const next = `#${route}`, application = /^#(?:app|launch)\//u.test(next);
-    if (application && !/^#(?:app|launch)\//u.test(this.activeRoute)) {
+    const initial=application?this.initialApplicationReturn:null;
+    if(application)this.initialApplicationReturn=null;
+    const inherited=initial?.launchRoute===next&&initial.isCurrent()?readWorkspaceReturn(initial.destination,this.deskAccount):null;
+    if(inherited)this.applicationReturn=inherited;
+    else if (application && !/^#(?:app|launch)\//u.test(this.activeRoute)) {
       const focus = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('[data-entity-id]')?.dataset.entityId : undefined;
+      const canvasView=this.canvasPageViews?.get(this.activeRoute);
       this.applicationReturn = readWorkspaceReturn({ accountId: this.deskAccount, route: this.activeRoute, scroll: this.main.scrollTop,
-        ...this.pendingReturnPresentation, ...(focus ? { focusEntity: focus } : {}) }, this.deskAccount);
+        ...this.pendingReturnPresentation, ...(focus ? { focusEntity: focus } : {}),
+        ...(canvasView?{canvasView}:{}) }, this.deskAccount);
       this.pendingReturnPresentation = null;
     } else if (application && !this.applicationReturn) this.applicationReturn = readWorkspaceReturn(history.state?.sotyReturn, this.deskAccount);
     const state = { soty: true, ...(application && this.applicationReturn ? { sotyReturn: this.applicationReturn } : {}) };
@@ -1314,7 +1568,13 @@ class WorldApplication {
       }
       return true;
     }
-    if (this.screenHasUnsavedChanges() || this.appStage?.requiresCloseCheck()) {
+    const retainedCommunity=/^#community\/([A-Za-z0-9_-]{3,160})(?:\/(about|chat|apps))?(?:\?|$)/u.exec(location.hash);
+    if(this.unifiedField&&retainedCommunity){await this.openGroup(retainedCommunity[1]!,retainedCommunity[2] as GroupTab??'about');return true;}
+    const roomReturn=this.communityReturnRoute??this.communitySurface?.returnRoute;
+    if(this.unifiedField&&roomReturn===location.hash){
+      this.communityReturnRoute=null;this.closeCommunitySurface();this.group=null;this.activeRoute=location.hash;this.desk.lastRoute=location.hash.slice(1);this.saveDesk(false,true);return true;
+    }
+    if (this.screenHasUnsavedChanges() || !this.isRetainedMain(this.appStage)&&this.appStage?.requiresCloseCheck()) {
       const accountId = this.deskAccount, sequence = this.screenSequence;
       await this.flushScreen().catch(() => {});
       if (this.destroyed || sequence !== this.screenSequence || accountId !== this.deskAccount) return true;
@@ -1323,6 +1583,15 @@ class WorldApplication {
     const fragment = location.hash.slice(1), queryAt = fragment.indexOf('?');
     const [route, id, tab] = (queryAt < 0 ? fragment : fragment.slice(0, queryAt)).split('/');
     const parameters = new URLSearchParams(queryAt < 0 ? '' : fragment.slice(queryAt + 1));
+    if(route==='space'&&id&&parseCanvasPageRoute(location.hash)===id){
+      const requested=location.hash,current=this.accountTask();this.cleanScreen();this.view='mine';this.group=null;this.selected=null;this.root.dataset.field='page';this.activeRoute=requested;
+      const destination=readWorkspaceReturn(this.applicationReturn,this.deskAccount);
+      const guestPreview=parameters.get('view')==='public',viewState=this.canvasPageViews.get(requested)??(destination?.route===requested?destination.canvasView:undefined);
+      this.canvasPage=createCanvasPageScreen({...(guestPreview?{}:{api:this.api,accountId:this.deskAccount,mountApp:(host:HTMLElement,value:CanvasWidgetView,live:()=>boolean)=>this.mountCanvasApp(host,value,live)}),pageId:id,guestPreview,homeLabel:'Моё полотно',isCurrent:()=>current()&&location.hash===requested,
+        ...(viewState?{viewState}:{}),onViewStateChange:value=>{if(current())this.canvasPageViews.set(requested,value);},onHome:()=>this.navigate('mine'),
+        onOpenApp:entry=>this.afterNoteSaved(()=>{if(current()){this.writeRoute(formatAppLaunchRoute(entry));void this.openRoute();}})});
+      this.main.replaceChildren(this.canvasPage.element);this.main.classList.remove('sw-main-loading');return true;
+    }
     if (route === 'community' && id && /^[A-Za-z0-9_-]{3,160}$/.test(id)) { await this.openGroup(id, ['about', 'chat', 'apps'].includes(tab ?? '') ? tab as GroupTab : 'about'); return true; }
     if (route === 'profile' && id && /^[A-Za-z0-9_-]{3,160}$/.test(id)) {
       const requested = location.hash, accountCurrent = this.accountTask();
@@ -1344,13 +1613,15 @@ class WorldApplication {
         return true;
       }
       // Canonicalize only the shell route, never a server-issued ticket URL.
-      history.replaceState({ soty: true, ...(readWorkspaceReturn(history.state?.sotyReturn, this.deskAccount) ? { sotyReturn: history.state.sotyReturn } : {}) }, '', `#${intent.route}`);
+      const destination=readWorkspaceReturn(history.state?.sotyReturn,this.deskAccount);
+      history.replaceState({ soty: true, ...(destination ? { sotyReturn: destination } : {}) }, '', `#${intent.route}`);
       if (!intent.takeInvitation && this.appStage?.matches(intent)) { this.activeRoute = '#' + intent.route; this.appStage.updateRoute(intent); return true; }
       const known = this.apps.find(value => value.appId === intent.target.appId);
       const app = known ?? { appId: intent.target.appId, name: 'Приложение', status: 'unknown' };
       await this.openApplication(app, intent, !known); return true;
     }
     if (route === 'notes') { this.openNotes(id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined, false); return true; }
+    if (route === 'internet') { this.navigate('mine');this.openCapability('internet');return true; }
     if (route === 'messages') { this.navigate('messages', id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined); return true; }
     if (route === 'apps') { this.navigate('mine'); return true; }
     if (route === 'world') {
@@ -1371,6 +1642,7 @@ class WorldApplication {
   }
 
   private renderCurrent(appFeedback?: AppFeedbackGrantTarget): void {
+    if(this.canvasPage&&parseCanvasPageRoute(location.hash))return;
     if ((this.view === 'mine' || this.view === 'world') && !this.group) {
       if (!this.unifiedField) { this.cleanScreen(); this.renderUnifiedField(); }
       else this.unifiedField.setMode(this.view === 'world' ? 'search' : 'mine', this.view === 'world' ? this.query : this.homeQuery, this.unifiedFieldFilter);
@@ -1413,6 +1685,9 @@ class WorldApplication {
     const isCurrent = this.accountTask();
     this.root.dataset.field = 'unified';
     const field = createUnifiedFieldScreen({ api: this.api, accountId: this.deskAccount, isCurrent,
+      mountCanvasApp:(host,value,current)=>this.mountCanvasApp(host,value,current),
+      mountCommunity:(node,read,current)=>this.mountCommunityObject(node,read,current),
+      onCommunityFocus:id=>this.communityFocusChanged(id),
       persistence: this.accountFieldPersistence(),
       mode: this.view === 'world' ? 'search' : 'mine', query: this.view === 'world' ? this.query : this.homeQuery,
       filter: this.unifiedFieldFilter,
@@ -1422,6 +1697,7 @@ class WorldApplication {
       onOpenSaved: () => this.openSavedLibrary(),
       onCreateMenu: () => this.openAddMenu(),
       onOpenMore: () => this.openFieldMenu(),
+      readIdentity:()=>this.profile,
       onSearchVisibilityChange: () => this.syncWorkspaceNavigation(),
       getRecentWork: () => isCurrent() ? this.desk.recent : [],
       onOpenRecent: route => { if (isCurrent()) this.openRecentWork(route); },
@@ -1456,15 +1732,21 @@ class WorldApplication {
         const context = this.header.querySelector('.sx-header-context'); if (context) context.textContent = mode === 'mine' ? 'Моё поле' : 'Поиск';
         this.syncWorkspaceNavigation();
       },
-      onOpen: (item, record, source) => this.afterNoteSaved(() => {
+      onOpen: (item, record, source) => {
+        if(!isCurrent())return;
+        if(item.entity.kind==='community'){void this.openGroup(item.entity.id,'about');return;}
+        this.afterNoteSaved(() => {
         if (!isCurrent()) return;
         if (source) this.pendingReturnPresentation = source;
-        if (item.entity.kind === 'builtin') { if (item.entity.id === 'notes') this.openNotes(); else if (item.entity.id === 'chess') this.runHook(() => this.options.openLegacy('chess')); else if (item.entity.id === 'assistant') this.agentOrb?.open(document.activeElement instanceof HTMLElement ? document.activeElement : undefined); return; }
+        if(item.entity.kind==='object'&&record&&'objectId'in record&&record.view?.kind==='widget'){
+          const value=record.view,next=parseAppLaunchRoute(formatAppLaunchRoute({appId:value.app.appId,domainId:value.entry.domainId,path:value.entry.path}));
+          if(next)void this.openApplication(value.app,next);return;
+        }
+        if (item.entity.kind === 'builtin') { if (item.entity.id === 'notes') this.openNotes(); else if (item.entity.id === 'chess') this.runHook(() => this.options.openLegacy('chess')); else if(item.entity.id==='internet')this.openCapability('internet');else if (item.entity.id === 'assistant') this.agentOrb?.open(document.activeElement instanceof HTMLElement ? document.activeElement : undefined); return; }
         if (item.entity.kind === 'app') {
           const app = record && 'entry' in record && 'id' in record ? record as DirectoryApp : null;
           void this.openApplication({ appId: item.entity.id, name: item.title, status: app?.state ?? 'unknown', ...(app ? { entry: app.entry, ownerAccountId: app.ownerAccountId } : {}) }, undefined, !app); return;
         }
-        if (item.entity.kind === 'community') { const group = record && 'communityId' in record ? record as WorldCommunity : null; void this.openGroup(item.entity.id, group?.membership?.state === 'active' ? 'chat' : 'about'); return; }
         if (item.entity.kind === 'person' && item.entity.id === this.deskAccount) { this.openProfileEditor(); return; }
         if (item.entity.kind === 'person' && record && 'kind' in record && record.kind === 'contact') {
           if (this.profile?.directMessagesVersion === 1) void this.openDirectContact(record as DirectoryContact);
@@ -1473,10 +1755,10 @@ class WorldApplication {
         }
         if (item.entity.kind === 'person' && record && 'profileId' in record) { const person = record as DirectoryPerson; this.openPersonDialog(person); return; }
         if (item.entity.kind === 'device') this.runHook(() => this.options.openAccount('devices'));
-      }),
+      });},
       onCreate: kind => { if (!isCurrent()) return; if (kind === 'app') this.openPreparedApp(); else if (kind === 'community') this.openCommunityForm(); else if (kind === 'device') this.runHook(this.options.connectDevice); else if (kind === 'person') this.runHook(() => this.options.openAccount('people')); else this.afterNoteSaved(() => { this.assistantMode = 'create'; this.navigateReady('assistant'); }); },
     });
-    this.unifiedField = field; this.main.replaceChildren(field.element); field.attachHeaderSearch(this.header); this.mountFieldCovers(field); this.syncWorkspaceNavigation();
+    this.unifiedField = field; this.main.replaceChildren(field.element); field.attachHeaderSearch(this.header); this.mountFieldCovers(field); this.syncWorkspaceNavigation();this.updateNavUnread();
   }
 
   private renderAssistant(): void {
@@ -1698,72 +1980,105 @@ class WorldApplication {
 
   private closePreview(): void { const selected = this.selected ? entityId(this.selected) : ''; this.main.querySelector('.sw-side')?.remove(); this.selected = null; this.renderSearchResults(); if (selected) this.main.querySelector<HTMLButtonElement>(`[data-entity-id="${CSS.escape(selected)}"]`)?.focus({ preventScroll: true }); }
 
-  private async openGroup(id: string, tab: GroupTab = 'about'): Promise<void> {
-    if (!this.group) this.groupReturn = this.view === 'world' || this.view === 'messages' ? this.view : 'mine';
-    this.writeRoute(`community/${id}/${tab}`);
-    this.cleanScreen(); const sequence = this.screenSequence;
-    this.main.replaceChildren(this.loading('Открываем комнату'));
-    try {
-      const { community } = await this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId: id });
-      if (this.destroyed || sequence !== this.screenSequence) return;
-      this.group = community; this.groupTab = tab; this.remember(`community/${id}/${tab}`, community.name, 'people'); this.renderGroup();
-    } catch (error) { if (this.destroyed || sequence !== this.screenSequence) return; this.main.replaceChildren(emptyState('Комната недоступна', errorText(error), button('В общий мир', 'back', 'sw-button-primary', () => this.navigate('world')))); }
+  private mountCommunityObject(node:FieldNode,readCommunity:()=>WorldCommunity|null,isCurrent:()=>boolean):CommunityFieldObjectView {
+    const communityId=node.entity.entity.id;
+    return createCommunityFieldObject(node,{readCommunity,isCurrent,
+      createListenButton:group=>this.groupHumanCallButton(group),
+      mountConversation:(host,group)=>this.mountChat(host,group,false,{isCurrent}),
+      onJoin:async group=>{
+        if(!isCurrent())throw Error('community_unavailable');
+        const result=await this.api.request<{community:WorldCommunity}>('world.membership.join',{communityId:group.communityId});
+        if(!isCurrent())throw Error('community_unavailable');this.updateCommunity(result.community);
+        await this.unifiedField?.refresh({preserveView:true});return result.community;
+      },
+      onDetails:group=>this.openCommunityInformation(group),
+      readCallState:()=>isCurrent()?this.options.humanCalls?.snapshot()??null:null,
+      subscribeCall:listener=>this.options.humanCalls?.subscribe(()=>listener())??(()=>{}),
+      onPaneChange:pane=>{if(isCurrent()&&!this.communityPending&&this.communitySurface?.communityId===communityId){this.communitySurface.tab=pane==='chat'?'chat':'about';this.writeCommunityRoute();}},
+    });
   }
 
-  private renderGroup(): void {
-    const group = this.group; if (!group) return;
-    this.cleanScreen();
-    this.writeRoute(`community/${group.communityId}/${this.groupTab}`);
-    this.view = this.groupTab === 'chat' ? 'messages' : 'mine'; this.renderNavigation();
-    this.avatars.setContext(group.membership?.state === 'active' ? group.communityId : undefined);
-    const screen = el('section', `sw-detail-view${this.groupTab === 'chat' ? ' has-chat' : ''}`); const summary = el('header', 'sw-community-summary');
-    const crumb = el('div', 'sw-breadcrumb'); crumb.append(button(this.groupReturn === 'world' ? 'К поиску' : this.groupReturn === 'messages' ? 'Все чаты' : 'Моё поле', 'back', 'sw-button-quiet', () => this.navigate(this.groupReturn)));
-    const title = el('div', 'sw-community-title'); const copy = el('div'); copy.append(el('h1', '', group.name), el('p', '', group.description)); title.append(communityEmblem(group), copy);
-    const meta = el('div', 'sw-community-meta'); meta.append(badge(nounCount(group.memberCount, 'участник', 'участника', 'участников'), 'people'), badge(this.joinLabel(group), group.joinPolicy === 'open' ? 'world' : 'lock', 'sage'));
-    summary.append(crumb, title, meta);
-    const people = el('div', 'sw-community-people');
-    group.previewMembers.slice(0, 5).forEach(profile => { const target = el('button', 'sw-member-card'); target.type = 'button'; target.append(avatar(profile.displayName, profile.avatarUrl, worldColor(profile.avatarColor), profile.profileId, profile.avatarRevision), el('span', '', profile.displayName)); target.addEventListener('click', () => this.openPersonDialog(profile)); people.append(target); });
-    const actions = el('div', 'sw-community-actions');
-    if (group.membership?.state === 'active') {
-      actions.append(badge('Вы участник', 'check', 'sage'));
-      if (this.options.humanCalls) actions.append(this.groupHumanCallButton(group));
-      actions.append(button('Добавить на поле', 'plus', 'sw-button-quiet', () => this.addCommunityToField(group)));
-      const pin = iconButton(group.membership.pinned ? 'Открепить чат' : 'Закрепить чат', 'pin', () => { void this.mutateMembership('world.membership.preferences', { pinned: !group.membership?.pinned }); }); pin.classList.toggle('is-selected', group.membership.pinned); actions.append(pin);
-      actions.append(iconButton(group.pendingCount ? `Участники и управление, ${nounCount(group.pendingCount, 'новая заявка', 'новые заявки', 'новых заявок')}` : 'Участники и управление', 'people', () => this.openGroupManagement(group)));
-      if (group.pendingCount) actions.append(button(`${group.pendingCount} ${group.pendingCount === 1 ? 'заявка' : 'заявки'}`, 'people', 'sw-button-small', () => this.openGroupManagement(group, 'requested')));
-    } else actions.append(this.joinButton(group));
-    actions.append(iconButton('Поделиться комнатой', 'external', () => this.shareCommunity(group)));
-    if (group.permissions.canManage) actions.append(iconButton('Настроить комнату', 'settings', () => this.openCommunityForm(group)));
-    summary.append(actions);
-    const content = el('div', 'sw-community-content'); const tabs = el('div', 'sw-community-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Комната');
-    for (const [id, label] of [['about', 'О комнате'], ['chat', 'Чат'], ['apps', 'Приложения']] as const) {
-      const tab = button(label, undefined, this.groupTab === id ? 'is-selected' : '', () => { this.groupTab = id; this.renderGroup(); });
-      tab.id = `sw-community-tab-${id}`; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', 'sw-community-panel'); tab.setAttribute('aria-selected', String(this.groupTab === id)); tab.tabIndex = this.groupTab === id ? 0 : -1;
-      tab.addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const order: GroupTab[] = ['about', 'chat', 'apps']; const index = order.indexOf(this.groupTab); this.groupTab = event.key === 'Home' ? 'about' : event.key === 'End' ? 'apps' : order[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3]!; this.renderGroup(); this.main.querySelector<HTMLButtonElement>('[role=tab][aria-selected=true]')?.focus(); }); tabs.append(tab);
+  private communityFocusChanged(communityId:string|null):void {
+    if(this.destroyed||this.communityPending)return;
+    if(communityId){
+      if(this.communitySurface&&this.communitySurface.communityId!==communityId)this.closeCommunityDialogs(this.communitySurface.communityId);
+      const returnRoute=this.communitySurface?.returnRoute??(/^[#](?:mine|world)(?:\?|$)/u.test(this.activeRoute)?this.activeRoute:'#'+this.unifiedFieldRoute(this.view==='world'?'world':'mine'));
+      this.communitySurface={communityId,tab:'about',returnRoute};this.group=null;this.writeCommunityRoute();return;
     }
-    content.append(tabs); screen.append(summary, content); this.main.replaceChildren(screen);
-    if (group.membership?.state === 'requested' || group.membership?.state === 'invited') {
-      const sequence = this.screenSequence; let checking = false;
-      this.chatTimer = setInterval(() => {
-        if (checking || this.destroyed || document.visibilityState === 'hidden' || this.screenSequence !== sequence) return;
-        checking = true;
-        void this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId: group.communityId }).then(result => {
-          if (this.destroyed || this.screenSequence !== sequence) return;
-          if (result.community.membership?.state !== group.membership?.state) { this.group = result.community; this.updateCommunity(result.community); if (result.community.membership?.state === 'active') { this.groupTab = 'chat'; this.toast('Вас приняли в комнату'); } this.renderGroup(); }
-        }).catch(() => { /* A visible retry remains available in the group navigation. */ }).finally(() => { checking = false; });
-      }, 4500);
+    const previous=this.communitySurface;this.communitySurface=null;
+    if(previous){
+      this.closeCommunityDialogs(previous.communityId);
+      if(/^#community\//u.test(this.activeRoute)){
+        const destination=history.state?.sotyCommunityReturn;
+        if(destination?.accountId===this.deskAccount&&destination.route===previous.returnRoute&&destination.pushed===true){this.communityReturnRoute=previous.returnRoute;history.back();}
+        else{history.replaceState({soty:true},'',previous.returnRoute);this.activeRoute=previous.returnRoute;this.desk.lastRoute=previous.returnRoute.slice(1);this.saveDesk(false,true);}
+      }
     }
-    const body = el('div', `sw-community-body${this.groupTab === 'chat' ? ' is-chat-panel' : ''}`); body.id = 'sw-community-panel'; body.setAttribute('role', 'tabpanel'); body.setAttribute('aria-labelledby', `sw-community-tab-${this.groupTab}`); content.append(body);
-    if (this.groupTab === 'chat' && group.membership?.state === 'active') { this.mountChat(body, group, true); return; }
-    if (this.groupTab === 'chat') { body.append(emptyState('Разговор начинается здесь', group.joinPolicy === 'invite' ? 'Организатор может пригласить вас в комнату.' : 'Вступите, чтобы читать и писать в общий чат.', this.joinButton(group), 'chat')); return; }
-    if (this.groupTab === 'apps') { void this.renderApps(body, group); return; }
-    const stack = el('div', 'sw-stack');
-    const showcase = el('div', `sw-showcase sw-community-intro sw-color-${worldColor(group.color)}`); showcase.append(el('p', '', group.showcase || group.description || 'Здесь можно общаться и открывать общие приложения.'));
-    stack.append(showcase, this.tags(group.topics));
-    if (group.membership?.state !== 'active') stack.append(el('p', 'sw-small-note', group.joinPolicy === 'open' ? 'После вступления откроется общий чат' : 'Организатор подтвердит участие'));
-    else stack.append(button('Открыть общий чат', 'chat', 'sw-button-primary sw-button-large', () => { this.groupTab = 'chat'; this.renderGroup(); }));
-    if (group.previewMembers.length) { const memberSection = el('section', 'sw-community-member-section'); const memberHead = el('div', 'sw-panel-head'); memberHead.append(el('h2', '', 'Участники')); if (group.membership?.state === 'active') memberHead.append(button('Все', 'people', 'sw-button-small sw-button-quiet', () => this.openGroupManagement(group))); memberSection.append(memberHead, people); stack.append(memberSection); }
-    body.append(stack);
+  }
+
+  private writeCommunityRoute():void {
+    const surface=this.communitySurface;if(!surface)return;
+    const next=`#community/${surface.communityId}/${surface.tab}`;
+    const previous=history.state?.sotyCommunityReturn;
+    const push=location.hash!==next&&!/^#community\//u.test(location.hash);
+    const pushed=push||previous?.accountId===this.deskAccount&&previous.route===surface.returnRoute&&previous.pushed===true;
+    const state={soty:true,sotyCommunityReturn:{accountId:this.deskAccount,route:surface.returnRoute,pushed}};
+    if(location.hash!==next){if(push)history.pushState(state,'',next);else history.replaceState(state,'',next);}
+    else history.replaceState(state,'',next);
+    this.activeRoute=next;this.desk.lastRoute=next.slice(1);this.saveDesk(false,true);
+  }
+
+  private closeCommunitySurface():void {
+    if(!this.communitySurface)return;
+    const communityId=this.communitySurface.communityId;
+    this.communitySurface=null;this.communityOpenTicket++;this.communityPending=0;
+    this.closeCommunityDialogs(communityId);
+    this.unifiedField?.closeCommunity();
+  }
+
+  private closeCommunityDialogs(communityId:string):void {
+    for(const dialog of [...this.dialogs])if(dialog.element.dataset.communityId===communityId)dialog.close({restoreFocus:false});
+  }
+
+  private async openGroup(id:string,tab:GroupTab='about'):Promise<void> {
+    if(this.destroyed||!this.deskAccount)return;
+    this.hideMainApplication();
+    const current=this.accountTask(),prior=this.communitySurface;
+    const returnRoute=prior?.returnRoute??(/^[#](?:mine|world)(?:\?|$)/u.test(this.activeRoute)?this.activeRoute:'#mine');
+    this.group=null;this.selected=null;
+    if(prior&&prior.communityId!==id)this.closeCommunityDialogs(prior.communityId);
+    if(!this.unifiedField){this.cleanScreen();this.view='mine';this.preferences.view='mine';this.renderNavigation();this.renderUnifiedField();}
+    const field=this.unifiedField;if(!field||!current())return;
+    const ticket=++this.communityOpenTicket;this.communityPending=ticket;this.communitySurface={communityId:id,tab,returnRoute};this.groupTab=tab;
+    try{
+      const group=await field.openCommunity(id,tab==='chat'?'chat':'voice');
+      if(!current()||ticket!==this.communityOpenTicket||field!==this.unifiedField)return;
+      if(!group)throw Error('community_unavailable');this.updateCommunity(group);this.remember(`community/${id}/${tab}`,group.name,'people');this.writeCommunityRoute();
+      if(tab==='apps')this.openCommunityApplications(group);
+    }catch(error){if(current()&&ticket===this.communityOpenTicket){this.communityFocusChangedAfterFailure(returnRoute);this.toast(errorText(error),true);}}
+    finally{if(this.communityPending===ticket)this.communityPending=0;}
+  }
+
+  private communityFocusChangedAfterFailure(returnRoute:string):void {
+    this.communitySurface=null;
+    if(/^#community\//u.test(location.hash)){history.replaceState({soty:true},'',returnRoute);this.activeRoute=returnRoute;this.desk.lastRoute=returnRoute.slice(1);this.saveDesk(false,true);}
+  }
+
+  private renderGroup():void {
+    const group=this.group;if(group){this.group=null;void this.openGroup(group.communityId,this.groupTab);}
+  }
+
+  private openCommunityInformation(group:WorldCommunity):void {
+    const dialog=this.dialog(group.name);dialog.element.dataset.communityId=group.communityId;
+    const stack=el('section','sw-stack');stack.append(communityEmblem(group),el('p','',group.showcase||group.description),this.tags(group.topics),el('p','sw-small-note',this.joinLabel(group)));
+    stack.append(button('Участники сообщества','people','sw-button-wide',()=>{dialog.close();this.openGroupManagement(group);}),button('Приложения','grid','sw-button-wide',()=>{dialog.close();this.openCommunityApplications(group);}),button('Поделиться','share','sw-button-quiet',()=>this.shareCommunity(group)));
+    if(group.membership?.state!=='active')stack.append(this.joinButton(group));
+    if(group.permissions.canManage)stack.append(button('Настроить','settings','sw-button-quiet',()=>{dialog.close();this.openCommunityForm(group);}));
+    dialog.body.append(stack);
+  }
+
+  private openCommunityApplications(group:WorldCommunity):void {
+    const dialog=this.dialog(`Приложения · ${group.name}`);dialog.element.dataset.communityId=group.communityId;void this.renderApps(dialog.body,group);
   }
 
   private joinButton(group: WorldCommunity): HTMLButtonElement {
@@ -1805,15 +2120,15 @@ class WorldApplication {
     catch (error) { this.toast(errorText(error), true); }
   }
 
-  private mountChat(parent: HTMLElement, group: WorldCommunity, showHeader = false): void {
+  private mountChat(parent: HTMLElement, group: WorldCommunity, showHeader = false, owner?:{isCurrent():boolean}): MountedConversation {
     const current = this.accountTask(), sequence = this.screenSequence;
     let mountedCurrent = (): boolean => true;
     const target = createCommunityConversation({ api: this.api, community: group,
       isCurrent: () => current() && sequence === this.screenSequence && mountedCurrent(),
       onUpdate: next => { this.updateCommunity(next); if (this.group?.communityId === next.communityId) this.group = next; } });
     const community = (): WorldCommunity => target.record as WorldCommunity;
-    mountedCurrent = this.mountConversation(parent, target, {
-      showHeader, emblem: () => communityEmblem(community()), identityLabel: () => `О комнате ${target.name}`,
+    const mounted = this.mountConversation(parent, target, {
+      showHeader,surface:owner?'canvas':'screen',emblem: () => communityEmblem(community()), identityLabel: () => `О комнате ${target.name}`,
       onIdentity: () => { void this.openGroup(target.id); },
       extraActions: () => [
         { label: 'О комнате', symbol: 'people', run: () => { void this.openGroup(target.id); } },
@@ -1822,15 +2137,20 @@ class WorldApplication {
       callButton: () => this.options.humanCalls && community().membership?.state === 'active' ? this.groupHumanCallButton(community()) : null,
       invite: () => this.openInvite(community()),
       notify: (chat, message, readAcknowledged) => chat.dispatchEvent(new CustomEvent('soty:chat-updated', { bubbles: true, detail: { community: community(), message, readAcknowledged } })),
-    });
+    },owner);
+    mountedCurrent=mounted.isCurrent;
+    if(!owner){const screenCleanup=this.chatCleanup;this.chatCleanup=()=>{mounted.dispose();screenCleanup?.();};}
+    return mounted;
   }
 
-  private mountConversation(parent: HTMLElement, conversation: ConversationTarget, presentation: ConversationPresentation): () => boolean {
-    this.avatars.setContext(conversation.avatarContext);
+  private mountConversation(parent: HTMLElement, conversation: ConversationTarget, presentation: ConversationPresentation, owner?:{isCurrent():boolean}): MountedConversation {
+    const accountCurrent=this.accountTask();let disposed=false,conversationTimer:ReturnType<typeof setInterval>|null=null;
     const sequence = this.screenSequence;
     const accountId = this.profile?.profileId ?? this.deskAccount;
     const initialDraft = this.chatDrafts.read(accountId, conversation.draftKey), initialLegacy=this.chatDrafts.legacyCandidates(accountId,conversation.draftKey);
     const chat = el('section', 'sw-chat'); chat.setAttribute('aria-label', `Чат: ${conversation.name}`);
+    if(presentation.surface==='canvas')chat.dataset.chatSurface='canvas';
+    if(conversation.avatarContext)chat.dataset.avatarCommunity=conversation.avatarContext;
     let replyTo: string | null = null, sending = false, accessClosed = false, draftLoading = true, searchIndex = -1;
     let syncSeq = 0, firstSeq = Number.MAX_SAFE_INTEGER, lastRead = 0, reading = false, initial = true, fetching = false, historyLoading = false, hasHistory = false;
     let catchupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1839,7 +2159,7 @@ class WorldApplication {
     const rows = new Map<string, HTMLElement>();
     let outbox: AttachmentOutbox | undefined, draftSession: ChatDraftSession | undefined, attachmentRows: AttachmentOutboxItem[] = [], attachmentWritable = false, acknowledgingAttachments = false;
     const attachmentScope: Record<string,string> = conversation.kind === 'direct' ? { threadId: conversation.id, expectedRelationshipId: (conversation.record as WorldDirectThread).relationshipId } : { communityId: conversation.id };
-    const active = (): boolean => !this.destroyed && !accessClosed && sequence === this.screenSequence && chat.isConnected;
+    const active = (): boolean => !disposed && !this.destroyed && accountCurrent() && (!owner||owner.isCurrent()) && !accessClosed && sequence === this.screenSequence && chat.isConnected;
     const nearEnd = (): boolean => messages.clientHeight > 0 && messages.getClientRects().length > 0 && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
     let timelineDirty = false, searchMatches: string[] = [], unseen = 0;
 
@@ -2203,11 +2523,12 @@ class WorldApplication {
     };
     const closeAccess = (reason: unknown): boolean => {
       if (!(typeof reason === 'object' && reason && 'code' in reason && ['community_membership_required', 'community_not_found', 'community_banned', 'direct_not_found', 'direct_contact_required', 'direct_account_changed'].includes(String(reason.code)))) return false;
-      accessClosed = true; closeMenu(); updateComposer(); this.avatars.setContext(); known.clear(); rows.clear(); reply.hidden = true; messages.replaceChildren(emptyState('Доступ к чату закрыт', 'Вернитесь в общий мир, чтобы продолжить.', button('В общий мир', 'world', 'sw-button-primary', () => this.navigate('world')), 'lock'));
-      previous.hidden = true; jump.hidden = true; searchBar.hidden = true; if (this.chatTimer) clearInterval(this.chatTimer); if (catchupTimer) clearTimeout(catchupTimer); return true;
+      accessClosed = true; closeMenu(); updateComposer(); known.clear(); rows.clear(); reply.hidden = true; messages.replaceChildren(emptyState('Доступ к чату закрыт', 'Вернитесь в общий мир, чтобы продолжить.', button('В общий мир', 'world', 'sw-button-primary', () => this.navigate('world')), 'lock'));
+      previous.hidden = true; jump.hidden = true; searchBar.hidden = true; if (conversationTimer) clearInterval(conversationTimer); if (catchupTimer) clearTimeout(catchupTimer); return true;
     };
     chat.addEventListener('soty:direct-unavailable', () => { if (conversation.kind === 'direct' && active()) closeAccess({ code: 'direct_not_found' }); });
     chat.addEventListener('soty:direct-labels', () => { if (conversation.kind === 'direct' && active()) refreshHeader(); });
+    chat.addEventListener('soty:conversation-refresh',()=>{if(active())void load();});
     chat.addEventListener('soty:chat-community', event => {
       const detail = (event as CustomEvent<{ communityId: string; community: WorldCommunity | null }>).detail;
       if (!active() || conversation.kind !== 'community' || detail.communityId !== conversation.id) return;
@@ -2251,7 +2572,7 @@ class WorldApplication {
         if (initial) { messages.replaceChildren(previous); response.messages.forEach(append); hasHistory = response.hasMore; previous.hidden = !hasHistory; }
         else { [...response.messages, ...updates].filter(message => known.has(message.messageId)).forEach(append); incoming.forEach(append); }
         syncSeq = nextSync; if (hasMoreForward) catchupTimer = setTimeout(() => { void load(); }, 100);
-        if (!known.size) messages.replaceChildren(emptyState('Первое сообщение за вами', conversation.kind === 'direct' ? 'Напишите своему контакту.' : typeof conversation.subtitle === 'number' && conversation.subtitle < 2 ? 'Пригласите человека и начните разговор.' : 'Поздоровайтесь со своим кругом.', conversation.canModerate && presentation.invite ? button('Пригласить человека', 'people', 'sw-button-primary', presentation.invite) : undefined, 'chat'));
+        if (!known.size) messages.replaceChildren(emptyState('Первое сообщение за вами', conversation.kind === 'direct' ? 'Напишите своему контакту.' : typeof conversation.subtitle === 'number' && conversation.subtitle < 2 ? 'Пригласите человека и начните разговор.' : 'Поздоровайтесь со своим кругом.', conversation.canModerate && presentation.invite ? button('Пригласить человека', 'people', 'sw-button-primary', presentation.invite) : undefined, 'chat',{compact:presentation.surface==='canvas'}));
         refreshTimeline();
         if (!stickToEnd) unseen += Math.max(0, known.size - countBefore);
         initial = false; if (retrySend.hidden && !outboxFailed) errorMessage.textContent = '';
@@ -2317,12 +2638,12 @@ class WorldApplication {
     });
     const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, conversation.draftKey); void draftSession?.refresh().catch(() => {}); describeDraft(); void load(); } };
     document.addEventListener('visibilitychange', returned);
-    const previousCleanup = this.chatCleanup;
-    this.chatCleanup = () => { outbox?.close(); previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer);
+    const dispose = () => { if(disposed)return;disposed=true;if(conversationTimer)clearInterval(conversationTimer);conversationTimer=null;outbox?.close(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer);
       const closing=draftSession;if(closing){closing.close();if(this.chatDraftSession===closing)this.chatDraftSession=null;
         if(!closing.hasUnsavedChanges())this.chatDraftSessions.delete(closing);else void closing.flush().then(saved=>{if(saved&&this.chatDraftSession!==closing)this.chatDraftSessions.delete(closing);});} };
-    void load(); this.chatTimer = setInterval(() => { void load(); }, 4500);
-    return active;
+    void load(); conversationTimer = setInterval(() => { void load(); }, 4500);
+    return{isCurrent:active,hasUnsavedChanges:()=>!!draftSession?.hasUnsavedChanges()||this.chatDrafts.isVolatile(accountId,conversation.draftKey),
+      async flush(){if(draftSession&&!await draftSession.flush()&&draftSession.hasUnsavedChanges())throw Object.assign(new Error('chat_draft_not_saved'),{code:'chat_draft_not_saved'});},dispose};
   }
 
   supportsDirectMessages(): boolean { return !this.destroyed && !!this.deskAccount && this.profile?.directMessagesVersion === 1; }
@@ -2355,7 +2676,7 @@ class WorldApplication {
       isCurrent: () => current() && sequence === this.screenSequence && mountedCurrent(),
       onUpdate: next => { this.directProjectionEpoch++; this.directThreads = this.directThreads.map(value => value.threadId === next.threadId ? next : value); this.updateNavUnread(); },
     });
-    mountedCurrent = this.mountConversation(parent, target, {
+    const mounted = this.mountConversation(parent, target, {
       showHeader: true,
       emblem: () => avatar(target.name, undefined, '#C89448', thread.peer.accountId, (target.record as WorldDirectThread).peer.avatarRevision),
       identityLabel: () => `Профиль: ${target.name}`, onIdentity: () => this.openPersonDialog(thread.peer.accountId),
@@ -2363,6 +2684,7 @@ class WorldApplication {
       callButton: () => this.options.humanCalls ? this.directHumanCallButton(thread.peer.accountId, target.name) : null,
       notify: (chat, message, readAcknowledged) => chat.dispatchEvent(new CustomEvent('soty:direct-updated', { bubbles: true, detail: { thread: target.record, message, readAcknowledged } })),
     });
+    mountedCurrent=mounted.isCurrent;const screenCleanup=this.chatCleanup;this.chatCleanup=()=>{mounted.dispose();screenCleanup?.();};
   }
 
   private directHumanCallButton(peerAccountId: string, label: string): HTMLButtonElement {
@@ -2467,11 +2789,25 @@ class WorldApplication {
       if (group.unreadCount > 0) { const count = el('span', 'sw-message-count', group.unreadCount > 99 ? '99+' : String(group.unreadCount)); count.setAttribute('aria-label', nounCount(group.unreadCount, 'непрочитанное сообщение', 'непрочитанных сообщения', 'непрочитанных сообщений')); indicators.append(count); }
       sub.append(indicators); copy.append(head, sub); target.replaceChildren(communityEmblem(group), copy); return target;
     };
+    const paintInvitation = (group: WorldCommunity): HTMLButtonElement => {
+      const key=`invite:${group.communityId}`;let target=conversationRows.get(key);
+      if(!target){target=button('',undefined,'sw-conversation sw-conversation-invitation',()=>{
+        if(!active()||(this.profile?.profileId??this.deskAccount)!==accountId)return;
+        const current=this.communities.find(value=>value.communityId===group.communityId&&value.membership?.state==='invited');
+        if(current)void this.openGroup(current.communityId,'about');
+      });conversationRows.set(key,target);}
+      target.dataset.communityId=key;target.dataset.invitationId=group.communityId;
+      target.setAttribute('aria-label',`${group.name} · Приглашение в комнату, посмотреть`);
+      const copy=el('span','sw-conversation-copy'),head=el('span','sw-conversation-head'),sub=el('span','sw-conversation-sub');
+      head.append(el('strong','',group.name));sub.append(el('span','sw-conversation-preview','Приглашение в комнату'));
+      copy.append(head,sub);target.replaceChildren(communityEmblem(group),copy);return target;
+    };
     const renderList = (): void => {
       this.messagesView.query = query.value; this.messagesView.unreadOnly = unreadOnly;
       const needle = query.value.trim().toLocaleLowerCase('ru-RU'); clearSearch.hidden = !query.value;
       allFilter.classList.toggle('is-selected', !unreadOnly); unreadFilter.classList.toggle('is-selected', unreadOnly); allFilter.setAttribute('aria-pressed', String(!unreadOnly)); unreadFilter.setAttribute('aria-pressed', String(unreadOnly));
       const visible = groups.filter(group => (!unreadOnly || group.unreadCount > 0) && (!needle || `${group.name} ${group.description} ${group.topics.join(' ')}`.toLocaleLowerCase('ru-RU').includes(needle))).sort((a, b) => Number(!!b.membership?.pinned) - Number(!!a.membership?.pinned) || (previews.get(b.communityId)?.createdAt ?? 0) - (previews.get(a.communityId)?.createdAt ?? 0));
+      const invitations=this.communities.filter(group=>group.membership?.state==='invited'&&(!needle||`${group.name} ${group.description} ${group.topics.join(' ')}`.toLocaleLowerCase('ru-RU').includes(needle)));
       const focused = document.activeElement instanceof HTMLButtonElement && conversations.contains(document.activeElement) ? document.activeElement.dataset.communityId : undefined;
       const directRows = directEnabled ? this.directThreads.filter(value => (!unreadOnly || value.unreadCount > 0) && (!needle || (value.peer.label || this.directLabels.get(value.peer.accountId) || 'Контакт').toLocaleLowerCase('ru-RU').includes(needle)))
         .sort((a, b) => Number(b.preferences.pinned) - Number(a.preferences.pinned) || b.createdAt - a.createdAt) : [];
@@ -2511,14 +2847,14 @@ class WorldApplication {
       })];
       orderedRows.sort((a, b) => Number(b.dataset.inboxPinned === 'true') - Number(a.dataset.inboxPinned === 'true')
         || Number(b.dataset.inboxTime ?? 0) - Number(a.dataset.inboxTime ?? 0));
-      conversations.replaceChildren(...orderedRows); listStatus.textContent = '';
+      conversations.replaceChildren(...invitations.map(paintInvitation),...orderedRows); listStatus.textContent = '';
       const appStatus = this.applicationInboxStatus === 'unavailable' ? 'Обсуждения приложений пока недоступны. Открытые разговоры сохраняют свои черновики.'
         : this.applicationReadState === 'unavailable' ? 'Состояние прочтения обсуждений пока не синхронизировано.'
         : this.applicationInboxStatus === 'ready' ? '' : 'Проверяем обсуждения приложений…';
       if (applicationStatus.textContent !== appStatus) applicationStatus.textContent = appStatus; applicationStatus.hidden = !appStatus;
       moreApplications.hidden = !this.applicationInboxNextCursor; moreApplications.disabled = this.applicationInboxPending;
       moreApplications.setAttribute('aria-busy', String(this.applicationInboxPending));
-      if (!groups.length && !this.directThreads.length && !appRows.length) {
+      if (!groups.length && !this.directThreads.length && !appRows.length && !invitations.length) {
         if (this.applicationInboxNextCursor) listStatus.textContent = 'Другие обсуждения ещё не загружены.';
         const actions = el('div', 'sw-stack sw-inbox-start-actions');
         const invite = button('', 'people', 'sw-button-primary', () => this.runHook(() => this.options.openAccount('people')));
@@ -2530,7 +2866,7 @@ class WorldApplication {
         actions.append(invite, button('Создать чат', 'plus', 'sw-button-quiet', () => this.openCommunityForm(undefined, true)));
         conversations.append(emptyState('Начните разговор', 'Добавьте человека или создайте чат для своих.', actions, 'chat'));
       }
-      else if (!visible.length && !directRows.length && !appRows.length) listStatus.textContent = needle ? this.applicationInboxNextCursor ? 'Разговор не найден среди загруженных. Можно показать ещё обсуждения.' : 'Разговор не найден'
+      else if (!visible.length && !directRows.length && !appRows.length && !invitations.length) listStatus.textContent = needle ? this.applicationInboxNextCursor ? 'Разговор не найден среди загруженных. Можно показать ещё обсуждения.' : 'Разговор не найден'
         : this.applicationInboxStatus === 'ready' && this.applicationReadState === 'synced' && !this.applicationInboxNextCursor ? 'Все сообщения прочитаны' : 'Нет непрочитанных среди проверенных разговоров';
       if (focused) conversationRows.get(focused)?.focus({ preventScroll: true });
     };
@@ -2544,9 +2880,18 @@ class WorldApplication {
     });
     const applicationUpdated = (): void => { if (active()) renderList(); };
     this.root.addEventListener('soty:app-inbox-updated', applicationUpdated);
+    const socialUpdated=(event:Event):void=>{
+      if(!active())return;
+      if(pendingDirect&&!selectedDirect&&this.directThreadsLoaded){this.cleanScreen();this.renderMessages(selectedId);return;}
+      groups.splice(0,groups.length,...this.communities.filter(group=>group.membership?.state==='active'));renderList();refreshVisiblePreviews();
+      const detail=(event as CustomEvent<{direct?:string[];communities?:string[]}>).detail;
+      if(selectedDirect&&!this.directThreads.some(thread=>thread.threadId===selectedDirect.threadId&&thread.relationshipId===selectedDirect.relationshipId))room.querySelector('.sw-chat')?.dispatchEvent(new Event('soty:direct-unavailable'));
+      else if(selectedId&&(detail?.direct?.includes(selectedId)||detail?.communities?.includes(selectedId)))room.querySelector('.sw-chat')?.dispatchEvent(new Event('soty:conversation-refresh'));
+    };
+    this.root.addEventListener('soty:social-inbox-updated',socialUpdated);
     let inboxTimer: ReturnType<typeof setInterval> | undefined;
     const returned = (): void => { if (document.visibilityState === 'visible') void refreshInbox(); };
-    this.chatCleanup = () => { this.messagesView.scroll = conversations.scrollTop; this.root.removeEventListener('soty:app-inbox-updated', applicationUpdated); unsubscribers.forEach(unsubscribe => unsubscribe()); if (inboxTimer) clearInterval(inboxTimer); document.removeEventListener('visibilitychange', returned); };
+    this.chatCleanup = () => { this.messagesView.scroll = conversations.scrollTop; this.root.removeEventListener('soty:app-inbox-updated', applicationUpdated);this.root.removeEventListener('soty:social-inbox-updated',socialUpdated); unsubscribers.forEach(unsubscribe => unsubscribe()); if (inboxTimer) clearInterval(inboxTimer); document.removeEventListener('visibilitychange', returned); };
     screen.append(list, room); this.main.replaceChildren(screen);
     renderList();
     conversations.scrollTop = this.messagesView.scroll;
@@ -2565,16 +2910,9 @@ class WorldApplication {
     let directRefreshing = false;
     const refreshDirect = async (): Promise<void> => {
       if (!directEnabled || directRefreshing || !active() || document.visibilityState === 'hidden') return;
-      const projectionEpoch = this.directProjectionEpoch;
-      directRefreshing = true; const next: WorldDirectThread[] = []; let cursor: string | null = null;
+      directRefreshing = true;
       try {
-        do {
-          const page: { threads: WorldDirectThread[]; nextCursor: string | null } = await this.api.request('world.direct.list', { expectedAccountId: accountId, limit: 60, ...(cursor ? { cursor } : {}) });
-          if (!active() || projectionEpoch !== this.directProjectionEpoch) return; next.push(...page.threads); cursor = page.nextCursor;
-          if (next.length > 1000) throw new Error('Список разговоров слишком большой.');
-          this.directThreads = [...next, ...this.directThreads.filter(value => !next.some(loaded => loaded.threadId === value.threadId))]; renderList(); refreshVisiblePreviews();
-        } while (cursor);
-        if (!active() || projectionEpoch !== this.directProjectionEpoch) return; this.directThreads = next; this.directThreadsLoaded = true; renderList(); this.updateNavUnread();
+        await this.refreshSocialInbox();if(!active())return;const next=this.directThreads;renderList();refreshVisiblePreviews();
         if (pendingDirect && !selectedDirect) { this.cleanScreen(); this.renderMessages(selectedId); }
         else if (selectedDirect && !next.some(value => value.threadId === selectedDirect.threadId && value.relationshipId === selectedDirect.relationshipId)) room.querySelector('.sw-chat')?.dispatchEvent(new Event('soty:direct-unavailable'));
       } catch (error) { if (active()) listStatus.textContent = 'Личные разговоры пока не обновились. Повторим подключение.'; }
@@ -2857,11 +3195,41 @@ class WorldApplication {
   }
 
   private openAddMenu(): void {
+    if(this.unifiedField){this.openCanvasComposer();return;}
+    this.openMoreCreateMenu();
+  }
+  private openCanvasComposer(initial?:CanvasCreateDialogOptions['initial']):void{
+    if(this.canvasComposer?.element.open){this.canvasComposer.focus();return;}
+    const field=this.unifiedField,accountId=this.deskAccount,accountCurrent=this.accountTask();if(!field||!accountId)return;
+    const isCurrent=()=>accountCurrent()&&field===this.unifiedField;
+    let dialog:CanvasCreateDialog;
+    dialog=openCanvasCreateDialog({api:this.api,accountId,projectId:'soty',isCurrent,...(initial?{initial}:{}),
+      place:(objectId,size)=>{if(!isCurrent())throw Object.assign(new Error('canvas_create_scope_changed'),{code:'canvas_create_scope_changed'});return field.addObject(objectId,size);},
+      onDone:result=>{if(isCurrent())this.toast(result.status==='saved'?'На полотне':'На устройстве сохранено. Синхронизация продолжается.');},
+      onClose:()=>{this.dialogs.delete(dialog);if(this.canvasComposer===dialog)this.canvasComposer=null;this.agentOrb?.releaseModal(dialog.element);},
+      onConnectApp:()=>{if(isCurrent()&&this.canvasComposer===dialog&&dialog.element.open)this.openAddApp(undefined,undefined,dialog);},
+      onConnectDevice:()=>{if(isCurrent()&&this.canvasComposer===dialog&&dialog.element.open)this.runHook(this.options.connectDevice);},
+      onMore:()=>{if(isCurrent()){if(!dialog.hasUnsavedChanges())dialog.close({restoreFocus:false});this.openMoreCreateMenu();}},
+    });
+    this.canvasComposer=dialog;this.dialogs.add(dialog);this.agentOrb?.setModal(dialog.element);
+  }
+  private openCanvasVaultComposer():void{
+    if(this.canvasVaultComposer?.element.open){this.canvasVaultComposer.element.focus();return;}
+    const field=this.unifiedField,accountId=this.deskAccount,accountCurrent=this.accountTask();if(!field||!accountId)return;
+    const isCurrent=()=>accountCurrent()&&field===this.unifiedField;let dialog:CanvasVaultCreateDialog;
+    dialog=openCanvasVaultCreateDialog({api:this.api,accountId,projectId:'soty',isCurrent,
+      place:(objectId,size)=>{if(!isCurrent())throw Object.assign(new Error('canvas_create_scope_changed'),{code:'canvas_create_scope_changed'});return field.addObject(objectId,size);},
+      onDone:result=>{if(isCurrent())this.toast(result.status==='saved'?'На полотне под паролем':'Зашифрованный черновик сохранён на устройстве.');},
+      onClose:()=>{this.dialogs.delete(dialog);if(this.canvasVaultComposer===dialog)this.canvasVaultComposer=null;this.agentOrb?.releaseModal(dialog.element);},
+    });this.canvasVaultComposer=dialog;this.dialogs.add(dialog);this.agentOrb?.setModal(dialog.element);
+  }
+  private openMoreCreateMenu():void{
     if (this.view === 'messages' && !this.group) { this.openCommunityForm(undefined, true); return; }
     const dialog = this.dialog('Добавить'); const list = el('div', 'sx-profile-menu');
     const option = (title: string, symbol: string, action: () => void): void => list.append(button(title, symbol, 'sw-button-large', () => { dialog.close(); action(); }));
     option('Приложение', 'grid', () => this.openPreparedApp());
-    option('Записку', 'note', () => this.afterNoteSaved(() => this.openNotes('new')));
+    option('Записку', 'note', () => {if(this.unifiedField)this.openCanvasComposer();else this.afterNoteSaved(()=>this.openNotes('new'));});
+    if(this.unifiedField)option('Под паролем','lock',()=>this.openCanvasVaultComposer());
     option('Устройство', 'laptop', () => this.runHook(this.options.connectDevice));
     option('Комнату', 'people', () => this.openCommunityForm());
     option('Создать с ИИ', 'sparkle', () => this.afterNoteSaved(() => { this.assistantMode = 'create'; this.navigateReady('assistant'); }));
@@ -2951,96 +3319,70 @@ class WorldApplication {
 
   private async openApplication(app: WorldAppRecord, intent?: AppLaunchIntent, resolveMetadata = false): Promise<void> {
     if (this.destroyed || !this.deskAccount) return;
-    const previousStage = this.appStage, sequenceBeforeOpen = this.screenSequence, accountBeforeOpen = this.deskAccount;
-    if (previousStage?.requiresCloseCheck()) {
-      try { await previousStage.flush(); } catch { this.toast('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.', true); return; }
-      if (this.destroyed || this.appStage !== previousStage || this.screenSequence !== sequenceBeforeOpen || this.deskAccount !== accountBeforeOpen) return;
-      if (previousStage.hasUnsavedChanges()) { this.toast('Сохраните незавершённую работу перед переходом.', true); return; }
-    }
-    const returnView = this.appStage ? this.appReturnView : /^#world(?:\?|$)/u.test(this.activeRoute) ? 'world' : 'mine';
-    this.appReturnView = returnView;
+    const builtin = !intent?.presentation && capabilities.find(value => value.legacyAppIds?.includes(app.appId));
+    if (builtin) { this.openCapability(builtin.id); return; }
+    const openEpoch=this.mainOpenEpoch=(this.mainOpenEpoch??0)+1,account=this.accountTask();
+    const opening=()=>account()&&this.mainOpenEpoch===openEpoch;
+    const returnView=this.appStage?this.appReturnView:/^#world(?:\?|$)/u.test(this.activeRoute)?'world':'mine';
     const previousGroup = this.group?.membership?.state === 'active' && (this.group.communityId === app.communityId || app.grants?.communityIds.includes(this.group.communityId)) ? this.group : null;
     // An ordinary open resolves the active target's entry on the server. A
     // cached catalogue/field path is not an explicit deep link.
     const launchIntent = intent ?? parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId },
       app.entry ? undefined : previousGroup?.communityId))!;
+    const pool=this.mainRuntimeOwners(),retained=pool.find(launchIntent);
+    if(retained?.stage){
+      const resumeEpoch=++retained.closeEpoch;
+      let reusable:boolean;try{reusable=await retained.stage.resume?.(launchIntent)??false;}catch{if(opening())this.toast('Не удалось проверить прежний вход. Окно и работа сохранены; повторите подключение.',true);return;}
+      if(!opening()||retained.closeEpoch!==resumeEpoch)return;
+      if(reusable){
+        const fromCanvas=!/^#(?:app|launch)\//u.test(this.activeRoute);this.writeRoute(launchIntent.route);
+        if(fromCanvas){retained.returnView=returnView;retained.returnWorkspace=this.applicationReturn;}
+        this.appReturnView=retained.returnView;this.applicationReturn=retained.returnWorkspace;
+        this.view='mine';pool.present(retained);retained.stage.updateRoute(launchIntent);return;
+      }
+      pool.retire(retained);
+    }
+    if(pool.all().length>=8){history.replaceState({soty:true},'',this.activeRoute);this.toast('Открыто много приложений (8). Закройте одно через его меню.',true);return;}
     const communityId = launchIntent.communityId;
     const knownGroup = communityId ? [previousGroup, ...this.communities].find(value => value?.communityId === communityId && value.membership?.state === 'active') ?? null : null;
     this.group = knownGroup; this.view = 'mine'; this.renderNavigation(); this.writeRoute(launchIntent.route);
     this.avatars.setContext(knownGroup?.communityId);
-    // An inert copy preserves the real spatial context while the live runtime
-    // owns the work surface. It carries no listeners, focus or app authority.
-    const sourceField = this.unifiedField?.element ?? this.fieldBackdrop;
-    const fieldVisual = sourceField?.cloneNode(true) as HTMLElement | undefined;
-    if (fieldVisual && this.unifiedField && this.root.clientWidth >= 720) {
-      const bounds = sourceField?.querySelector('.uf-viewport')?.getBoundingClientRect();
-      if (bounds?.width) {
-        const panelWidth = Math.min(bounds.width - 96, Math.min(1120, Math.max(760, bounds.width * .614)));
-        const copies = fieldVisual.querySelectorAll<HTMLElement>('.uf-node');
-        sourceField?.querySelectorAll<HTMLElement>('.uf-node').forEach((node, index) => {
-          const box = node.getBoundingClientRect(), direction = Math.sign(box.left + box.width / 2 - (bounds.left + bounds.width / 2));
-          const scale = box.width / Number.parseFloat(node.style.width);
-          if (copies[index] && Number.isFinite(scale) && scale > 0 && Math.abs(box.left + box.width / 2 - (bounds.left + bounds.width / 2)) > box.width * .15)
-            copies[index]!.style.setProperty('--of-open-offset', `${direction * (panelWidth / 2 - box.width * .14) / scale}px`);
-        });
-      }
-    }
-    this.cleanScreen();
-    if (fieldVisual) {
-      fieldVisual.classList.add('of-field-backdrop'); fieldVisual.inert = true; fieldVisual.setAttribute('aria-hidden', 'true');
-      for (const item of fieldVisual.querySelectorAll('[id]')) item.removeAttribute('id');
-      this.fieldBackdrop = fieldVisual; this.root.prepend(fieldVisual);
-    }
-    const sequence = this.screenSequence, accountId = this.deskAccount, accountGeneration = this.accountGeneration;
-    const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
-    const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current, minimalChrome: true, ...(this.options.nativeVoice?{nativeVoice:this.options.nativeVoice}:{}),
+    this.appReturnView=returnView;
+    const host=el('section','sw-main of-app-runtime');host.tabIndex=-1;host.dataset.presented='false';host.inert=true;host.style.visibility='hidden';host.setAttribute('role','region');host.setAttribute('aria-label','Приложение: '+app.name);this.root.append(host);
+    const owner:MainRuntimeOwner={host,stage:null,appId:app.appId,closeEpoch:0,accountId:this.deskAccount,accountGeneration:this.accountGeneration,returnView,returnWorkspace:this.applicationReturn};
+    if(!pool.add(owner)){host.remove();return;}
+    const current=()=>!this.destroyed&&this.deskAccount===owner.accountId&&this.accountGeneration===owner.accountGeneration&&pool.has(owner);
+    const presented=()=>current()&&pool.active()===owner;
+    const accountId=owner.accountId;
+    const stage = mountAppStage(host, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current,isPresented:presented,onRequestClose:request=>this.closeMainApplication(owner,request), minimalChrome: true, ...(this.options.nativeVoice?{nativeVoice:this.options.nativeVoice}:{}),
       ...(this.options.readNativeVoice ? { readNativeVoice: this.options.readNativeVoice } : {}),
       ...this.appRuntime(app),
       onOpenCurrentEntry: async entry => {
-        if (!current()) return;
+        if (!presented()) return;
         const next = parseAppLaunchRoute(formatAppLaunchRoute({ appId: entry.appId, domainId: entry.domainId, path: entry.path }));
         if (next) await this.openApplication({ ...app, entry }, next);
       },
       onNavigate: (next, navigation) => {
-        if (!current()) return;
+        if (!presented()) return;
         if (navigation?.replace) { history.replaceState({ soty: true, ...(this.applicationReturn ? { sotyReturn: this.applicationReturn } : {}) }, '', '#' + next.route); this.activeRoute = '#' + next.route; this.desk.lastRoute = next.route; this.saveDesk(false, true); }
         else this.writeRoute(next.route);
       },
-      onBack: () => this.afterNoteSaved(() => {
-        if (!current()) return;
-        if (this.group) { this.groupTab = 'apps'; this.renderGroup(); }
-        else {
-          const destination = readWorkspaceReturn(this.applicationReturn, accountId);
-          if (destination) {
-            this.writeRoute(destination.route.slice(1));
-            void this.openRoute().then(handled => { if (!handled && current()) this.navigateReady(returnView); });
-            return;
-          }
-          this.navigateReady(returnView); const field = this.unifiedField;
-          void field?.ready.then(() => {
-            if (field === this.unifiedField && field.element.isConnected && (document.activeElement === document.body || document.activeElement === this.main))
-              field.element.querySelector<HTMLButtonElement>('.uf-node.is-selected')?.focus({ preventScroll: true });
-          });
-        }
-      }),
+      onBack:()=>{if(presented())this.returnMainToCanvas(owner);},
       onAccount: async () => {
-        await stage.flush();
-        if (!current()) return;
-        if (stage.hasUnsavedChanges()) { this.toast('Скопируйте черновик перед сменой аккаунта', true); return; }
-        await this.options.openAccount('profiles'); if (current()) await this.refresh();
+        if(presented()&&await this.openProfilesSafely()&&presented())await this.refresh();
       },
-      onFullscreenChange: (screen, expanded) => { if (current()) this.agentOrb?.setStage(screen, expanded); },
-      onModalChange: (modal, open) => { if (open) { if (current()) this.agentOrb?.setModal(modal); } else this.agentOrb?.releaseModal(modal); },
-      onSettings: (value, onUpdated) => { if (current()) this.openAppSettings(value, onUpdated); },
-      onPlaceInField: value => { if (current()) this.openAppFieldPlacement(value, contextId => {
-        if (!current()) return;
+      onFullscreenChange: (screen, expanded) => { if (presented()) this.agentOrb?.setStage(screen, expanded); },
+      onModalChange: (modal, open) => { if (open) { if (presented()) this.agentOrb?.setModal(modal); } else this.agentOrb?.releaseModal(modal); },
+      onSettings: (value, onUpdated) => { if (presented()) this.openAppSettings(value, onUpdated); },
+      onPlaceInField: value => { if (presented()) this.openAppFieldPlacement(value, contextId => {
+        if (!presented()) return;
         this.unifiedFieldView.mineContext = contextId; this.unifiedFieldView.mineFit = 'context'; this.unifiedFieldView.mineSelection = '';
         this.desk.lastSpace = contextId; this.saveDesk(true);
       }); },
-      onWidget: (value, next) => { if (current()) this.widgets?.pin(value, next); },
-      onCommunity: id => this.afterNoteSaved(() => { if (current()) void this.openGroup(id, 'chat'); }),
+      onWidget: (value, next) => { if (presented()) this.afterNoteSaved(()=>{if(!presented())return;this.navigateReady('mine');this.openCanvasComposer({kind:'widget',appId:value.appId,name:value.name,...(next.target.domainId&&next.target.path?{entry:{domainId:next.target.domainId,path:next.target.path}}:{})});}); },
+      onCommunity: id => this.afterNoteSaved(() => { if (presented()) void this.openGroup(id, 'chat'); }),
       onRemember: (next, value) => {
-        if (!current()) return;
+        if (!presented()) return;
         this.remember(next.route, value.name, 'grid');
         const entry = stage.entry();
         if (entry && !this.applicationInboxEntries.some(value => value.appId === entry.appId && value.domainId === entry.domainId && value.origin === entry.origin && value.path === entry.path)) {
@@ -3048,119 +3390,112 @@ class WorldApplication {
         }
       },
       onDiscussionRead: receipt => {
-        if (!current()) return;
+        if (!presented()) return;
         this.applicationInboxDirty = true;
         this.applicationDiscussions = this.applicationDiscussions.map(row => row.appId === receipt.appId && row.conversationId === receipt.conversationId
           ? { ...row, unreadCount: receipt.unreadCount } : row);
         this.updateNavUnread(); this.root.dispatchEvent(new Event('soty:app-inbox-updated'));
       },
     });
-    this.appStage = stage;
+    owner.stage=stage;pool.present(owner);
     if (knownGroup) stage.updateCommunity(knownGroup);
     // The exact entry, including the offline fallback, settles before optional
     // catalogue requests join the serialized Connect queue.
     await stage.ready;
-    if (!current()) return;
+    if (!presented()) return;
     if (communityId && !knownGroup) void this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId })
       .then(result => {
-        if (!current() || result.community.membership?.state !== 'active') return;
+        if (!presented() || result.community.membership?.state !== 'active') return;
         this.group = result.community; this.renderNavigation(); this.avatars.setContext(communityId); stage.updateCommunity(result.community);
       }).catch(() => { /* App admission does not grant or require community chat access. */ });
     if (resolveMetadata) void this.loadApps(communityId, !!launchIntent.target.domainId).then(apps => {
-      if (!current()) return;
+      if (!presented()) return;
       const found = apps.find(value => value.appId === launchIntent.target.appId);
       if (found) { app = found; stage.updateApp(found); }
     }).catch(() => { /* Optional names never change the exact admitted entry. */ });
   }
-  private appRuntime(app: WorldAppRecord): Pick<AppStageOptions, 'request' | 'renew'> {
+  private mountCanvasApp(host:HTMLElement,value:CanvasWidgetView,isCurrent:()=>boolean):AppStageHandle{
+    const accountId=this.deskAccount,accountCurrent=this.accountTask();
+    const current=()=>isCurrent()&&accountCurrent();
+    const intent=parseAppLaunchRoute(formatAppLaunchRoute({appId:value.app.appId,domainId:value.entry.domainId,path:value.entry.path}))!;
+    const stage=mountAppStage(host,{api:this.api,accountId,app:value.app,intent,presentation:'widget',instanceId:value.instanceId,isCurrent:current,
+      ...this.appRuntime(value.app),
+      ...(this.options.nativeVoice?{nativeVoice:this.options.nativeVoice}:{}),
+      ...(this.options.readNativeVoice?{readNativeVoice:this.options.readNativeVoice}:{}),
+      onNavigate:()=>{},onBack:()=>this.unifiedField?.element.focus({preventScroll:true}),
+      onAccount:async()=>{await stage.flush();if(!current()||stage.hasUnsavedChanges())return;await this.options.openAccount('profiles');if(current())await this.refresh();},
+      onOpenCurrentEntry:entry=>{if(current())this.afterNoteSaved(()=>{const next=parseAppLaunchRoute(formatAppLaunchRoute({appId:entry.appId,domainId:entry.domainId,path:entry.path}));if(next)void this.openApplication({...value.app,entry},next);});},
+      onSettings:app=>{if(current())this.openAppSettings(app);},
+      onModalChange:(modal,open)=>{if(open){if(current())this.agentOrb?.setModal(modal);}else this.agentOrb?.releaseModal(modal);},
+    });
+    return stage;
+  }
+  private appRuntime(app: WorldAppRecord): Pick<AppStageOptions, 'request' | 'renew' | 'cleanupForReply'> {
     return {
+      ...(this.options.appSlotCleanup?{cleanupForReply:this.options.appSlotCleanup}:{}),
       request: parameters => this.options.openApp ? this.options.openApp(app, parameters)
-        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; launchBinding?:AppLaunchBinding;runtimeProfile?:string; scopedCloseHandle?:string;scopedSource?:{id:string;version:number;digest:string} }>('apps.launch', { ...parameters }).then(result => {
+        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; runtimeOrigin?:string;launchBinding?:AppLaunchBinding;hostSession?:AppHostSession;hostSessionExpiresAt?:number;runtimeProfile?:string; scopedCloseHandle?:string;scopedFrameId?:string;scopedSource?:{id:string;version:number;digest:string} }>('apps.launch', { ...parameters }).then(result => {
+          if(parameters.hostSession===true&&!isScopedRuntimeProfile(result.runtimeProfile)
+            &&(result.hostSession===undefined||result.hostSessionExpiresAt===undefined))throw Object.assign(new Error('app_host_session_unavailable'),{code:'app_host_session_unavailable'});
           const cleanup = this.options.appSlotCleanup?.(result); return { url: result.launchUrl, entry: result.entry,
+            ...(result.runtimeOrigin === undefined ? {} : {runtimeOrigin:result.runtimeOrigin}),
+            ...(result.hostSession===undefined?{}:{hostSession:result.hostSession}),
+            ...(result.hostSessionExpiresAt===undefined?{}:{hostSessionExpiresAt:result.hostSessionExpiresAt}),
             ...(result.runtimeProfile ? { runtimeProfile: result.runtimeProfile, scopedCloseHandle: result.scopedCloseHandle } : {}),
             ...(result.scopedSource ? { scopedSource: result.scopedSource } : {}),
+            ...(result.scopedFrameId ? { scopedFrameId: result.scopedFrameId } : {}),
             ...(result.launchBinding === undefined ? {} : { launchBinding: result.launchBinding }),
-            ...(cleanup ? { scopedCleanup: cleanup } : {}) }; }),
-      renew: this.options.openApp ? undefined : parameters => this.api.request<{launchUrl:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedRenewalBindingDigest?:string}>('apps.scoped.renew',{...parameters}).then(result=>({
+            ...(cleanup ? isScopedRuntimeProfile(result.runtimeProfile)?{scopedCleanup:cleanup}:{hostSessionCleanup:cleanup} : {}) }; }),
+      renew: this.options.openApp ? undefined : parameters => this.api.request<{launchUrl:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedFrameId?:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedRenewalBindingDigest?:string}>('apps.scoped.renew',{...parameters}).then(result=>({
         url:result.launchUrl,entry:result.entry,runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle,
         scopedSlotExpiresAt:result.scopedSlotExpiresAt,scopedRenewalRequestId:result.scopedRenewalRequestId,scopedSource:result.scopedSource,scopedCleanup:this.options.appSlotCleanup?.(result)??undefined,
         ...(result.scopedRenewalBindingDigest?{scopedRenewalBindingDigest:result.scopedRenewalBindingDigest}:{}),
+        ...(result.scopedFrameId?{scopedFrameId:result.scopedFrameId}:{}),
       })),
     };
   }
   private openPreparedApp(selectedDevice?: string): void {
-    const accountId = this.deskAccount, accountCurrent = this.accountTask(), sequence = this.screenSequence;
-    if (!accountId || !accountCurrent()) return;
-    const dialog = this.dialog('Подключить приложение');
-    const current = (): boolean => accountCurrent() && sequence === this.screenSequence && dialog.element.open;
-    void mountPreparedAppDialog({ dialog, api: this.api, accountId, ...(selectedDevice ? { selectedDevice } : {}), current, accountCurrent,
-      identity: () => this.options.localAccount?.() ?? Promise.resolve({ accountId: null }),
-      connectDevice: () => { if (current()) { dialog.close(); this.runHook(this.options.connectDevice); } },
-      manual: device => { if (current()) { dialog.close(); this.openAddApp(undefined, device); } },
-      background: () => { if (accountCurrent()) void this.unifiedField?.refreshOwnApps(); },
-      open: app => {
-        if (!current()) return;
-        dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
-        this.afterNoteSaved(() => {
-          if (!accountCurrent() || sequence !== this.screenSequence) return;
-          void this.openApplication({ appId: app.id, name: app.name, status: 'unknown', ownerAccountId: accountId,
-            grants: { accountIds: [], communityIds: [] } }, undefined, true);
-        });
-      } });
+    this.openAddApp(undefined, selectedDevice);
   }
 
-  private openAddApp(communityId?: string, selectedDevice?: string): void {
-    const accountId = this.deskAccount, accountCurrent = this.accountTask(), sequence = this.screenSequence;
+  private openAddApp(communityId?: string, selectedDevice?: string, selectionTarget?:CanvasCreateDialog): void {
+    const accountId = this.deskAccount, accountCurrent = this.accountTask(), sequence = this.screenSequence, field = this.unifiedField;
     if (!accountId || !accountCurrent()) return;
+    const sameSpace = (): boolean => accountCurrent() && sequence === this.screenSequence && field === this.unifiedField;
     const dialog = this.dialog('Подключить приложение'); dialog.body.append(this.loading('Ищем ваши устройства'));
-    const current = (): boolean => accountCurrent() && sequence === this.screenSequence && dialog.element.open;
-    void this.api.request<{ devices: DeviceProjection[] }>('apps.devices', { expectedAccountId: accountId }).then(result => {
-      if (!current()) return;
-      const devices = result.devices.filter(device => device.claimed);
-      if (!devices.length) { dialog.body.replaceChildren(emptyState('Подключите компьютер', 'Проект будет работать на вашем устройстве и открываться здесь.', button('Подключить устройство', 'laptop', 'sw-button-primary', () => { dialog.close(); this.runHook(this.options.connectDevice); }), 'laptop')); return; }
-      const form = el('form'); const name = textInput('', 'Например, Галерея выходных', 64); name.required = true;
-      const preferredDevice = devices.find(item => item.hostDeviceId === selectedDevice) ?? devices.find(item => item.online) ?? devices[0];
-      const device = el('select', 'sw-select'); devices.forEach(item => { const option = el('option', '', `${item.name}${item.online ? '' : ' · не в сети'}`); option.value = item.hostDeviceId; option.selected = item === preferredDevice; device.append(option); });
-      const port = el('input', 'sw-input'); port.type = 'number'; port.min = '1024'; port.max = '65535'; port.placeholder = '3000'; port.required = true;
-      const path = textInput('/', '/'); path.pattern = '/.*';
-      const audience = el('select', 'sw-select'); const privateOption = el('option', '', 'Только мне'); privateOption.value = ''; audience.append(privateOption);
-      this.communities.filter(group => group.membership?.state === 'active' && group.permissions.canModerate).forEach(group => { const option = el('option', '', group.name); option.value = group.communityId; option.selected = group.communityId === communityId; audience.append(option); });
-      const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button('Подключить проект', 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit';
-      let registering = false;
-      const advanced = el('details', 'sw-app-settings-details'); advanced.append(el('summary', '', 'Другая начальная страница'), labeledField('Путь внутри приложения', path, 'Оставьте /, чтобы открыть главную страницу.'));
-      const status = el('p', 'sw-muted'); status.setAttribute('role', 'status');
-      form.append(el('p', 'sw-muted', 'Один раз подключите работающий проект. После этого он будет открываться из ваших Сот.'), labeledField('Название приложения', name), labeledField('Где работает проект', device), labeledField('Порт проекта', port, 'Число после localhost: в адресе проекта. Например, 3000.'), labeledField('Кому открыть', audience), advanced, error, status);
-      pinDialogSubmit(dialog, form, save);
-      form.addEventListener('submit', event => {
-        event.preventDefault(); const chosen = devices.find(item => item.hostDeviceId === device.value);
-        if (!current() || registering || !chosen || !form.reportValidity()) return;
-        registering = true; save.disabled = true; error.textContent = ''; status.textContent = 'Подключаем приложение…';
-        for (const control of [name, device, port, path, audience]) control.disabled = true;
-        // The registry returns the canonical identity. A field placement is a
-        // separate private choice, never proof of publication or a new grant.
-        const field = this.unifiedField;
-        void this.api.request<{ app: { id: string; name: string } }>('apps.register', { expectedAccountId: accountId, hostDeviceId: chosen.hostDeviceId, connectorId: chosen.connectorId, name: name.value.trim(), port: Number(port.value), entryPath: path.value.trim() || '/', grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }).then(result => {
-          if (!accountCurrent() || sequence !== this.screenSequence || field !== this.unifiedField) return;
-          const shouldOpen = current();
-          if (!/^app-[a-f0-9]{32}$/.test(result.app?.id)) { if (shouldOpen) throw new Error('invalid_registered_app'); return; }
-          if (field) void field.ready.then(() => {
-            if (accountCurrent() && sequence === this.screenSequence && field === this.unifiedField)
-              return shouldOpen ? field.refresh({ preserveView: true }) : field.refreshOwnApps();
-          }).catch(() => {
-            if (shouldOpen && accountCurrent() && sequence === this.screenSequence && field === this.unifiedField)
-              this.toast('Проект подключён, но список не обновился. Попробуйте позже.', true);
-          });
-          if (!shouldOpen) return;
-          dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
-          this.afterNoteSaved(() => {
-            if (!accountCurrent() || sequence !== this.screenSequence) return;
-            void this.openApplication({ appId: result.app.id, name: result.app.name, status: 'unknown', ownerAccountId: accountId,
-              grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }, undefined, true);
-          });
-        }).catch(reason => { if (current()) { status.textContent = ''; error.textContent = errorText(reason); } })
-          .finally(() => { registering = false; if (current()) { save.disabled = false; for (const control of [name, device, port, path, audience]) control.disabled = false; } });
-      }); dialog.body.replaceChildren(form); name.focus();
-    }).catch(error => { if (current()) dialog.body.replaceChildren(el('div', 'sw-error', errorText(error))); });
+    const current = (): boolean => sameSpace() && dialog.element.open;
+    void mountAppConnectDialog({ dialog, api: this.api, accountId, current, accountCurrent: sameSpace,
+      ...(selectedDevice ? { selectedDevice } : {}),
+      ...(communityId ? { communityId } : {}),
+      ...(selectionTarget?{resultKind:'selection' as const}:{}),
+      ...((this.unifiedFieldView.mineContext || this.desk.lastSpace) ? { preferredContextId: this.unifiedFieldView.mineContext || this.desk.lastSpace } : {}),
+      initialAppIds: [...new Set(this.desk.pinnedApps ?? [])].filter(id => /^app-[a-f0-9]{32}$/.test(id)).slice(0, 100),
+      connectDevice: () => { if (current()) this.runHook(this.options.connectDevice); },
+      onComplete: async result => {
+        if(result.resultKind==='selection'){
+          const changed=()=>Object.assign(new Error('app_connect_selection_context_changed'),{code:'app_connect_selection_context_changed'});
+          if(!current())throw changed();
+          if(!selectionTarget&&!this.canvasComposer?.element.open)this.openCanvasComposer({kind:'widget',appId:result.app.id,name:result.app.name});
+          const chooser=selectionTarget??this.canvasComposer;
+          if(!chooser?.element.open||this.canvasComposer!==chooser)throw changed();
+          const selected=await chooser.selectConnectedApp(result.app.id);
+          if(!selected||!current()||this.canvasComposer!==chooser||!chooser.element.open)throw changed();
+          return;
+        }
+        if(result.resultKind!=='shortcut')throw Object.assign(new Error('app_connect_canvas_required'),{code:'app_connect_canvas_required'});
+        if (!sameSpace()) return;
+        const visible = dialog.element.open;
+        if (visible) dialog.close({ restoreFocus: false });
+        if (field) {
+          try {
+            await field.ready; if (!sameSpace()) return;
+            if (visible) { await field.refresh({ preserveView: true }); if (sameSpace()) field.focusContext(result.contextId); }
+            else await field.refreshOwnApps();
+          } catch { if (visible && sameSpace()) this.toast('Сота сохранена. Полотно пока не обновилось — повторите обновление.', true); return; }
+        }
+        if (visible && sameSpace()) this.toast('Приложение на полотне');
+      },
+    }).catch(reason => { if (current()) dialog.body.replaceChildren(el('div', 'sw-error', errorText(reason))); });
   }
 
   private openAppFieldPlacement(app: Pick<WorldAppRecord, 'appId' | 'name'>, onPlaced?: (contextId: string) => void): void {
@@ -3257,7 +3592,6 @@ class WorldApplication {
   }
 
   private mountFieldCovers(field: UnifiedFieldScreen | null): void {
-    if (this.fieldCoverTimer) clearInterval(this.fieldCoverTimer); this.fieldCoverTimer = null;
     this.fieldCoverBinding?.dispose(); this.fieldCoverBinding = null;
     this.fieldCoverPresenter?.dispose(); this.fieldCoverPresenter = null;
     if (!field || this.destroyed || !this.deskAccount || document.visibilityState === 'hidden') return;
@@ -3267,9 +3601,6 @@ class WorldApplication {
       readApp: (appId, width) => createCoverApi({ api: this.api, kind: 'app', targetId: appId, accountId, isCurrent }).call('read', { width }) });
     this.fieldCoverPresenter = presenter;
     this.fieldCoverBinding = mountAppCoverField({ root: field.element, presenter, isCurrent });
-    this.fieldCoverTimer = setInterval(() => {
-      if (isCurrent() && document.visibilityState !== 'hidden' && presenter.stats().running === 0 && presenter.stats().queued === 0) presenter.refreshVisible();
-    }, 30_000);
   }
 
   private openCoverEditor(kind: CoverKind, targetId: string, label: string, onProfileChanged?: (profile: WorldProfile) => void,
@@ -3303,7 +3634,7 @@ class WorldApplication {
     }); this.coverHandle = handle;
   }
 
-  private openAppSettings(app: WorldAppRecord, onUpdated?: (app: WorldAppRecord) => void, returnTarget = this.appDialogReturnTarget(app.appId), openPlacement?: () => void, quickAccess = false): void {
+  private openAppSettings(app: WorldAppRecord, onUpdated?: (app: WorldAppRecord) => void, returnTarget = this.appDialogReturnTarget(app.appId), openPlacement?: () => void, quickAccess = false): WorldDialog|undefined {
     const accountId = this.deskAccount, sequence = this.screenSequence, accountCurrent = this.accountTask();
     if (this.destroyed || !accountId) return;
     this.appSettingsDialog?.close({ restoreFocus: false });
@@ -3407,6 +3738,7 @@ class WorldApplication {
       handle?.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : close ?? undefined);
     });
     dialog.element.addEventListener('cancel', event => { event.preventDefault(); handle?.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : close ?? undefined); });
+    return dialog;
   }
 
   private openVisibility(openPlacement?: () => void): void {
@@ -3565,8 +3897,9 @@ class WorldApplication {
   }
 
   private openCommunityForm(existing?: WorldCommunity, chat = false): void {
-    const accountCurrent = this.accountTask(), returnTab = this.groupTab;
+    const accountCurrent = this.accountTask(), returnTab = this.communitySurface?.tab??this.groupTab;
     const dialog = this.dialog(existing ? 'Настроить комнату' : chat ? 'Новый чат' : 'Создать комнату'); const form = el('form');
+    if(existing)dialog.element.dataset.communityId=existing.communityId;
     const name = textInput(existing?.name ?? '', chat ? 'Например, Близкие' : 'Например, Фотоклуб', 80); name.required = true;
     const description = textInput(existing?.description ?? '', 'Что вас объединяет', 240);
     const topics = textInput(existing?.topics.join(', ') ?? '', 'Фото, прогулки, творчество', 240);
@@ -3580,7 +3913,7 @@ class WorldApplication {
     const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button(existing ? 'Сохранить' : chat ? 'Создать чат' : 'Создать комнату', existing ? 'check' : 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit'; const requestId = crypto.randomUUID();
     const optional = el('div', 'sw-stack'); optional.append(labeledField('Описание (необязательно)', description), labeledField('Темы (необязательно)', topics), labeledField('Облик', styles), labeledField('Витрина (необязательно)', showcase));
     form.append(labeledField(chat ? 'Название чата' : 'Название', name));
-    if (!existing && !chat) form.append(el('p', 'sw-small-note', 'Общий чат и приложения для участников.'));
+    if (!existing && !chat) form.append(el('p', 'sw-small-note', 'Разговор, переписка и приложения на одном полотне.'));
     if (chat) form.append(el('p', 'sw-small-note', 'Чат доступен только приглашённым участникам. Их можно добавить после создания.'));
     else form.append(labeledField('Вступление', access));
     if (existing) form.append(optional);
@@ -3589,14 +3922,12 @@ class WorldApplication {
     form.addEventListener('submit', event => {
       event.preventDefault(); if (!accountCurrent() || !dialog.element.open || !form.reportValidity()) return; save.disabled = true; error.textContent = '';
       const parameters: Record<string, unknown> = { name: name.value.trim(), description: description.value.trim(), topics: topics.value.split(',').map(value => value.trim().slice(0, 32)).filter(Boolean).slice(0, 8), ...(canChangeAccess ? { joinPolicy: access.value } : {}), showcase: showcase.value.trim(), color: worldColors[color], symbol, ...(existing ? { communityId: existing.communityId, expectedRevision: existing.revision } : { requestId }) };
-      void this.api.request<{ community: WorldCommunity }>(existing ? 'world.community.update' : 'world.community.create', parameters).then(response => {
+      void this.api.request<{ community: WorldCommunity }>(existing ? 'world.community.update' : 'world.community.create', parameters).then(async response => {
         if (!accountCurrent() || !dialog.element.open) return;
         this.updateCommunity(response.community); dialog.close();
         if (chat) { this.navigateReady('messages', response.community.communityId); this.toast('Чат создан'); return; }
-        this.group = response.community;
-        this.groupTab = existing ? returnTab : 'about';
-        this.writeRoute(`community/${response.community.communityId}/${this.groupTab}`); this.renderGroup();
-        this.toast(existing ? 'Комната обновлена' : 'Комната готова');
+        const opening=this.openGroup(response.community.communityId,existing ? returnTab : 'about'),ticket=this.communityOpenTicket;await opening;
+        if(accountCurrent()&&ticket===this.communityOpenTicket&&this.communitySurface?.communityId===response.community.communityId)this.toast(existing ? 'Комната обновлена' : 'Комната готова',false,undefined,response.community.communityId);
       }).catch(reason => { if (accountCurrent() && dialog.element.open) error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
     }); dialog.body.append(form); name.focus();
   }
@@ -3643,18 +3974,19 @@ class WorldApplication {
     const accountCurrent = this.accountTask(), sequence = this.screenSequence;
     const returnTarget = this.dialogReturnTarget(); let finalReturnTarget = returnTarget;
     const dialog = this.dialog('Участники и доступ', ({ interrupted }) => {
-      if (interrupted || !accountCurrent() || sequence !== this.screenSequence || this.group?.communityId !== group.communityId || !returnTarget.isCurrent()) return;
-      const route = location.hash; this.renderGroup();
-      if (accountCurrent() && this.group?.communityId === group.communityId && location.hash === route && this.activeRoute === route)
-        finalReturnTarget = this.dialogReturnTarget(() => this.main);
+      if (interrupted || !accountCurrent() || sequence !== this.screenSequence || this.communitySurface?.communityId !== group.communityId || !returnTarget.isCurrent()) return;
+      void this.unifiedField?.refresh({preserveView:true}).catch(reason=>{if(accountCurrent())this.toast(errorText(reason),true);});
     }, { isCurrent: () => finalReturnTarget.isCurrent(), resolve: () => finalReturnTarget.resolve() });
+    dialog.element.dataset.communityId=group.communityId;
+    dialog.element.dataset.avatarCommunity=group.communityId;
+    const active=():boolean=>accountCurrent()&&sequence===this.screenSequence&&dialog.element.open;
     const body = el('div', 'sw-stack'); dialog.body.append(body);
     const error = el('div', 'sw-error'); error.setAttribute('role', 'alert');
     const load = async (state: string): Promise<void> => {
       body.replaceChildren(this.loading('Загружаем участников'));
       try {
         const response = await this.api.request<{ members: WorldMember[]; nextCursor: string | null }>('world.membership.list', { communityId: group.communityId, state, limit: 60 });
-        if (!dialog.element.open) return;
+        if (!active()) return;
         body.replaceChildren(); const tabs = el('div', 'sw-filters');
         for (const [id, label] of [['active', 'Участники'], ['requested', 'Заявки'], ['banned', 'Исключённые']] as const) { if (id !== 'active' && !group.permissions.canModerate) continue; tabs.append(button(label, undefined, state === id ? 'is-selected' : '', () => { void load(id); })); }
         body.append(tabs);
@@ -3665,7 +3997,7 @@ class WorldApplication {
           const row = el('div', 'sw-member-row'); const copy = el('div', 'sw-grow'); copy.append(el('strong', '', member.profile.displayName), el('small', '', member.role === 'owner' ? 'Владелец' : member.role === 'moderator' ? 'Модератор' : 'Участник')); row.append(avatar(member.profile.displayName, member.profile.avatarUrl, worldColor(member.profile.avatarColor), member.profile.profileId, member.profile.avatarRevision), copy);
           const mutate = (method: string, args: Record<string, unknown>): void => {
             row.classList.add('sw-busy'); error.textContent = '';
-            void this.api.request<{ community?: WorldCommunity }>(method, { communityId: group.communityId, profileId: member.profile.profileId, ...args }).then(result => { if (result.community) { this.updateCommunity(result.community); this.group = result.community; group = result.community; } void load(state); }).catch(reason => { error.textContent = errorText(reason); }).finally(() => row.classList.remove('sw-busy'));
+            void this.api.request<{ community?: WorldCommunity }>(method, { communityId: group.communityId, profileId: member.profile.profileId, ...args }).then(result => { if(!active())return;if (result.community) { this.updateCommunity(result.community); group = result.community; } void load(state); }).catch(reason => { if(active())error.textContent = errorText(reason); }).finally(() => row.classList.remove('sw-busy'));
           };
           if (group.permissions.canModerate && state === 'requested') row.append(iconButton('Принять заявку', 'check', () => mutate('world.membership.decide', { accept: true })), iconButton('Отклонить заявку', 'close', () => mutate('world.membership.decide', { accept: false })));
           else if (group.permissions.canModerate && state === 'banned') row.append(button('Вернуть доступ', undefined, 'sw-button-small', () => mutate('world.membership.unban', {})));
@@ -3678,7 +4010,7 @@ class WorldApplication {
         if (response.nextCursor) {
           const more = button('Показать ещё', 'plus', 'sw-button-quiet', () => {
             more.disabled = true;
-            void this.api.request<{ members: WorldMember[]; nextCursor: string | null }>('world.membership.list', { communityId: group.communityId, state, limit: 60, cursor: response.nextCursor }).then(next => { if (!dialog.element.open || !list.isConnected) return; next.members.forEach(appendMember); response.nextCursor = next.nextCursor; if (!next.nextCursor) more.remove(); }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { more.disabled = false; });
+            void this.api.request<{ members: WorldMember[]; nextCursor: string | null }>('world.membership.list', { communityId: group.communityId, state, limit: 60, cursor: response.nextCursor }).then(next => { if (!active() || !list.isConnected) return; next.members.forEach(appendMember); response.nextCursor = next.nextCursor; if (!next.nextCursor) more.remove(); }).catch(reason => { if(active())error.textContent = errorText(reason); }).finally(() => { more.disabled = false; });
           }); body.append(more);
         }
         if (group.membership?.state === 'active') {
@@ -3687,23 +4019,24 @@ class WorldApplication {
           if (!this.profile?.discoverable || this.profile.showMemberships === false) visibleCopy.append(el('small', 'sw-muted', 'Разрешение сохранится. Сейчас ваши комнаты скрыты настройками профиля.'));
           const visible = switchControl('Показывать в моём профиле', group.membership.showInProfile, async next => {
             error.textContent = '';
-            try { const result = await this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, showInProfile: next }); this.updateCommunity(result.community); if (this.group?.communityId === result.community.communityId) this.group = result.community; group = result.community; }
+            try { const result = await this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, showInProfile: next });if(!active())return; this.updateCommunity(result.community); group = result.community; }
             catch (reason) { error.textContent = errorText(reason); throw reason; }
           }); visibleRow.append(visibleCopy, visible); preferences.append(visibleRow);
-          const muted = button(group.membership.muted ? 'Включить уведомления' : 'Отключить уведомления', 'bell', 'sw-button-quiet', () => { void this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, muted: !group.membership?.muted }).then(result => { this.updateCommunity(result.community); this.group = result.community; dialog.close(); this.renderGroup(); }).catch(reason => { error.textContent = errorText(reason); }); });
+          const muted = button(group.membership.muted ? 'Включить уведомления' : 'Отключить уведомления', 'bell', 'sw-button-quiet', () => { void this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, muted: !group.membership?.muted }).then(result => {if(!active())return;this.updateCommunity(result.community);group=result.community;dialog.close();}).catch(reason => {if(active())error.textContent = errorText(reason);}); });
           preferences.append(muted);
           if (group.membership.role !== 'owner') preferences.append(button('Выйти из комнаты', 'exit', 'sw-button-quiet sw-button-danger', () => this.confirmAction('Выйти из комнаты?', 'Чат и приложения комнаты станут недоступны.', 'Выйти', async () => { await this.api.request('world.membership.leave', { communityId: group.communityId }); if (!accountCurrent()) return; this.communityEpoch++; dialog.close(); this.communities = this.communities.filter(item => item.communityId !== group.communityId); this.group = null; this.navigate('world'); })));
           else preferences.append(el('p', 'sw-small-note', 'Чтобы выйти, передайте комнату другому участнику через его меню.'));
           body.append(el('hr', 'sw-rule'), preferences);
         }
-      } catch (reason) { if (dialog.element.open) body.replaceChildren(el('div', 'sw-error', errorText(reason)), button('Повторить', 'refresh', '', () => { void load(state); })); }
+      } catch (reason) { if (active()) body.replaceChildren(el('div', 'sw-error', errorText(reason)), button('Повторить', 'refresh', '', () => { void load(state); })); }
     }; void load(initialState);
   }
 
   private openMemberActions(group: WorldCommunity, member: WorldMember, reload: () => void): void {
-    const dialog = this.dialog(member.profile.displayName); const stack = el('div', 'sw-stack');
+    const accountCurrent=this.accountTask();
+    const dialog = this.dialog(member.profile.displayName);dialog.element.dataset.communityId=group.communityId;dialog.element.dataset.avatarCommunity=group.communityId;const stack = el('div', 'sw-stack');
     const action = (label: string, symbol: string, method: string, args: Record<string, unknown>, confirmText?: string): void => {
-      const run = async (): Promise<void> => { const result = await this.api.request<{ community?: WorldCommunity }>(method, { communityId: group.communityId, profileId: member.profile.profileId, ...args }); if (result.community) { this.group = result.community; this.updateCommunity(result.community); } dialog.close(); reload(); };
+      const run = async (): Promise<void> => {if(!accountCurrent()||!dialog.element.open)return; const result = await this.api.request<{ community?: WorldCommunity }>(method, { communityId: group.communityId, profileId: member.profile.profileId, ...args });if(!accountCurrent()||!dialog.element.open)return;if (result.community)this.updateCommunity(result.community);dialog.close();reload();};
       stack.append(button(label, symbol, 'sw-button-wide', () => { if (confirmText) this.confirmAction(label + '?', confirmText, label, run); else void run().catch(error => this.toast(errorText(error), true)); }));
     };
     if (group.membership?.role === 'owner') {
@@ -3733,6 +4066,8 @@ class WorldApplication {
     let timer: ReturnType<typeof setTimeout> | null = null, sequence = 0;
     let contactsRequest: Promise<{ contacts: Omit<DirectoryContact, 'kind'>[] }> | null = null;
     const dialog = this.dialog('Пригласить человека', () => { if (timer) clearTimeout(timer); sequence++; }); const input = textInput('', 'Имя или интерес', 100); input.setAttribute('aria-label', 'Найти человека');
+    dialog.element.dataset.communityId=group.communityId;
+    dialog.element.dataset.avatarCommunity=group.communityId;
     const results = el('div', 'sw-stack'); const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); dialog.body.append(input, el('hr', 'sw-rule'), results, error);
     const search = async (): Promise<void> => {
       const request = ++sequence, query = input.value.trim(); results.replaceChildren(this.loading('Ищем людей')); error.textContent = '';

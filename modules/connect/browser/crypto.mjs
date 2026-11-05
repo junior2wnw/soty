@@ -212,6 +212,90 @@ export async function unwrapRecoveryRoot(envelope, secret, { projectId, accountI
   return raw;
 }
 
+export const CREDENTIAL_ITERATIONS = 600_000;
+const commonSecrets = new Set(['passwordpassword', 'passwordpassword123', 'password123456789', '123456789012345',
+  '12345678901234567890', 'qwertyuiopasdfgh', 'qwertyuiopasdfghjkl', 'парольпарольпароль',
+  'пароль1234567890', 'correct horse battery staple', 'соты соты соты соты соты', 'soty soty soty soty soty']);
+
+/** NFC preserves language and letter case; phrases alone collapse separator whitespace. */
+export function normalizeCredentialInput(kind, input, { creating = false } = {}) {
+  if (!['password', 'phrase'].includes(kind) || !input || typeof input !== 'object' || typeof input.secret !== 'string'
+      || !input.secret.isWellFormed()) throw new ConnectError('credential_unavailable', 'This sign-in method could not be opened.');
+  let login = null, secret = input.secret.normalize('NFC');
+  if (kind === 'password') {
+    if (typeof input.login !== 'string' || !input.login.isWellFormed()) throw new ConnectError('invalid_login', 'Enter a sign-in name.');
+    login = input.login.normalize('NFC').trim().toLowerCase();
+    if ([...login].length < 3 || [...login].length > 80 || /[\p{C}\s]/u.test(login)) throw new ConnectError('invalid_login', 'Use 3 to 80 characters without spaces or control characters.');
+  } else secret = secret.trim().replace(/\s+/gu, ' ');
+  const size = [...secret].length, maximum = kind === 'password' ? 256 : 1024;
+  if (!size || size > maximum || /\p{Cc}/u.test(secret)) throw new ConnectError(creating ? 'weak_' + kind : 'credential_unavailable', 'The sign-in secret has an invalid length or characters.');
+  if (creating && (size < (kind === 'password' ? 15 : 20) || commonSecrets.has(secret.toLowerCase())
+      || /^(.)\1+$/u.test(secret) || secret.toLowerCase() === login)) {
+    throw new ConnectError('weak_' + kind, kind === 'password' ? 'Use at least 15 characters and an uncommon password.' : 'Use at least 20 characters and an uncommon phrase in any language.');
+  }
+  return { kind, login, secret };
+}
+
+async function passwordBits(secret, salt) {
+  const bytes = utf8(secret), api = cryptoApi();
+  try {
+    const key = await api.subtle.importKey('raw', bytes, 'PBKDF2', false, ['deriveBits']);
+    return new Uint8Array(await api.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt,
+      iterations: CREDENTIAL_ITERATIONS }, key, 256));
+  } finally { bytes.fill(0); }
+}
+
+export async function credentialLookup(input, projectId) {
+  if (input.kind === 'password') return sha256(canonicalJson(['connect.password.lookup.v1', projectId, input.login]));
+  const bits = await passwordBits(input.secret, utf8(canonicalJson(['connect.phrase.lookup.v1', projectId])));
+  try { return await sha256(bits); } finally { bits.fill(0); }
+}
+
+function credentialBinding(record, projectId) {
+  if (!record || record.iterations !== CREDENTIAL_ITERATIONS || record.projectId !== projectId
+      || !['password', 'phrase'].includes(record.kind) || typeof record.accountId !== 'string') {
+    throw new ConnectError('credential_unavailable', 'This sign-in method could not be opened.');
+  }
+  unbase64url(record.lookup, 32); unbase64url(record.salt, 32);
+  return { schema: 'connect.credential-key.v1', projectId, accountId: record.accountId,
+    kind: record.kind, lookup: record.lookup, salt: record.salt, iterations: CREDENTIAL_ITERATIONS };
+}
+
+async function credentialKeys(input, binding) {
+  const raw = await passwordBits(input.secret, unbase64url(binding.salt, 32)), api = cryptoApi();
+  try {
+    const material = await api.subtle.importKey('raw', raw, 'HKDF', false, ['deriveBits']);
+    const auth = new Uint8Array(await api.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256',
+      salt: utf8(canonicalJson(binding)), info: utf8('connect.credential.authenticate.v1') }, material, 256));
+    try { return { key: await hkdf(raw, binding, 'connect.credential.encrypt.v1'), proof: base64url(auth) }; }
+    finally { auth.fill(0); }
+  } finally { raw.fill(0); }
+}
+
+export async function makeCredential(raw, input, { projectId, accountId }) {
+  const lookup = await credentialLookup(input, projectId), salt = base64url(cryptoApi().getRandomValues(new Uint8Array(32)));
+  const binding = credentialBinding({ projectId, accountId, kind: input.kind, lookup, salt,
+    iterations: CREDENTIAL_ITERATIONS }, projectId);
+  const { key, proof } = await credentialKeys(input, binding);
+  return { ...binding, login: input.login, verifier: await sha256(proof), wrappedKey: await sealBytes(key, raw, binding) };
+}
+
+/** Only a successful local AEAD check can precede registration of a new recipient. */
+export async function unlockCredential(record, input, { projectId }) {
+  let raw;
+  try {
+    const binding = credentialBinding(record, projectId);
+    if (input.kind !== binding.kind || await credentialLookup(input, projectId) !== binding.lookup) throw new Error('mismatch');
+    const { key, proof } = await credentialKeys(input, binding);
+    raw = await openBytes(key, record.wrappedKey, binding);
+    if (raw.length !== 32) throw new Error('invalid key');
+    return { raw, proof };
+  } catch {
+    raw?.fill(0);
+    throw new ConnectError('credential_unavailable', 'The sign-in name or secret is incorrect, unavailable or has changed.');
+  }
+}
+
 export async function sealVault(raw, payload, { projectId, accountId, revision }) {
   const plaintext = utf8(canonicalJson(payload));
   if (plaintext.length > 1024 * 1024) throw new ConnectError('VAULT_TOO_LARGE', 'The backup is larger than 1 MiB.');

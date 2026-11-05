@@ -11,8 +11,8 @@ const mount=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='
 const widget=mount.body.statements.filter(ts.isVariableStatement).flatMap(n=>[...n.declarationList.declarations]).find(n=>n.name.getText(ast)==='widgetRuntimeControls');
 const props=widget.initializer.whenTrue.arguments[0].properties;
 const callback=name=>props.find(n=>n.name.getText(ast)===name).initializer.getText(ast);
-const portsCode=ts.transpileModule(`exports.create=(state,runtime)=>{let displayEpoch=1,runtimePending=false;const current=()=>state.current,launcher={scopedCapture:()=>state.binding};return {
- capture:${callback('capture')},matchesCapture:${callback('matchesCapture')},canAct:${callback('canAct')},epoch(){displayEpoch++},pending(v){runtimePending=v}};};`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+const portsCode=ts.transpileModule(`exports.create=(state,runtime)=>{let displayEpoch=1,frameGeneration=1,runtimePending=false;const current=()=>state.current,launcher={scopedCapture:()=>state.binding};return {
+ capture:${callback('capture')},matchesCapture:${callback('matchesCapture')},canAct:${callback('canAct')},epoch(){displayEpoch++},generation(){frameGeneration++},pending(v){runtimePending=v}};};`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 
 // Real production createDialog/visibility algorithm and exact app-stage capture
 // callbacks. The native platform/DOM below are deterministic ports, not browser QA.
@@ -61,8 +61,8 @@ function fixture(configuration={}){
  const options={view,screen,message,runtime,runtimeActions,current:()=>state.current,...stagePorts,createDialog:dialogs.createDialog,iconButton,button,el,isFocusTarget:dialogs.isDialogFocusTarget,retry,currentEntry,external,dismiss,
   ...(configuration.main?{presentation:'main',returnTarget:{isCurrent:()=>state.current,resolve:()=>name},externalRecovery}:{}),
   onModalChange:(_d,open)=>{modalEvents.push(open);if(!open)sequence.push('dialog-closed');}};
- const api=createWidgetRuntimeControls(options),control=screen.querySelector(configuration.main?'.sa-stage-runtime-action':'.sa-widget-runtime-action');
- const attach=()=>api.attach(header,{isCurrent:()=>state.ownerCurrent,resolve:()=>grip});
+ const api=(configuration.factory??createWidgetRuntimeControls)(options),control=screen.querySelector(configuration.main?'.sa-stage-runtime-action':'.sa-widget-runtime-action');
+ const attach=(extra={})=>api.attach(header,{isCurrent:()=>state.ownerCurrent,resolve:()=>grip,...extra});
  const open=()=>{control.focus();control.click();return document.querySelectorAll('dialog[open]')[0]??null;};
  const action=(d,label)=>d.querySelectorAll('button').find(n=>n.textContent===label);
  const flush=()=>{while(tasks.length)tasks.shift()();};
@@ -110,6 +110,65 @@ test('owner loss closes dialog on local lifetime tick and cannot restore stale f
 test('dispose closes managed dialog, disconnects observer/timer and removes only its own UI',()=>{const f=fixture();f.attach();f.open();f.api.dispose();f.flush();f.control.click();assert.equal(f.document.querySelectorAll('dialog[open]').length,0);assert.equal(f.control.isConnected,false);assert.equal(f.frame.parentElement,f.runtime);assert.equal(f.intervals.size,0);assert.equal(f.counts.retry,0);});
 test('Source/local notice changes update current dialog controls without replacing focused nodes',()=>{const f=fixture();f.attach();const d=f.open(),a=f.action(d,'Обновить окно');a.focus();f.message.textContent='Другой конечный статус';f.mutate();assert.equal(f.action(d,'Обновить окно'),a);assert.equal(f.document.activeElement,a);assert.equal(f.counts.retry,0);f.api.dispose();});
 test('queued native close after managed action never steals later deliberate focus',()=>{const f=fixture();f.attach();const d=f.open();f.action(d,'Скрыть сообщение').click();const other=f.button('other');f.document.body.append(other);other.focus();f.flush();assert.equal(f.document.activeElement,other);});
+
+async function namedCloseScenario(factory=createWidgetRuntimeControls){
+ const f=fixture({factory});let request;f.attach({requestClose:async value=>{request=value;f.sequence.push('close-request');}});
+ const d=f.open(),close=f.action(d,'Закрыть окно');assert.ok(close,'The existing menu must provide named explicit Close');
+ close.click();await Promise.resolve();assert.deepEqual(f.sequence,['dialog-closed','close-request']);
+ assert.equal(f.document.querySelectorAll('dialog[open]').length,0);assert.equal(request.isCurrent(),true);
+ close.click();assert.equal(f.sequence.filter(value=>value==='close-request').length,1);f.api.dispose();
+ const legacy=fixture();legacy.attach();assert.equal(legacy.action(legacy.open(),'Закрыть окно'),undefined);legacy.api.dispose();
+}
+test('named Close is offered only to its owner and dispatches after real dialog cleanup',()=>namedCloseScenario());
+test('broken commit-before-dialog-cleanup fails the same actual dialog order criterion',async()=>{
+ const source=readFileSync(new URL('./app-widget-runtime-controls.mjs',import.meta.url),'utf8').replace(/\r\n/gu,'\n');
+ const anchor='const onRequest=owner.requestClose,stillCurrent=()=>live()&&matchesCapture(witness);\n    close(false);';assert.equal(source.split(anchor).length-1,1);
+ const broken=(await import('data:text/javascript;base64,'+Buffer.from(source.replace(anchor,'const onRequest=owner.requestClose,stillCurrent=()=>live()&&matchesCapture(witness);')).toString('base64'))).createWidgetRuntimeControls;
+ await assert.rejects(()=>namedCloseScenario(broken),error=>error.code==='ERR_ASSERTION');
+});
+
+test('unknown Close defaults to Keep; Escape and Keep resolve false before any owner save',async()=>{
+ for(const method of ['keep','escape']){
+  const f=fixture();let outcome,request;f.attach({requestClose:async value=>{request=value;outcome=await value.confirmUnknown(()=>true);}});
+  f.action(f.open(),'Закрыть окно').click();const d=f.document.querySelectorAll('dialog[open]')[0];assert.ok(d);
+  assert.match(d.textContent||d.querySelector('p')?.textContent||'',/может пропасть/u);
+  const keep=f.action(d,'Оставить открытым');assert.equal(f.document.activeElement,keep,'Safe choice owns initial focus');
+  if(method==='keep')keep.click();else d.requestClose();f.flush();await Promise.resolve();await Promise.resolve();
+  assert.equal(outcome,false);assert.equal(request.isCurrent(),true);assert.equal(f.frame.parentElement,f.runtime);
+  assert.equal(f.intervals.size,0);f.api.dispose();
+ }
+});
+
+test('unknown destructive confirmation resolves only after cleanup and rejects stale frame/account/intent',async()=>{
+ for(const mode of ['current','frame','actor','intent','dispose']){
+  const f=fixture();let intent=true,outcome;f.attach({requestClose:async value=>{outcome=await value.confirmUnknown(()=>intent);f.sequence.push('confirmation:'+outcome);}});
+  f.action(f.open(),'Закрыть окно').click();const d=f.document.querySelectorAll('dialog[open]')[0],discard=f.action(d,'Закрыть без сохранения');assert.ok(discard);
+  if(mode==='frame'){f.frame.remove();f.runtime.append(f.el('iframe'));}if(mode==='actor')f.state.current=false;
+  if(mode==='intent')intent=false;if(mode==='dispose')f.api.dispose();else discard.click();
+  await Promise.resolve();await Promise.resolve();assert.equal(outcome,mode==='current',mode);
+  assert.equal(f.document.querySelectorAll('dialog[open]').length,0);assert.equal(f.intervals.size,0);
+  const last=f.sequence.indexOf('confirmation:'+outcome);assert.ok(last>f.sequence.lastIndexOf('dialog-closed'),mode);
+  f.api.dispose();
+ }
+});
+
+test('local explicit Close cancels a pending launch without enabling retry or popup',async()=>{
+ const f=fixture();let requested=0;f.attach({requestClose:async()=>{requested++;}});f.stagePorts.pending(true);
+ const d=f.open();assert.equal(f.action(d,'Обновить окно').disabled,true);assert.equal(f.action(d,'Открыть в новой вкладке').disabled,true);
+ f.action(d,'Закрыть окно').click();assert.equal(requested,1);assert.equal(f.counts.retry,0);assert.equal(f.counts.external,0);f.api.dispose();
+});
+
+test('same physical iframe document generation invalidates an outstanding close confirmation',async()=>{
+ const f=fixture();let outcome;f.attach({requestClose:async request=>{outcome=await request.confirmUnknown(()=>true);}});
+ f.action(f.open(),'Закрыть окно').click();const d=f.document.querySelectorAll('dialog[open]')[0];f.stagePorts.generation();
+ f.action(d,'Закрыть без сохранения').click();await Promise.resolve();await Promise.resolve();assert.equal(outcome,false);f.api.dispose();
+});
+test('direct main Close uses fresh capture with no intermediate status dialog',async()=>{
+ const f=fixture({main:true});let calls=0,request;f.options.returnTarget.requestClose=async value=>{calls++;request=value;};
+ await f.api.requestClose();assert.equal(calls,1);assert.equal(request.isCurrent(),true);assert.equal(f.document.querySelectorAll('dialog[open]').length,0);
+ assert.deepEqual(f.modalEvents,[],'Clean main menu Close never opens an info dialog');f.stagePorts.generation();assert.equal(request.isCurrent(),false);
+ f.state.current=false;await f.api.requestClose();assert.equal(calls,1);f.api.dispose();await f.api.requestClose();assert.equal(calls,1);
+});
 test('invalid or detached header owner cannot take the control',()=>{const f=fixture();const detached=f.el('header');assert.equal(f.api.attach(detached,{isCurrent:()=>true,resolve:()=>f.grip}),false);f.state.ownerCurrent=false;assert.equal(f.attach(),false);assert.equal(f.control.parentElement.className,'sa-widget-runtime-launcher');f.api.dispose();});
 test('actual micro-widgets callsite binds the visible header/grip and preserves owner current witness',()=>{
  const text=readFileSync(path.join(HERE,'micro-widgets.ts'),'utf8'),p=ts.createSourceFile('micro.ts',text,ts.ScriptTarget.Latest,true);

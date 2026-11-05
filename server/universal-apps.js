@@ -3,6 +3,7 @@ import { createUniversalRegistrationService } from '../modules/app-contract/serv
 import { createFeedbackService } from '../modules/feedback/server/index.mjs';
 import { DEFAULT_FEEDBACK_PROFILE } from '../modules/feedback/server/profile.mjs';
 import { createReviewsService } from '../modules/reviews/server/index.mjs';
+import {createUniversalPublicationJournal} from './universal-publication-journal.js';
 
 /** Host composition only: HTTP bodies never instantiate reviewed authority. */
 export function createUniversalApps({ dataDir, apps, actorActive, reviews: reviewedReviews, registryId = 'soty', environmentId = 'production' }) {
@@ -10,13 +11,15 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
   const reviews = reviewedReviews ?? createReviewsService({ registryId, environmentId, actorActive, withAppAuthority: apps.withAppAuthority });
   const feedback = createFeedbackService({ databasePath: path.join(base, 'feedback', 'feedback.sqlite'),
     registryId, environmentId, actorActive, withAppAuthority: apps.withAppAuthority });
-  let registration;
+  let registration,publication;
   try {
     registration = createUniversalRegistrationService({ databasePath: path.join(base, 'app-registration', 'registry.sqlite'),
       registryId, environmentId, actorActive, withReviewedAppAuthority: apps.withReviewedAppAuthority,
+      readPublicationAuthority:()=>apps.currentPublicationReconciliationAuthority(),
       reviewedProfile: DEFAULT_FEEDBACK_PROFILE, approvedReferences: reviews.approvedReferences(),
       selectApprovedReferences: ({ scope }) => reviews.approvedReferencesFor(scope), feedback: feedback.provider });
-  } catch (error) { feedback.close(); reviews.close(); throw error; }
+    publication=createUniversalPublicationJournal({databasePath:path.join(base,'app-registration','publication-journal.sqlite'),registration,confirmFeedback});
+  } catch (error) { publication?.close();registration?.close();feedback.close(); reviews.close(); throw error; }
   function confirmFeedback(request, result) {
       // Commits share the original verified Connect action, but are not a
       // distributed atomic transaction. The accepted pending intent survives.
@@ -32,7 +35,8 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
   const universalExtension = Object.freeze({ operations: registration.operations,
     execute(request) {
       const result = registration.execute(request);
-      return request.op === 'apps.universal.admit' ? confirmFeedback(request, result) : result;
+      if(request.op!=='apps.universal.admit')return result;
+      const confirmed=confirmFeedback(request,result);publication.captureReady(request.actor,request.args.appId);return confirmed;
     }
   });
   function completeRegistration(actor, result) {
@@ -43,6 +47,7 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
     if (found) {
       const current = found.state === 'pending-feedback'
         ? confirmFeedback({ actor, args: { appId } }, { registration: found }).registration : found;
+      if(current.state==='ready')publication.captureReady(actor,appId);
       return { ...result, universalRegistration: current };
     }
     const accepted = universalExtension.execute({ op: 'apps.universal.admit', actor,
@@ -52,6 +57,11 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
   }
   const appsExtension = Object.freeze({ operations: apps.operations,
     execute(request) {
+      if(request.op==='apps.publication.update'){
+        publication.prepare(request.actor,request.args);
+        const result=apps.execute(request),reconciled=publication.reconcile(request.actor,request.args,result);
+        return {...result,universalReconciliation:{state:reconciled.state},...(reconciled.registration?{universalRegistration:reconciled.registration}:{})};
+      }
       const result = apps.execute(request);
       if (request.op !== 'apps.register') return result;
       // Legacy registration already has stable per-owner/connector/port replay.
@@ -60,9 +70,16 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
       return completeRegistration(request.actor, result);
     }
   });
-  return { registration, feedback, reviews, universalExtension, appsExtension,
+  const endpointRegistrationExtension = Object.freeze({ operations: apps.endpointRegistrationExtension.operations,
+    async executeAsync(request) {
+      const result = await apps.endpointRegistrationExtension.executeAsync(request);
+      // The async connector probe is complete. Complete the same durable app
+      // through its original actor and the existing reviewed registration port.
+      return completeRegistration(request.actor, result);
+    } });
+  return { registration, feedback, reviews, universalExtension, appsExtension, endpointRegistrationExtension,
     registerCreationJob(actor, job) { return completeRegistration(actor, apps.registerCreationJob(actor, job)); },
     registerPreparedApp(actor, receipt, manifest) { return completeRegistration(actor, apps.registerPreparedApp(actor, receipt, manifest)); },
     completeExisting(actor, app) { return completeRegistration(actor, { app }); },
-    close() { registration.close(); feedback.close(); reviews.close(); } };
+    close() { publication.close();registration.close(); feedback.close(); reviews.close(); } };
 }

@@ -1,0 +1,79 @@
+{
+  "name": "volumetric-glass-ui",
+  "version": "1.4.0",
+  "type": "module",
+  "main": "./src/liquid-glass.js",
+  "module": "./src/liquid-glass.js",
+  "exports": {
+    ".": "./src/liquid-glass.js",
+    "./site": "./src/site.js",
+    "./ui": "./src/ui-kit.js",
+    "./ui.css": "./src/ui-kit.css",
+    "./presence": "./src/community-presence.js",
+    "./presence/server": "./server/community-presence-server.mjs",
+    "./presence.css": "./src/community-presence.css",
+    "./design.css": "./src/design-system.css",
+    "./package.json": "./package.json",
+    "./widget-context": {
+      "types": "./src/widget-context.d.ts",
+      "import": "./src/widget-context.js",
+      "default": "./src/widget-context.js"
+    }
+  },
+  "files": [
+    "src/liquid-glass.js",
+    "src/site.js",
+    "src/ui-kit.js",
+    "src/ui-kit.css",
+    "src/community-presence.js",
+    "src/community-presence.css",
+    "src/design-system.css",
+    "server/community-presence-server.mjs",
+    "README.md",
+    "docs/LIQUID_GLASS.md",
+    "docs/COMMUNITY_PRESENCE.md",
+    "docs/PRODUCTION_GUIDE.md",
+    "docs/SITE_INTEGRATION.md",
+    "docs/UI_KIT.md",
+    "src/widget-context.js",
+    "src/widget-context.d.ts"
+  ],
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "description": "Интерактивный WebGL-движок многослойного объёмного стекла",
+  "keywords": [
+    "webgl",
+    "glass",
+    "glass-ui",
+    "ui",
+    "refraction",
+    "volumetric"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/junior2wnw/liquid-glass-lab.git"
+  },
+  "homepage": "https://github.com/junior2wnw/liquid-glass-lab#readme",
+  "bugs": {
+    "url": "https://github.com/junior2wnw/liquid-glass-lab/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4173",
+    "test": "node --test",
+    "check": "npm run test && npm run build",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "presence:dev": "node server/community-presence-server.mjs",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "vite": "^8.2.1"
+  }
+}

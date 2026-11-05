@@ -8,6 +8,7 @@ import { createFieldSpatialIndex, layoutUnifiedField, UNIFIED_FIELD_METRICS, fie
 import { fitFieldCamera, fieldScreenToWorld, fieldWorldToScreen, fieldLevelOfDetail, normalizeFieldCamera } from './unified-field-camera.mjs';
 import { resolveAppArt } from './app-art.mjs';
 import { fieldEntityKey } from '../../modules/field/contract.mjs';
+import {fieldPresentationClip} from './unified-field-presentation.mjs';
 
 // Actual production geometry, rendering and event callbacks, with inert DOM ports.
 // These tests do not measure browser typography or claim a real application launch.
@@ -41,11 +42,13 @@ class Port {
     toggle: (name, enabled) => { const names = new Set(this.className.split(/\s+/)); enabled ? names.add(name) : names.delete(name); this.className = [...names].join(' '); },
     remove: name => { this.className = this.className.split(/\s+/).filter(value => value !== name).join(' '); } }; }
   append(...children) { for (const child of children) { child.parent = this; this.children.push(child); } }
+  after(...children) { if (!this.parent) return; const parent=this.parent;for(const child of children){child.remove();child.parent=parent;}parent.children.splice(parent.children.indexOf(this)+1,0,...children); }
   replaceChildren(...children) { this.children = []; this.append(...children); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(value => value !== this); }
   setAttribute(name, value) { this.attributes.set(name, value); }
   getAttribute(name) { return this.attributes.get(name); }
   focus() { this.focused = true; }
+  contains(node){return node===this||this.children.some(child=>child.contains(node));}
   addEventListener(name, handler) { this.listeners.set(name, handler); }
   querySelector(selector) {
     for (const child of this.children) {
@@ -54,7 +57,8 @@ class Port {
     }
     return null;
   }
-  dispatch(type) { const event = { currentTarget: this, prevented: false, preventDefault() { this.prevented = true; } }; this.listeners.get(type)?.(event); return event; }
+  closest(){return null;}
+  dispatch(type) { const event = { currentTarget: this,target:this, prevented: false, preventDefault() { this.prevented = true; } }; this.listeners.get(type)?.(event); return event; }
 }
 const app = n => ({ kind: 'app', id: 'app-' + String(n).repeat(32) });
 function specimen() {
@@ -80,20 +84,21 @@ function specimen() {
   add('kirill', { kind: 'person', id: 'kirill' }, 'Кирилл', 'evening', [35, -1]);
   return { document, entities, layout: layoutUnifiedField(document, entities) };
 }
-function harness(width, height, { scale, focus = '' } = {}) {
+function harness(width, height, { scale, focus = '',renderCode=compiled } = {}) {
   const data = specimen(), view = { width, height }, camera = fitFieldCamera(data.layout.bounds, view, { padding: 60 });
   if (scale !== undefined) camera.scale = scale;
   const calls = { activate: [], inspect: [], focus: [], nodeFocus: [], remember: 0 }, plane = new Port(), viewport = new Port();
   const environment = { exports: {}, destroyed: false, inPointerFrame: false, activeLayout: () => data.layout,
-    gesture: null, pinch: null, lastInspection: null, suppressClickUntil: 0, performance, clearTimeout,
+    gesture: null, pinch: null, lastInspection: null, suppressClickUntil: 0,spacePanning:false,liveScene:{contexts:[],shortcuts:[]},performance, clearTimeout,
     viewportSize: () => view, camera: () => camera, cameraFit: { mine: focus ? 'context' : 'overview' },
     contextFocus: { mine: focus }, mode: 'mine', arranging: false, moving: null, contextPreview: null,
     viewport, plane, signal: new AbortController().signal, document: { createElementNS: (_, tag) => new Port(tag) }, window: { innerWidth: width },
-    metrics: UNIFIED_FIELD_METRICS, SVG_NS: 'svg', fieldEntityKey, fieldBoundsOverlap, fieldScreenToWorld, fieldLevelOfDetail,
+    metrics: UNIFIED_FIELD_METRICS, SVG_NS: 'svg', fieldEntityKey, fieldBoundsOverlap, fieldScreenToWorld, fieldLevelOfDetail,fieldPresentationClip,
     createFieldSpatialIndex, index: createFieldSpatialIndex(data.layout.nodes),
     nodeElements: new Map(), contextElements: new Map(), inspectElements: new Map(), selectedId: '', persistence: 'saved',
+    objectViews:new Map(),objectFocus:null,resizeElements:new Map(),fieldDocument:data.document,
     options: { resolveArt: () => null, onActivate: (...args) => calls.activate.push(args), onInspect: (...args) => calls.inspect.push(args) },
-    available: id => data.layout.nodes.find(node => node.shortcutId === id),
+    available: id => data.layout.nodes.find(node => node.shortcutId === id),activeNode:id=>data.layout.nodes.find(node=>node.shortcutId===id),
     focusContext: id => calls.focus.push(id), focusNode: id => calls.nodeFocus.push(id), remember: () => calls.remember++, schedule() {}, emit() {},
     el: (tag, className = '', text = '') => new Port(tag, className, text),
     icon: (_, className = 'sw-icon') => new Port('svg', className), hexFrame: () => new Port('svg', 'uf-hex-frame'),
@@ -101,12 +106,38 @@ function harness(width, height, { scale, focus = '' } = {}) {
     nounCount: (count, word) => `${count} ${word}`, Date,
     tools: new Port(), moveHint: new Port(), readySettled: true,
   };
-  vm.createContext(environment); new vm.Script(compiled).runInContext(environment);
+  vm.createContext(environment); new vm.Script(renderCode).runInContext(environment);
   return { data, view, camera, calls, environment, render: environment.exports.render, titles: environment.exports.titles };
 }
 
 const cameraFlow = compile([statement('fitOverview'), statement('focusContext')].map(print).join('\n')
   + '\nexports.fitOverview = fitOverview; exports.focusContext = focusContext;');
+test('general content host keeps the same article/provider during live metadata refresh, retains a local-unsaved offscreen object and disposes a clean one',()=>{
+  const f=harness(1280,800,{scale:1,focus:'studio'}),env=f.environment,element=new Port('article','provider-note');let mounts=0,updates=0,disposals=0,dirty=false;const visibility=[];
+  env.options.createObject=node=>node.shortcutId==='hive'?(mounts++,{element,update(){updates++;},setVisible:value=>visibility.push(value),activate(){},async flush(){},hasUnsavedChanges:()=>dirty,dispose(){disposals++;element.remove();}}):null;
+  f.render();const target=env.nodeElements.get('hive');assert.equal(target.tag,'article');assert.equal(target.querySelector('.provider-note'),element);assert.equal(mounts,1);
+  f.data.layout.nodes.find(node=>node.shortcutId==='hive').entity={...f.data.layout.nodes.find(node=>node.shortcutId==='hive').entity,title:'Обновилось без перезагрузки'};f.render();assert.equal(env.nodeElements.get('hive'),target);assert.equal(mounts,1);assert.ok(updates>=2);
+  dirty=true;f.camera.x=100000;f.render();assert.equal(disposals,0);assert.equal(visibility.at(-1),false);assert.equal(env.nodeElements.get('hive'),target);
+  dirty=false;f.render();assert.equal(disposals,1);assert.equal(env.nodeElements.has('hive'),false);
+});
+test('authorized source promotion installs one native article, and revocation immediately removes a dirty plaintext provider for a generic fallback',()=>{
+  const f=harness(1280,800,{scale:1,focus:'studio'}),env=f.environment;let key=null,mounts=0,disposed=0;const secret=new Port('textarea','secret-editor');secret.value='Секретный черновик';
+  env.options.objectKey=node=>node.shortcutId==='hive'?key:null;
+  env.options.createObject=node=>node.shortcutId==='hive'?(mounts++,{element:secret,update(){},setVisible(){},activate(){},async flush(){},hasUnsavedChanges:()=>true,dispose(){disposed++;secret.value='';secret.remove();}}):null;
+  f.render();assert.equal(env.nodeElements.get('hive').tag,'button');assert.equal(mounts,0);
+  key='notes:object-1:note-1';f.render();const native=env.nodeElements.get('hive');assert.equal(native.tag,'article');assert.equal(mounts,1);assert.equal(native.querySelector('.secret-editor'),secret);
+  f.render();assert.equal(env.nodeElements.get('hive'),native);assert.equal(mounts,1);
+  key=null;f.render();assert.equal(disposed,1);assert.equal(secret.value,'');assert.equal(env.objectViews.has('hive'),false);assert.equal(env.nodeElements.get('hive').tag,'button');assert.equal(env.nodeElements.get('hive').getAttribute('aria-label'),'Объект недоступен');assert.equal(env.plane.querySelector('.secret-editor'),null);
+});
+test('negative control detects a host that keeps an already rendered secret after its source authority key is revoked',()=>{
+  const broken=source.replace('if(previousObject&&previousObject.key!==expectedObjectKey){','if(false){');assert.notEqual(broken,source);
+  const alt=ts.createSourceFile('field-mutant.ts',broken,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),printAlt=node=>printer.printNode(ts.EmitHint.Unspecified,node,alt),engine=alt.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='createUnifiedField');
+  const functions=['renderNode','render','focusPreview','inspectShortcut'].map(name=>engine.body.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text===name));
+  const code=compile([alt.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='compactOverviewTitles'),...functions].map(printAlt).join('\n')+'\nexports.render=render;exports.titles=compactOverviewTitles;');
+  const f=harness(1280,800,{scale:1,focus:'studio',renderCode:code}),env=f.environment,secret=new Port('textarea','secret-editor');secret.value='Секрет';let key='source:allowed';
+  env.options.objectKey=node=>node.shortcutId==='hive'?key:null;env.options.createObject=node=>node.shortcutId==='hive'?{element:secret,update(){},setVisible(){},async flush(){},hasUnsavedChanges:()=>true,dispose(){secret.value='';secret.remove();}}:null;
+  f.render();key=null;f.render();assert.throws(()=>assert.equal(env.plane.querySelector('.secret-editor'),null),error=>error.code==='ERR_ASSERTION');
+});
 function twelveApps(mode) {
   const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Личное', x: 0, y: 0 }], shortcuts: [] }, entities = [];
   for (let n = 0; n < 12; n++) {
@@ -261,7 +292,7 @@ test('a long press cannot start placement on a micro preview but remains availab
       localPoint: () => ({ x: 100, y: 100 }), setTimeout() { timers++; return 1; } });
     e.options.commit = async () => {};
     new vm.Script(callback('viewport', 'pointerdown')).runInContext(e);
-    e.exports.handler({ button: 0, pointerId: 1, target: { closest: selector => selector === '[data-shortcut-id]' ? node : null } });
+    e.exports.handler({ button: 0,pointerType:'touch',pointerId: 1, target: { closest: selector => selector === '[data-shortcut-id]' ? node : null } });
     assert.equal(timers, preview ? 0 : 1); assert.equal(e.arranging, false);
   }
 });

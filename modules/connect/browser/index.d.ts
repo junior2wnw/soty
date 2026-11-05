@@ -61,6 +61,18 @@ export interface AccountStatus extends AccountResult {
   devices: DeviceStatus[];
   recovery: { verified: boolean; recoveryId?: string };
 }
+export type AccountCredentialKind = 'password' | 'phrase';
+export interface AccountCredentialInput { login?: string; secret: string }
+/** Consent selection only; current server authority is still checked for every operation. */
+export interface AccountActivationOptions {
+  signal?: AbortSignal;
+  expectedState?: Readonly<Pick<LocalState, 'accountId' | 'deviceId' | 'localRevision'>>;
+}
+export interface AccountCredentialStatus {
+  schema: 'connect.credentials.v1'; accountId: string;
+  password: { enabled: boolean; revision: number; login: string | null };
+  phrase: { enabled: boolean; revision: number };
+}
 export interface ContactCard { cardId: string; label: string; projectId?: string; purpose?: 'contact.discover' }
 export interface ContactRequest { requestId: string; peerAccountId: string; label: string; createdAt: number; expiresAt: number }
 export interface Contact { relationshipId: string; peerAccountId: string; label: string; createdAt: number }
@@ -103,13 +115,17 @@ export interface RecoveryKit {
 
 export interface ConnectClient {
   voiceSessionCleanup?(reply: unknown): (() => Promise<unknown>) | null;
-  /** Returns a fixed zero-argument cleanup only for this client's original
-   * signed reply; no identity, operation or arguments can be selected. */
+  /** Returns a fixed zero-argument Source/host close only for this client's
+   * original signed reply; no identity, operation or arguments can be selected. */
   appSlotCleanup(reply: unknown): (() => Promise<void>) | null;
   /** Optional context pins queue admission to the displayed account; it is not sent in the RPC payload. */
-  extension<T = Record<string, unknown>>(operation: string, args?: unknown, context?: { expectedAccountId: string }): Promise<T>;
-  bootstrap(label: string, options?: { invitationToken?: string }): Promise<AccountResult>;
+  extension<T = Record<string, unknown>>(operation: string, args?: unknown, context?: { expectedAccountId: string;signal?:AbortSignal }): Promise<T>;
+  bootstrap(label: string, options?: AccountActivationOptions & { invitationToken?: string }): Promise<AccountResult>;
   status(): Promise<AccountStatus>;
+  credentialStatus(expectedAccountId: string): Promise<AccountCredentialStatus>;
+  setAccountCredential(kind: AccountCredentialKind, input: AccountCredentialInput, expectedAccountId: string): Promise<AccountCredentialStatus>;
+  removeAccountCredential(kind: AccountCredentialKind, expectedAccountId: string): Promise<AccountCredentialStatus>;
+  loginWithCredential(kind: AccountCredentialKind, input: AccountCredentialInput, label?: string, options?: AccountActivationOptions): Promise<AccountResult>;
   /** Optional admission fence for an action from an already displayed profile. */
   rename(label: string, expectedAccountId?: string): Promise<{ label: string }>;
   card(): Promise<ContactCard>;
@@ -132,10 +148,12 @@ export interface ConnectClient {
   /** Read only; signed by the durable recipient. Required again after a reload or profile switch. */
   previewEnrollment(requestId: string): Promise<EnrollmentPreview>;
   /** Opens exactly the previewed account; rejects a profile change since preview, retains old profiles. */
-  finishEnrollment(requestId: string, expectedAccountId: string): Promise<AccountResult>;
+  finishEnrollment(requestId: string, expectedAccountId: string, options?: AccountActivationOptions): Promise<AccountResult>;
   /** Abandons only local enrollment UI state; it does not delete keys or revoke a server grant. */
   discardPendingEnrollment(): Promise<void>;
-  switchProfile(accountId: string): Promise<LocalState>;
+  /** Clears exactly the displayed pending request in the same local revision; keeps all device keys. */
+  discardPendingEnrollmentIfCurrent(requestId: string, expected: Pick<LocalState, 'localRevision' | 'deviceId' | 'accountId'>, options?: { signal?: AbortSignal }): Promise<LocalState>;
+  switchProfile(accountId: string, options?: AccountActivationOptions): Promise<LocalState>;
   revokeDevice(deviceId: string): Promise<{ revoked: true; deviceId?: string }>;
   /** Pass the displayed account before asynchronously preparing a product snapshot. */
   saveVault(payload: JsonValue, expectedRevision?: number, expectedAccountId?: string): Promise<{ revision: number }>;
@@ -144,7 +162,7 @@ export interface ConnectClient {
   /** Confirms a supplied kit by opening it and comparing its account key to the current key. */
   confirmRecovery(kit: RecoveryKit): Promise<{ recoveryId: string; verified: true }>;
   /** Explicitly activates recovered access; earlier local profiles remain available. */
-  recover(kit: RecoveryKit, label: string): Promise<AccountResult>;
+  recover(kit: RecoveryKit, label: string, options?: AccountActivationOptions): Promise<AccountResult>;
   getLocalState(): Promise<LocalState>;
   /** Closes the cross-tab change channel. Already-running explicit operations can finish. */
   dispose(): void;

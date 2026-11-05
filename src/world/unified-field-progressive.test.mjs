@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import {coverageTestSource,installCoverageTestPorts} from './unified-field-coverage-test-ports.mjs';
 
 // Exercise the genuine screen orchestration, directory batching and field state.
 // Network, rendering and browser focus are ports; this is not visual acceptance.
@@ -16,6 +17,8 @@ const contract = await import(pathToFileURL(join(repo, 'modules/field/contract.m
 const camera = await import(pathToFileURL(join(repo, 'src/world/unified-field-camera.mjs')));
 const layout = await import(pathToFileURL(join(repo, 'src/world/unified-field-layout.mjs')));
 const { createFieldHistory } = await import(pathToFileURL(join(repo, 'src/world/unified-field-state.mjs')));
+const liveProjection=await import(pathToFileURL(join(repo,'src/world/unified-field-live.mjs')));
+const {validateFieldPresentation}=await import(pathToFileURL(join(repo,'src/world/unified-field-presentation.mjs')));
 const { createFieldSearchPlacement } = await import(pathToFileURL(join(repo, 'src/world/unified-field-search.mjs')));
 const { fieldEntityKey } = contract;
 const compile = text => ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -23,7 +26,7 @@ const parse = path => ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.S
 const printer = ts.createPrinter();
 const named = (nodes, name) => { const n = nodes.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name); assert.ok(n, name); return n; };
 const screenParsed = parse(sourcePath), screen = named(screenParsed.statements, 'createUnifiedFieldScreen');
-const screenCode = compile(['merge', 'pruneMetadata', 'allMetadata', 'currentEntity', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'loadOwnedApps', 'openPreview', 'searchSlot', 'releaseSearchSlot', 'searchDirectory'].filter(name => name !== 'loadMinePass' || screen.body.statements.some(node => ts.isFunctionDeclaration(node) && node.name?.text === name)).map(name => printer.printNode(ts.EmitHint.Unspecified, named(screen.body.statements, name), screenParsed)).join('\n')
+const screenCode = compile(coverageTestSource(screen.body.statements,screenParsed,printer)+'\n'+['merge', 'pruneMetadata', 'allMetadata', 'currentEntity', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'loadOwnedApps', 'openPreview', 'placementCommands', 'openPlacementActions', 'searchSlot', 'releaseSearchSlot', 'searchDirectory'].filter(name => name !== 'loadMinePass' || screen.body.statements.some(node => ts.isFunctionDeclaration(node) && node.name?.text === name)).map(name => printer.printNode(ts.EmitHint.Unspecified, named(screen.body.statements, name), screenParsed)).join('\n')
   + '\nObject.assign(exports, { loadMine, updateMineFilter, updateMineEmpty, searchDirectory, openPreview, allMetadata });');
 const directoryPath = process.argv[4] ? resolve(process.argv[4]) : join(repo, 'src/world/field-directory.ts');
 const directoryCode = compile(readFileSync(directoryPath, 'utf8'));
@@ -83,7 +86,8 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
   const node = (tag, className, textContent) => new NodePort(tag, className, textContent);
   // Production Directory, contract and field share one JS realm. These genuine
   // closures share one VM too; only the synthetic initial JSON DTO crosses in.
-  environment = { ...camera, ...layout, createFieldHistory, TextEncoder, crypto, performance, clearTimeout,
+  environment = { ...camera, ...layout,...liveProjection,createFieldHistory, TextEncoder, crypto, performance, clearTimeout,
+    liveApps:[],liveProjection:{update:()=>({contexts:[],shortcuts:[]})},refreshLiveApps:async()=>{},
     viewport: { clientWidth: 393, clientHeight: 700, hasPointerCapture: () => false }, plane: { contains: () => false }, document: { activeElement: null }, HTMLElement: NodePort, live: {}, render() {}, schedule() {}, flushPointerSample() {},
     signal: new AbortController().signal, mode, queries: { mine: '', search: '' }, filter: 'all', mineGeneration: 0, mineResolvedGeneration: -1, mineConfirmedGeneration: -1,
     mineBusy: false, queuedMine: null, mineKnownRefs: new Set(), mineFilterAdmitted: false, emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, metadataRevision: 0,
@@ -109,13 +113,16 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
     return environment[key];
   };
   const strictContract = module(contractCode, 'contractExports'); Object.assign(environment, strictContract);
-  environment.require = specifier => { assert.equal(specifier, '../../modules/field/contract.mjs'); return strictContract; };
+  Object.assign(environment,{validateFieldDocument:strictContract.validateAnyFieldDocument,validateFieldEntity:strictContract.validateAnyFieldEntity,validateFieldPresentation});
+  environment.require = specifier => { assert.ok(['../../modules/field/contract.mjs','../field/contract.mjs'].includes(specifier)); return strictContract; };
+  const objectContract=module(compile(readFileSync(join(repo,'modules/canvas-objects/contract.mjs'),'utf8')),'objectContractExports');
+  environment.require=specifier=>{if(specifier==='../../modules/canvas-objects/contract.mjs')return objectContract;assert.equal(specifier,'../../modules/field/contract.mjs');return strictContract;};
   const directory = module(directoryCode, 'directoryExports').createFieldDirectory({ api, accountId: 'owner', isCurrent: () => current && sourceGeneration === 1 });
   environment.directory = directory;
   environment.metadata = new Map(refs.map(value => { const entity = environment.structuredClone(value); return [fieldEntityKey(entity), { entity, title: 'Загрузка…', symbol: 'lock', source: 'owner' }]; }));
   const field = module(engineCode, 'engineExports').stateHarness(environment.structuredClone({ accountId: 'owner', document: doc, mode, entities: [...environment.metadata.values()], viewState: { mine: { x: 25, y: 33, scale: .7 }, mineContext: 'studio', mineFit: 'manual' } }));
   environment.engine = { ...field, element: environment.viewport, update(value) { state.updates.push(structuredClone(value)); field.update(value); } };
-  const screenApi = module(screenCode, 'screenExports');
+  installCoverageTestPorts(environment);const screenApi = module(screenCode, 'screenExports');
   assert.equal(field.getLayout().nodes.length, mode === 'mine' ? refs.length : 0, 'The fixture must admit all genuine initial shortcut nodes');
   return { api: screenApi, environment, state, field, directory, doc, strictContract,
     stop(kind) { if (kind === 'ABA') { sourceGeneration = 2; sourceGeneration = 3; } else current = false; } };
@@ -257,6 +264,8 @@ const phases = compile('async function readyPhase() {\n' + readyPhase + '\n}\nex
 function phaseHarness(mode) {
   const mine = deferred(), search = deferred(), calls = [];
   const context = { exports: {}, mode, ready: Promise.resolve(), current: () => true,
+    refreshLiveApps:async()=>{},
+    updateIdentity(){},
     loadInitialMine: () => { calls.push(['mine']); return mine.promise; },
     loadMine: () => { calls.push(['mine']); return mine.promise; },
     searchDirectory: (...args) => { calls.push(['search', ...args]); return search.promise; } };
@@ -264,7 +273,7 @@ function phaseHarness(mode) {
   return { api: context.exports.api, calls, release() { mine.resolve(); search.resolve(); } };
 }
 
-test('initial Search starts its public query without waiting for personal metadata; Mine dispatches no public query', async () => {
+test('the explicit Search pipeline starts beside personal metadata; Mine starts no explicit Search query (live projection is a separate port)', async () => {
   for (const mode of ['search', 'mine']) {
     const h = phaseHarness(mode), pending = h.api.readyPhase(); let early;
     try { await settle(); early = [...h.calls]; } finally { h.release(); await pending; }
@@ -337,10 +346,10 @@ test('disposal with a pending Mine queue starts no new private pass after the ac
   worldGate.resolve(); deviceGate.resolve(); appsGate.resolve(); await Promise.all([first, queued]); assert.equal(h.state.calls.length, before); assert.equal(h.environment.mineBusy, false);
 });
 
-test('genuine ready plus personal refs allows the public fast app at a measured field peak of at most six RPCs', async () => {
+test('explicit Search plus personal metadata keeps its measured peak at six RPCs (separate live projection is not included)', async () => {
   const worldGate = deferred(), deviceGate = deferred(), appsGate = deferred(), communitySearchGate = deferred(), peopleSearchGate = deferred(), searchAppGate = deferred();
   const h = harness({ mode: 'search', searchApps: true, worldGate, deviceGate, appGate: () => appsGate.promise, communitySearchGate, peopleSearchGate, searchAppGate });
-  const phase = { exports: {}, mode: 'search', current: h.environment.current, loadInitialMine: h.api.loadMine, loadMine: h.api.loadMine, searchDirectory: h.api.searchDirectory };
+  const phase = { exports: {}, mode: 'search', current: h.environment.current, loadInitialMine: h.api.loadMine, loadMine: h.api.loadMine, searchDirectory: h.api.searchDirectory,refreshLiveApps:async()=>{} };
   vm.createContext(phase); new vm.Script(phases).runInContext(phase);
   const pending = phase.exports.api.readyPhase(); let early;
   try { await settle(); const peak = h.state.maxInFlight; searchAppGate.resolve(); await settle(); early = { peak, visible: hasFreshApp(h), known: h.environment.mineKnownRefs.size }; }

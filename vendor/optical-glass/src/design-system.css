@@ -1,0 +1,148 @@
+:root {
+  --optical-font: Inter, Manrope, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --optical-text: #10232b;
+  --optical-text-muted: #3c535d;
+  --optical-accent: #087f9f;
+  --optical-focus: #087f9f;
+  --optical-readable: rgba(244, 250, 252, 0.82);
+  --optical-readable-strong: rgba(244, 250, 252, 0.94);
+  --optical-edge: rgba(255, 255, 255, 0.62);
+  --optical-shadow: rgba(10, 34, 45, 0.18);
+  --optical-radius-control: 999px;
+  --optical-radius-panel: clamp(24px, 4vw, 48px);
+  --optical-control-size: 44px;
+}
+
+.optical-ui {
+  color: var(--optical-text);
+  font-family: var(--optical-font);
+  font-size: 16px;
+  line-height: 1.45;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.optical-ui[data-optical-tone="dark"] {
+  --optical-text: #f5fbfd;
+  --optical-text-muted: #c5d3d8;
+  --optical-accent: #81e3ff;
+  --optical-focus: #8be7ff;
+  --optical-readable: rgba(8, 24, 32, 0.78);
+  --optical-readable-strong: rgba(8, 24, 32, 0.92);
+  --optical-edge: rgba(255, 255, 255, 0.32);
+  --optical-shadow: rgba(0, 0, 0, 0.34);
+}
+
+.optical-ui :where(button, input, select, textarea) {
+  color: inherit;
+  font: inherit;
+}
+
+.optical-action,
+.optical-ui :where(button, [role="button"]) {
+  min-block-size: var(--optical-control-size);
+  min-inline-size: var(--optical-control-size);
+  touch-action: manipulation;
+}
+
+.optical-action {
+  align-items: center;
+  border: 1px solid var(--optical-edge);
+  border-radius: var(--optical-radius-control);
+  display: inline-flex;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  gap: 0.55rem;
+  justify-content: center;
+  padding-inline: 1rem;
+}
+
+.optical-readable,
+.optical-sheet {
+  background: var(--optical-readable);
+  box-shadow:
+    inset 0 1px 0 var(--optical-edge),
+    0 18px 54px var(--optical-shadow);
+  -webkit-backdrop-filter: blur(22px) saturate(125%);
+  backdrop-filter: blur(22px) saturate(125%);
+}
+
+.optical-readable--strong,
+.optical-sheet {
+  background: var(--optical-readable-strong);
+}
+
+.optical-sheet {
+  border: 1px solid var(--optical-edge);
+  border-radius: var(--optical-radius-panel);
+  color: var(--optical-text);
+  isolation: isolate;
+  max-block-size: min(82dvh, 760px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.optical-caption {
+  color: var(--optical-text-muted);
+  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.875rem);
+  line-height: 1.4;
+}
+
+.optical-ui :where(:focus-visible) {
+  outline: 3px solid var(--optical-focus);
+  outline-offset: 3px;
+}
+
+.optical-debug {
+  display: none !important;
+}
+
+[data-optical-debug="true"] .optical-debug {
+  display: revert !important;
+}
+
+@media (max-width: 720px) {
+  .optical-sheet {
+    border-end-end-radius: 0;
+    border-end-start-radius: 0;
+    inset: auto 0 0;
+    max-block-size: min(84dvh, 720px);
+    position: fixed;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .optical-ui *,
+  .optical-ui *::before,
+  .optical-ui *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-contrast: more), (prefers-reduced-transparency: reduce) {
+  :root {
+    --optical-readable: rgba(249, 252, 253, 0.96);
+    --optical-readable-strong: #f9fcfd;
+    --optical-edge: currentColor;
+  }
+
+  .optical-ui[data-optical-tone="dark"] {
+    --optical-readable: rgba(7, 20, 27, 0.96);
+    --optical-readable-strong: #07141b;
+  }
+}
+
+@media (forced-colors: active) {
+  .optical-readable,
+  .optical-sheet,
+  .optical-action {
+    background: Canvas;
+    border: 2px solid CanvasText;
+    box-shadow: none;
+    color: CanvasText;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

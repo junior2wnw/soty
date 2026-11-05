@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { createAppsService } from '../server/index.mjs';
+const { createAppsService } = await import(process.env.SOTY_APPS_TEST_MODULE ?? '../server/index.mjs');
 import { createRelayIdentitySigner } from '../../human-identity/source-authority.mjs';
 import { createLocalAppsRuntime } from '../../../scripts/agent-modules/local-apps.mjs';
 
@@ -44,6 +44,12 @@ function http(port, path, { origin, cookie, method = 'GET', headers = {}, body }
     req.on('error', reject); req.end(body);
   });
 }
+const memberProof=value=>({frameId:value.frameId,lease:value.lease,revision:value.revision});
+async function eventStream(port,origin,grant){
+  const value={data:[],closed:false},req=request({hostname:'127.0.0.1',port,path:'/events',headers:{host:new URL(origin).host,'x-soty-identity-request':'1','x-soty-window-grant':grant}},res=>{
+    value.status=res.statusCode;res.on('data',data=>value.data.push(data.toString()));res.on('error',()=>{});res.on('close',()=>value.closed=true);
+  });req.on('error',()=>value.closed=true);req.end();value.close=()=>req.destroy();await until(()=>value.data.length>0||value.closed);assert.equal(value.status,200);return value;
+}
 
 for (const [mode, makeRuntime] of [['source', createLocalAppsRuntime], ['released bundle', bundledRuntime]])
 test(`window-bound Root identity and idempotency stay isolated through ${mode}`, { timeout: 20000 }, async t => {
@@ -60,12 +66,15 @@ test(`window-bound Root identity and idempotency stay isolated through ${mode}`,
   await new Promise(done => root.listen(0, '127.0.0.1', done));
   const port = root.address().port, rootOrigin = `http://127.0.0.1:${port}`;
   const owner = { accountId: 'alice', deviceId: 'alice-device' }, bob = { accountId: 'bob', deviceId: 'bob-device' };
-  const revoked = new Set(); let clockOffset = 0;
+  const revoked = new Set(), runtimeWidgets = new Map(), lockedWidgets = new Set(); let clockOffset = 0;
   service = createAppsService({ databasePath: join(directory, 'apps.sqlite'), shellOrigins: [rootOrigin],
     appOriginTemplate: `http://{appId}.localhost:${port}`, namedAppZone: `http://apps.localhost:${port}`,
     actorActive: actor => [owner, bob].some(person => person.accountId === actor?.accountId && person.deviceId === actor?.deviceId) && !revoked.has(actor.deviceId), now: () => Date.now() + clockOffset,
     canAccessCommunity: () => false, isGroupAdmin: () => false, authenticateConnector: async () => true,
     identitySignTimeoutMs: 300,
+    resolveWidgetRuntime: id => runtimeWidgets.get(id) ?? null,
+    checkWidgetLaunch: ({ widgetId }) => { assert.ok(runtimeWidgets.has(widgetId)); return true; },
+    checkWidgetRuntime: ({ widgetId }) => !lockedWidgets.has(widgetId),
     signRelayIdentity: async input => { if (failSigner) throw Object.assign(Error('synthetic'), { code: 'app_identity_unavailable' });
       const proof = await actualSigner(input); if (gate) { gate.enter(); await gate.wait; } return proof; } });
   const identity = { linkId: 'link', hostDeviceId: 'host', connectorId: 'connector', name: 'fixture' };
@@ -99,6 +108,10 @@ test(`window-bound Root identity and idempotency stay isolated through ${mode}`,
       seen.push({ method: req.method, path: req.url, token: req.headers['x-soty-identity'], windowGrant: req.headers['x-soty-window-grant'], key: req.headers['idempotency-key'], authorization: req.headers.authorization });
       void (async () => {
         try { const person = await verifier(req);
+          if(req.url==='/events'){
+            res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-store'});res.write('data: admitted\n\n');
+            const timer=setInterval(()=>res.write('data: next\n\n'),40);res.on('close',()=>clearInterval(timer));return;
+          }
           if (req.url === '/upstream-503') { res.writeHead(503, { 'x-soty-identity-window': 'not-dispatched' }).end('app failure'); return; }
           if (req.method === 'GET' && req.url.startsWith('/receipt?')) {
             const key = new URL(req.url, 'http://fixture.invalid').searchParams.get('key');
@@ -122,7 +135,7 @@ test(`window-bound Root identity and idempotency stay isolated through ${mode}`,
               }
               business.exec('COMMIT');
             } catch (error) { business.exec('ROLLBACK'); throw error; }
-            if (key === 'lost-reply' && !seen.some(item => item.key === key && item.lost)) { seen.at(-1).lost = true; res.destroy(); return; }
+            if (['lost-reply','host-renew-lost-reply'].includes(key) && !seen.some(item => item.key === key && item.lost)) { seen.at(-1).lost = true; res.destroy(); return; }
             res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ subject: person.subject, count })); return;
           }
           if (req.method === 'POST') business.prepare('INSERT INTO records VALUES(?,?,1) ON CONFLICT(issuer,subject) DO UPDATE SET count=count+1').run(person.issuer, person.subject);
@@ -254,6 +267,83 @@ test(`window-bound Root identity and idempotency stay isolated through ${mode}`,
   const publicBefore = apps[0].seen.length;
   assert.equal((await fetchApp({ origin: alias.origin })).status, 503);
   assert.equal(apps[0].seen.length, publicBefore, 'anonymous access never receives an identity proof');
+
+  {
+  const managed=call('apps.launch',{appId:apps[0].app.id,path:'/deep-view',hostSession:true});
+  const managedBoot=await http(port,'/_soty/session',{origin:managed.runtimeOrigin,method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ticket:new URL(managed.launchUrl).hash.slice(1)})});
+  assert.equal(managedBoot.status,200);
+  const managedCookie=managedBoot.headers['set-cookie'].map(value=>value.split(';')[0]).join('; ');
+  const managedCheck=await http(port,'/_soty/session',{origin:managed.runtimeOrigin,cookie:managedCookie,headers:{'x-soty-boot-check':JSON.parse(managedBoot.text).sessionCheck}});assert.equal(managedCheck.status,200);
+  const mainArgs={appId:apps[0].app.id,domainId:managed.entry.domainId,launchBinding:managed.launchBinding,instanceId:'main',runtimeOrigin:managed.runtimeOrigin,hostSession:memberProof(managed.hostSession)};
+  const{hostSession:_mainMember,...withoutMember}=mainArgs;
+  assert.throws(()=>call('apps.relay.identity',withoutMember),/app_identity_window_unavailable/u,'managed main cannot select an arbitrary physical member');
+  assert.throws(()=>call('apps.relay.identity',{...mainArgs,hostSession:{...mainArgs.hostSession,unexpected:true}}),/app_identity_window_unavailable/u);
+  const mainGrant=call('apps.relay.identity',mainArgs).grant,mainHeaders={'x-soty-identity-request':'1','x-soty-window-grant':mainGrant};
+  const whoami=await http(port,'/items?x=1',{origin:managed.runtimeOrigin,headers:mainHeaders});assert.equal(whoami.status,200);assert.equal(JSON.parse(whoami.text).subject,owner.accountId);
+  const mainEvents=await eventStream(port,managed.runtimeOrigin,mainGrant),beforeEvents=mainEvents.data.length;
+  assert.equal((await http(port,'/items?x=1',{origin:managed.entry.origin,headers:mainHeaders})).status,503,'a main-runtime grant never authorizes canonical legacy origin');
+  assert.throws(()=>call('apps.relay.identity',{...mainArgs,runtimeOrigin:managed.entry.origin}),/app_identity_window_unavailable/);
+  const canonicalGrant=issue({...aliceSession,binding:managed.launchBinding});
+  assert.equal((await http(port,'/items?x=1',{origin:managed.runtimeOrigin,headers:{'x-soty-identity-request':'1','x-soty-window-grant':canonicalGrant}})).status,503,'legacy canonical grant cannot select a managed main runtime');
+  const lostKey='host-renew-lost-reply',lostManaged=await http(port,'/idempotent',{origin:managed.runtimeOrigin,method:'POST',headers:{...mainHeaders,'idempotency-key':lostKey},body});
+  assert.equal(lostManaged.status,502);assert.equal(apps[0].seen.filter(value=>value.key===lostKey).length,1);
+  const proof=managed.hostSession,renewalId='managed_main_transport_renew';
+  const renewal=call('apps.session.renew',{appId:apps[0].app.id,frameId:proof.frameId,lease:proof.lease,revision:proof.revision,requestId:renewalId,parentOrigin:rootOrigin,currentEntryPath:managed.entry.path});
+  const renewed=await http(port,'/_soty/session',{origin:managed.runtimeOrigin,cookie:managedCookie,method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ticket:new URL(renewal.launchUrl).hash.slice(1)})});assert.equal(renewed.status,200);
+  const cookies=new Map(managedCookie.split('; ').map(value=>{const at=value.indexOf('=');return[value.slice(0,at),value.slice(at+1)];}));
+  for(const field of renewed.headers['set-cookie']){const part=field.split(';')[0],at=part.indexOf('=');if(/Max-Age=0/.test(field))cookies.delete(part.slice(0,at));else cookies.set(part.slice(0,at),part.slice(at+1));}
+  const renewedCookie=[...cookies].map(([name,value])=>name+'='+value).join('; ');
+  assert.equal((await http(port,'/_soty/session',{origin:managed.runtimeOrigin,cookie:renewedCookie,headers:{'x-soty-boot-check':JSON.parse(renewed.text).sessionCheck}})).status,200);
+  call('apps.session.confirm',{appId:apps[0].app.id,frameId:renewal.hostSession.frameId,lease:renewal.hostSession.lease,revision:renewal.hostSession.revision,requestId:renewalId});
+  assert.throws(()=>call('apps.relay.identity',mainArgs),/app_host_session_conflict/u,'stale member proof cannot issue a new grant after CAS');
+  await until(()=>mainEvents.data.length>beforeEvents);assert.equal(mainEvents.closed,false,'member CAS keeps the exact already-authorized identity SSE');
+  assert.equal((await http(port,'/items?x=1',{origin:managed.runtimeOrigin,headers:mainHeaders})).status,200,'original bounded grant survives own member CAS');
+  assert.equal(apps[0].seen.filter(value=>value.path==='/events').length,1,'CAS must not replay identity Source SSE');
+  apps[0].restartStore();
+  const currentMainArgs={...mainArgs,hostSession:memberProof(renewal.hostSession)},afterRenewGrant=call('apps.relay.identity',currentMainArgs).grant;
+  const durableReceipt=await http(port,'/receipt?key='+lostKey,{origin:managed.runtimeOrigin,headers:{'x-soty-identity-request':'1','x-soty-window-grant':afterRenewGrant}});
+  assert.equal(durableReceipt.status,200);assert.equal(JSON.parse(durableReceipt.text).subject,owner.accountId);
+  assert.equal(apps[0].seen.filter(value=>value.key===lostKey).length,1,'transport renewal does not replay the uncertain Source POST');
+  const duplicateManaged=call('apps.launch',{appId:apps[0].app.id,path:'/deep-view',hostSession:true}),duplicateBoot=await http(port,'/_soty/session',{
+    origin:duplicateManaged.runtimeOrigin,method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ticket:new URL(duplicateManaged.launchUrl).hash.slice(1)})});
+  assert.equal(duplicateBoot.status,200);const duplicateCookie=duplicateBoot.headers['set-cookie'].filter(value=>!value.includes('Max-Age=0')).map(value=>value.split(';')[0]).join('; ');
+  assert.equal((await http(port,'/_soty/session',{origin:duplicateManaged.runtimeOrigin,cookie:duplicateCookie,headers:{'x-soty-boot-check':JSON.parse(duplicateBoot.text).sessionCheck}})).status,200);
+  const duplicateGrant=call('apps.relay.identity',{...currentMainArgs,hostSession:memberProof(duplicateManaged.hostSession)}).grant;
+  const duplicateEvents=await eventStream(port,duplicateManaged.runtimeOrigin,duplicateGrant),duplicateEventsBefore=duplicateEvents.data.length;
+  assert.equal(call('apps.session.close',{appId:apps[0].app.id,...memberProof(renewal.hostSession)}).closed,true);
+  assert.throws(()=>call('apps.relay.identity',currentMainArgs),/app_host_session_closed/u,'closed member proof cannot issue new grant despite another same-family member');
+  await until(()=>mainEvents.closed);assert.equal(duplicateEvents.closed,false);
+  const beforeClosed=apps[0].seen.length;
+  assert.equal((await http(port,'/items?x=1',{origin:managed.runtimeOrigin,headers:mainHeaders})).status,503,'closing A invalidates its original grant');
+  assert.equal((await http(port,'/items?x=1',{origin:managed.runtimeOrigin,headers:{'x-soty-identity-request':'1','x-soty-window-grant':afterRenewGrant}})).status,503,'closing A invalidates its later grant');
+  assert.equal(apps[0].seen.length,beforeClosed,'closed member grants cannot dispatch Source requests');
+  assert.equal((await http(port,'/items?x=1',{origin:duplicateManaged.runtimeOrigin,headers:{'x-soty-identity-request':'1','x-soty-window-grant':duplicateGrant}})).status,200,'B independent grant survives A close');
+  await until(()=>duplicateEvents.data.length>duplicateEventsBefore);duplicateEvents.close();mainEvents.close();
+  }
+
+  // Real HTTP/signing/connector; routing metadata is an explicitly synthetic host-port fixture here.
+  const current = call('apps.launch', { appId: apps[0].app.id }), logical = 'widget-' + randomUUID();
+  runtimeWidgets.set(logical, { widgetId: logical, revision: 1, state: 'active', appId: apps[0].app.id,
+    entry: { domainId: current.entry.domainId, path: current.entry.path },
+    source: { revision: current.launchBinding.targetRevision, digest: current.launchBinding.targetDigest, profile: current.launchBinding.profile } });
+  const widgetLaunch = call('apps.launch', { appId: apps[0].app.id, instanceId: logical });
+  const identityArgs = { appId: apps[0].app.id, domainId: current.entry.domainId, launchBinding: widgetLaunch.launchBinding,
+    instanceId: logical, runtimeOrigin: widgetLaunch.runtimeOrigin };
+  const grant = call('apps.relay.identity', identityArgs).grant;
+  const widgetRequest = { origin: widgetLaunch.runtimeOrigin, headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': grant } };
+  assert.equal((await http(port, '/items?x=1', widgetRequest)).status, 200);
+  const beforeSwaps = apps[0].seen.length;
+  assert.equal((await http(port, '/items?x=1', { ...widgetRequest, origin: current.entry.origin })).status, 503);
+  assert.equal((await http(port, '/items?x=1', { origin: widgetLaunch.runtimeOrigin,
+    headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': issue({ ...aliceSession, binding: current.launchBinding }) } })).status, 503);
+  assert.equal(apps[0].seen.length, beforeSwaps);
+  assert.throws(() => call('apps.relay.identity', { ...identityArgs, runtimeOrigin: current.entry.origin }), /app_widget_runtime_changed/u);
+  const { runtimeOrigin: _runtimeOrigin, ...unpaired } = identityArgs;
+  assert.throws(() => call('apps.relay.identity', unpaired), /app_identity_window_unavailable/u);
+  lockedWidgets.add(logical); service.invalidateWidget({ widgetId: logical });
+  assert.throws(() => call('apps.relay.identity', identityArgs), /apps_widget_runtime_denied/u);
+  assert.equal((await http(port, '/items?x=1', widgetRequest)).status, 503);
+  assert.equal(apps[0].seen.length, beforeSwaps, 'relocked widget window never reaches upstream');
   runtime.stop(); legacyWire = true; runtime.start();
   await until(() => legacyAuthSeen && runtime.status().connected && runtime.status().apps === 2);
   await until(() => { try { call('apps.launch', { appId: apps[0].app.id }); return true; } catch { return false; } });

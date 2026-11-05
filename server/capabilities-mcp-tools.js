@@ -56,14 +56,34 @@ function definitions() {
     annotations: { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: true, openWorldHint: false } }));
 }
 export const MCP_TOOLS = Object.freeze(definitions());
+/** One host-owned metadata catalog feeds both the mounted router and public
+ * protocol discovery. App descriptors cannot append executable Root tools. */
+export function capabilityMcpToolCatalog({externalTools=[],directoryMcp}={}){
+  const tools=[...MCP_TOOLS,...externalTools,...(directoryMcp?.tools??[])];
+  if(tools.length>128||tools.some(tool=>!tool||typeof tool.name!=='string'||!/^[a-z][a-z0-9_]{0,79}$/u.test(tool.name))
+    ||new Set(tools.map(tool=>tool.name)).size!==tools.length)throw new Error('mcp_catalog_invalid');
+  return Object.freeze(tools);
+}
 const checks = new Map(MCP_TOOLS.map(tool => [tool.name, { tool,
   input: validator.getValidator(tool.inputSchema), output: validator.getValidator(tool.outputSchema) }]));
 const catalogCodes = new Set(['invalid_input', 'query_invalid', 'cursor_invalid', 'not_found']);
 const errorResult = code => ({ isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code } }) }] });
 
 /** Request-local actor and invocation reference stay outside SDK authInfo/wire. */
-export function createMcpTools({ service, operations, context, appFeedback }) {
+export function createMcpTools({ service, operations, context, appFeedback,directoryMcp }) {
   const external = createExternalCapabilityOperations({service,origin:context.origin ?? '',appFeedback});
+  const toolCatalog=capabilityMcpToolCatalog({externalTools:service.external?external.tools:[],directoryMcp});
+  const directoryChecks=new Map((directoryMcp?.tools??[]).map(tool=>[tool.name,{tool,input:validator.getValidator(tool.inputSchema)}]));
+  async function directoryCall(params){
+    const check=directoryChecks.get(params.name),args=params.arguments??{};
+    if(Object.keys(params).some(key=>!['name','arguments','_meta'].includes(key))||!check?.input(args).valid)return errorResult('invalid_input');
+    try{
+      context.current();const value=await directoryMcp.call({actor:context.authenticate(),name:params.name,args});
+      context.current();directoryMcp.recheck({actor:context.authenticate(),name:params.name,args,value});
+      context.directoryRead={name:params.name,args,value};
+      return {content:[{type:'text',text:JSON.stringify(value)}],structuredContent:value};
+    }catch(error){return errorResult(/^directory_[a-z_]+$/u.test(error?.code??'')?error.code:operations.failure(error).code);}
+  }
   async function externalCall(params) {
     if(Object.keys(params).some(key=>!['name','arguments','_meta'].includes(key))||!external.check(params.name,params.arguments??{}))return errorResult('invalid_input');
     try {
@@ -78,9 +98,10 @@ export function createMcpTools({ service, operations, context, appFeedback }) {
     list(params) {
       if (params !== undefined && (params === null || typeof params !== 'object'
         || Object.keys(params).some(key => key !== '_meta'))) throw new ProtocolError(INVALID_PARAMS, 'Invalid tool listing parameters');
-      return { tools: service.external ? [...MCP_TOOLS,...external.tools] : MCP_TOOLS };
+      return { tools: toolCatalog };
     },
     call(params) {
+      if(directoryChecks.has(params?.name))return directoryCall(params);
       if(service.external&&external.tools.some(tool=>tool.name===params?.name))return externalCall(params);
       const check = checks.get(params?.name);
       if (!check) throw new ProtocolError(INVALID_PARAMS, 'Unknown tool');

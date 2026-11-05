@@ -15,6 +15,20 @@ export function createPlatformInvitations({ get, all, run, assert, exactArgs, te
   };
   const project = row => ({ id: row.id, createdAt: row.created_at, expiresAt: row.expires_at,
     revokedAt: row.revoked_at, redeemedAt: row.redeemed_at });
+  function validateAdmissionUpdate(args) {
+    exactArgs(args, ['requestId', 'expectedRevision', 'inviteOnly', 'defaultQuota']);
+    assert(Number.isSafeInteger(args.expectedRevision) && args.expectedRevision >= 0 && typeof args.inviteOnly === 'boolean'
+      && Number.isSafeInteger(args.defaultQuota) && args.defaultQuota >= 0 && args.defaultQuota <= 100, 'invalid_arguments');
+    textId(args.requestId);
+  }
+  function readAdmissionReceipt(args, accountId, digest) {
+    assert(admins.has(accountId), 'platform_admin_required');
+    validateAdmissionUpdate(args);
+    const row = get('SELECT * FROM platform_invitation_receipts WHERE account_id=? AND request_id=?', accountId, args.requestId);
+    if (!row) return { found: false };
+    assert(row.operation === 'platform.admission.update' && row.digest === digest, 'platform_request_conflict');
+    return { found: true, result: JSON.parse(row.result_json) };
+  }
   function dispatch(op, args, accountId, digest, timestamp) {
     const manageAllowed = admins.has(accountId), current = policy();
     if (op === 'platform.admission.get') {
@@ -28,10 +42,8 @@ export function createPlatformInvitations({ get, all, run, assert, exactArgs, te
       return { invitations: invitations.map(project), quota: current.quota, used, remaining: Math.max(0, current.quota - used) };
     }
     if (op === 'platform.admission.update') {
-      exactArgs(args, ['requestId', 'expectedRevision', 'inviteOnly', 'defaultQuota']);
       assert(manageAllowed, 'platform_admin_required');
-      assert(Number.isSafeInteger(args.expectedRevision) && args.expectedRevision >= 0 && typeof args.inviteOnly === 'boolean'
-        && Number.isSafeInteger(args.defaultQuota) && args.defaultQuota >= 0 && args.defaultQuota <= 100, 'invalid_arguments');
+      validateAdmissionUpdate(args);
     } else if (op === 'platform.invites.issue') {
       exactArgs(args, ['requestId', 'token']); tokenHash(args.token);
     } else { exactArgs(args, ['requestId', 'invitationId']); textId(args.invitationId); }
@@ -70,5 +82,5 @@ export function createPlatformInvitations({ get, all, run, assert, exactArgs, te
     // Account insert, token consumption and device installation share one transaction.
     run('UPDATE platform_invitations SET redeemed_at=?,redeemed_account_id=? WHERE id=?', timestamp, accountId, row.id);
   }
-  return { dispatch, admit };
+  return { dispatch, admit, readAdmissionReceipt };
 }

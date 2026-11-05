@@ -73,6 +73,25 @@ const scopedResponses = (issued = {}) => [
   response({schema:'soty.source-session-continuation.v1',ready:true}),
 ];
 
+test('ordinary hidden host renewal performs cookie check and correlated wake only, without Source continuation or navigation',async()=>{
+  const requestId='ordinary_renewal_2026',parentOrigin='https://soty.example';
+  const env=browser(renderBootPage({shellUrl,hostRenewal:true}),{framed:true,responses:[
+    response({ok:true,entryPath:'/',sessionCheck,hostSessionRenewal:true,hostSessionRequestId:requestId,hostSessionParentOrigin:parentOrigin}),response({ok:true,sessionCheck})]});
+  await flush();await flush();
+  assert.deepEqual(env.calls.map(call=>[call.url,call.options.method]),[['/_soty/session','POST'],['/_soty/session','GET']]);
+  assert.deepEqual(env.navigations,[]);
+  assert.deepEqual(env.parentMessages,[{origin:parentOrigin,data:{schema:'soty.app-host-session-wakeup.v1',requestId}}]);
+  assert.equal(env.forbidden.storageReads,0);assert.equal(env.forbidden.telemetryCalls,0);
+});
+
+test('ordinary hidden renewal refuses malformed or foreign wake metadata and cookie-check failure without navigating',async()=>{
+  for(const change of[{hostSessionParentOrigin:'https://foreign.example'},{hostSessionRenewal:false},{hostSessionRequestId:'bad'}]){
+    const env=browser(renderBootPage({shellUrl,hostRenewal:true}),{framed:true,responses:[response({ok:true,entryPath:'/',sessionCheck,hostSessionRenewal:true,hostSessionRequestId:'ordinary_renewal_2026',hostSessionParentOrigin:'https://soty.example',...change}),response({ok:true,sessionCheck})]});
+    await flush();await flush();assert.deepEqual(env.navigations,[]);assert.deepEqual(env.parentMessages,[]);
+  }
+  assert.throws(()=>renderBootPage({shellUrl,hostRenewal:true,scoped:true}),/invalid_host_renewal/);
+});
+
 test('selected boot preserves the document fragment after the private frame query, including external top-level entry', async () => {
   const path = '/embed#document=pag_x&block=hero&invite=opaque';
   for (const framed of [false, true]) for (const withFrame of [false, true]) {
@@ -154,7 +173,9 @@ test('correlated observation closes on pagehide/expiry and cannot revive from BF
 
 test('only an initial scoped boot renders the initially inert native continuation link',()=>{
   const scoped = renderBootPage({shellUrl,scoped:true});
-  assert.match(scoped, /<a class="action action-primary" id="native-action" hidden>Продолжить открытие<\/a>/u);
+  const native=scoped.match(/<a\b[^>]*\bid="native-action"[^>]*>Продолжить открытие<\/a>/u)?.[0]??'';
+  assert.match(native,/\bclass="action action-primary"/u);assert.match(native,/\bdata-glass-role="accent"/u);assert.match(native,/\bhidden(?:\s|>)/u);
+  assert.doesNotMatch(native,/\bhref\s*=/u);
   assert.doesNotMatch(scoped, /id="native-action"[^>]*href=/u);
   for(const page of [renderBootPage({shellUrl}),renderStatusPage({shellUrl}),renderBootPage({shellUrl,scoped:true,renewal:true,parentOrigin:'https://soty.example'})]) {
     assert.doesNotMatch(page,/id="native-action"/u);
@@ -316,15 +337,16 @@ test('diagnosed scoped timeout still aborts one existing request and shows its f
   assert.deepEqual(env.forbidden,{storageReads:0,telemetryCalls:0});env.emit('pagehide');
 });
 
-test('renderers use shared graphite palette and regular rounded hex geometry, with narrow and reduced-motion styles', () => {
+test('renderers use shared static working Glass and regular rounded hex geometry, with narrow and reduced-motion styles', () => {
   const page = renderBootPage({ shellUrl, nonce });
   assert.match(page, /^<!doctype html><html lang="ru">/u);
-  assert.ok(page.includes(`--sw-bg:${createPalette('dark', 50)['--sw-bg']}`));
+  assert.equal(page.includes(`--sw-bg:${createPalette('dark', 50)['--sw-bg']}`),false);
+  assert.match(page,/<body class="glass-ui" data-glass-material="working" data-glass-render-mode="static" data-glass-tone="light" data-glass-role="panel">/u);
   assert.ok(page.includes(roundedHexPath(10, undefined, { x: 11, y: 10 })));
   assert.match(page, /viewBox="0 0 [0-9.]+ [0-9.]+"/u);
   assert.match(page, /height:auto/u); assert.match(page, /prefers-reduced-motion:reduce/u);
   assert.match(page, /max-width:359px/u); assert.match(page, /max-height:440px/u);
-  assert.match(page, /@media\(max-height:280px\) and \(min-width:480px\)/u);
+  assert.match(page, /@media\(max-height:280px\)/u);
   assert.match(page, /body\[data-framed="true"\] \.brand\{display:none\}/u);
   assert.match(page, /min-height:44px/u);
   assert.match(page, /:focus-visible/u); assert.match(page, /min-height:46px/u);

@@ -84,7 +84,8 @@ test('actual SDK modern discovery and legacy initialize/list expose checked tool
     const listed = await wire(f, f.identity.token, envelope('tools/list', {}, version), { version });
     const tools = result(listed).tools;
     assert.deepEqual(tools.map(tool => tool.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide',
-      'apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query']);
+      'apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query',
+      'app_directory_search', 'app_directory_get', 'app_directory_modules', 'app_directory_query']);
     assert.equal(listed.headers['mcp-session-id'], undefined);
     assert.equal(listed.headers['cache-control'], 'no-store');
     assert.match(listed.headers['content-type'], version === MODERN ? /^application\/json/u : /^text\/event-stream/u);

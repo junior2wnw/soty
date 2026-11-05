@@ -27,7 +27,7 @@ function matchesOrigin(authority, origin) {
 }
 const within = (hostname, suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`);
 
-export function createHostClassifier({ db, shellOrigins = [], allowShellZoneRoot = false }) {
+export function createHostClassifier({ db, shellOrigins = [], allowShellZoneRoot = false, resolveRuntimeHost }) {
   const findDomain = db.prepare('SELECT id,app_id,hostname,origin,role,state FROM app_domains WHERE hostname=?');
   const findZones = db.prepare('SELECT kind,suffix FROM app_domain_zones');
   return {
@@ -40,6 +40,10 @@ export function createHostClassifier({ db, shellOrigins = [], allowShellZoneRoot
       if (domain) return matchesOrigin(authority, domain.origin)
         ? { kind: domain.role, domainId: domain.id, appId: domain.app_id, origin: domain.origin, hostname: domain.hostname, state: domain.state }
         : { kind: 'unknown-app-zone' };
+      // Trusted runtime routing uses existing app/domain/widget metadata only;
+      // a derived hostname is a public selector, never session authority.
+      const runtime = resolveRuntimeHost?.(authority);
+      if (runtime) return matchesOrigin(authority, runtime.origin) ? runtime : { kind: 'unknown-app-zone' };
       const zones = findZones.all();
       const named = zones.some(zone => zone.kind === 'named' && within(authority.hostname, zone.suffix));
       if (shellOrigins.some(origin => matchesOrigin(authority, origin)) && (!named || (allowShellZoneRoot
@@ -52,7 +56,8 @@ export function createHostClassifier({ db, shellOrigins = [], allowShellZoneRoot
       const domain = findDomain.get(hostname);
       // Certificates serve retained status pages as well as enabled apps.
       // They confer no runtime, session, app or account authorization.
-      return Boolean(domain && new URL(domain.origin).protocol === 'https:');
+      return Boolean(domain && new URL(domain.origin).protocol === 'https:'
+        || !domain && resolveRuntimeHost?.({ hostname, port: '' }, { tls: true })?.origin?.startsWith('https://'));
     },
   };
 }

@@ -23,3 +23,6 @@
 /test-fixtures/planner-source-ci/** text eol=lf
 /test-fixtures/pinned-history/** -text
 /modules/personal-agent/runtime/vendor/agent-runtime-core.ts text eol=lf
+/vendor/uplot/** -text
+/modules/apps/test/fixtures/source-host-before-clock-margin.mjs -text
+/src/world/test-fixtures/canvas-vault-renderer-before-locked-preview.ts.txt -text

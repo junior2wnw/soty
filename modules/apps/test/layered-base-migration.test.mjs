@@ -105,7 +105,7 @@ for(const [from,to] of [[9,10],[9,11],[10,11],[12,13],[12,14],[13,14]])test(`exp
   assert.equal(inspectAppsSchema(f.db),'v'+to);preserved(f.db,before);
   assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);assert.equal(f.db.prepare('PRAGMA foreign_keys').get().foreign_keys,1);
   assert.equal(f.db.isTransaction,false);assert.deepEqual(readFileSync(f.file),main,'DDL/marker commit stays in WAL');
-  const observed=await readStorageFormat(f.root);assert.equal(observed.apps,to);assert.equal(observed.schema,'soty.storage-format.v7');
+  const observed=await readStorageFormat(f.root);assert.equal(observed.apps,to);assert.equal(observed.schema,'soty.storage-format.v10');
   assert.equal(f.db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name='layered_runtime_targets_migration'").get().n,0);
   const admissions=f.db.prepare('SELECT count(*) AS n FROM app_scoped_embed_admissions').get().n;
   assert.equal(admissions,baseOf(from)>=7?1:0,'DDL never installs an approved profile/admission');

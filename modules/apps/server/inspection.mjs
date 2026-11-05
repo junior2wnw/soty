@@ -1,6 +1,7 @@
 import { AppsError, assertApps, appId, cleanGrants, connectorKey, runtimePath, textId } from './protocol.mjs';
 import { normalizeNamedAppZone } from './domain-policy.mjs';
 import { selectedRuntimeProfile } from './schema.mjs';
+import { SELF_IP_PROFILE, readRuntimeEndpoint, targetFromRow } from './endpoint-targets.mjs';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isAsync = value => value && typeof value.then === 'function';
@@ -120,8 +121,7 @@ export function createAppInspection({ db, assertActor, domains, publications, in
         const device = deviceView(db.prepare('SELECT * FROM app_devices WHERE connector_key=?').get(target.connector_key), target, app.owner_account_id);
         const sourceContext = Object.freeze({
           app: Object.freeze({ id, ownerAccountId: app.owner_account_id, state: app.state, revision: app.revision }),
-          target: Object.freeze({ appId: id, revision: target.revision, digest: target.digest, profile: target.profile,
-            connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path }),
+          target: Object.freeze(targetFromRow(db, target)),
           device,
           requiredBindingVersion: policy.requiredBindingVersion,
         });
@@ -192,6 +192,7 @@ export function createAppInspection({ db, assertActor, domains, publications, in
             activeDomainIds: [...policy.activeDomainIds], activeTargetRevision: policy.activeTargetRevision },
           source: { hostDeviceId: device.identity.hostDeviceId, connectorId: device.identity.connectorId, deviceName: device.name,
             port: target.port, entryPath: target.entry_path, revision: target.revision, digest: target.digest, profile: target.profile,
+            ...(target.profile === SELF_IP_PROFILE ? { endpoint: readRuntimeEndpoint(db, target) } : {}),
             ...(scoped ? { launchEntry } : {}),
             requiredBindingVersion: policy.requiredBindingVersion, binding, observation, sourceEntryActivation: true,
             ...(integrations.length ? { integrations } : {}) },

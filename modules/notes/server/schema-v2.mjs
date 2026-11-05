@@ -130,7 +130,7 @@ export function inspectNotesSchema(db, projectId) {
   return Object.freeze({ schemaVersion: version, registryId: metadata.registry_id ?? null });
 }
 
-function validateRows(db, version) {
+export function validateNotesRows(db, version, { sealed = () => false } = {}) {
   // Preserve the v1 integrity check. WAL mode is established before this check:
   // the DELETE-check -> WAL-switch sequence blocks an immediate checkpoint on
   // the tested SQLite runtime (see the independent diagnostic fixture).
@@ -144,7 +144,7 @@ function validateRows(db, version) {
       assert(safe(row.rowid) && row.rowid > 0 && safe(row.revision) && row.revision > 0
         && safe(row.bytes) && safe(row.created_at) && safe(row.updated_at));
       assert(typeof row.preview === 'string' && row.preview.length <= 180);
-      if (row.state === 'deleted') {
+      if (row.state === 'deleted' || sealed(row)) {
         assert(row.title === '' && row.body === '' && row.items === '[]' && row.preview === ''
           && row.color === 'plain' && row.pinned === 0 && row.bytes === 0);
         assert(!fts.get(row.rowid));
@@ -166,7 +166,7 @@ function validateRows(db, version) {
     const counted = usage.get(row.account_id);
     for (const key of ['identities', 'bytes', 'active', 'archived', 'trashed']) assert(safe(row[key]) && row[key] === counted[key]);
   }
-  if (version !== 2) return;
+  if (version < 2) return;
   const note = db.prepare('SELECT revision,created_at FROM notes WHERE account_id=? AND id=?');
   for (const row of db.prepare('SELECT * FROM note_native_creates ORDER BY source_store_id,invocation_id').iterate()) {
     const suffix = hash(JSON.stringify(['soty.native-note.v1', row.source_store_id, row.invocation_id]));
@@ -176,9 +176,10 @@ function validateRows(db, version) {
   }
 }
 
-export function migrateNotes(db, projectId, options = {}) {
+export function migrateNotes(db, projectId, options = {}, finishMigration) {
   project(projectId);
   const allowNativeMigration = migrationOption(options);
+  assert(finishMigration===undefined||typeof finishMigration==='function'&&!['AsyncFunction','AsyncGeneratorFunction'].includes(finishMigration.constructor?.name),'notes_invalid_arguments');
   assert(!db.isTransaction, 'notes_nested_transaction');
   // Reject unknown/partial formats before BEGIN or any persistent PRAGMA.
   inspectNotesSchema(db, projectId);
@@ -187,7 +188,7 @@ export function migrateNotes(db, projectId, options = {}) {
   let result;
   try {
     let state = inspectNotesSchema(db, projectId);
-    if (state.schemaVersion !== 0) validateRows(db, state.schemaVersion);
+    if (state.schemaVersion !== 0) validateNotesRows(db, state.schemaVersion);
     if (state.schemaVersion === 0) {
       db.exec(V1_DDL);
       const insert = db.prepare('INSERT INTO notes_meta(key,value) VALUES(?,?)');
@@ -203,6 +204,7 @@ export function migrateNotes(db, projectId, options = {}) {
       db.exec('PRAGMA user_version=2');
     }
     result = inspectNotesSchema(db, projectId);
+    if(finishMigration){result=finishMigration(result);assert(result&&typeof result.then!=='function'&&db.isTransaction,'notes_async_transaction_forbidden');}
     // Existing rows were checked once before DDL; the new proof table is empty.
     db.exec('COMMIT');
   } catch (error) {

@@ -83,7 +83,7 @@ export function createNativeNotesCoordinator({ db, projectId, registryId, schema
   }
   function notesIdentity() {
     const value = synchronous(notes.storageIdentity(), 'native_unavailable');
-    assert(value && value.schemaVersion === 2
+    assert(value && [2,3].includes(value.schemaVersion)
       && typeof value.registryId === 'string' && /^[a-f0-9]{32}$/u.test(value.registryId), 'native_unavailable');
     assert(value.projectId === projectId, 'native_store_mismatch');
     return value.registryId;

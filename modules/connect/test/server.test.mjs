@@ -614,7 +614,7 @@ test('compatibility-only bridge preserves schema3 and enforces schema4 admission
  expectError(await invoke(f.service,owner,'platform.admission.get'),'unsupported_operation');
  const bridgeAgain=f.open({initializePlatformInvitations:false});await boot(bridgeAgain,owner);assert.deepEqual(read(),before);
  const final=f.open({initializePlatformInvitations:true,platformAdminAccountIds:[original.accountId]});
- assert.deepEqual(read().accounts,before.accounts);assert.deepEqual(read().devices,before.devices);assert.equal(read().version,4);
+ assert.deepEqual(read().accounts,before.accounts);assert.deepEqual(read().devices,before.devices);assert.equal(read().version,5);
  assert.equal((await invoke(final,owner,'platform.admission.update',{requestId:'turn_on',expectedRevision:0,inviteOnly:true,defaultQuota:3})).ok,true);
  const token=randomBytes(32).toString('base64url');await invoke(final,owner,'platform.invites.issue',{requestId:'prepared_before_rollback',token});
  final.close();f.service.close();bridgeAgain.close();
@@ -624,6 +624,6 @@ test('compatibility-only bridge preserves schema3 and enforces schema4 admission
  expectError(await invoke(rollback,newcomer,'bootstrap',args),'platform_invitation_required');
  const joined=await invoke(rollback,newcomer,'bootstrap',{...args,invitationToken:token});assert.equal(joined.ok,true);
  assert.equal((await boot(rollback,owner)).accountId,original.accountId);
- const preserved=read();assert.equal(preserved.version,4);assert.deepEqual(preserved.accounts.find(x=>x.id===original.accountId),before.accounts[0]);
+ const preserved=read();assert.equal(preserved.version,5);assert.deepEqual(preserved.accounts.find(x=>x.id===original.accountId),before.accounts[0]);
  const oldReader=new DatabaseSync(f.databasePath);assert.throws(()=>migrateDatabase(oldReader,PROJECT,{supportedVersion:3,readerEpoch:1}),/connect_reader_too_old/u);oldReader.close();
 });

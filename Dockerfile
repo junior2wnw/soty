@@ -26,6 +26,7 @@ RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
   && pnpm run typecheck && SOTY_CADDY_BIN=/usr/local/bin/soty-test-caddy pnpm run app:release:test && pnpm run connect:test \
   && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run platform:test \
   && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_GATEWAY_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run world:test \
+  && node --test --test-concurrency=1 modules/monitoring/test/*.test.mjs server/test/monitoring-*.test.mjs src/world/monitoring-*.test.mjs \
   && pnpm run dev:test && node --test scripts/archive-source.test.mjs && pnpm run identity:selftest && pnpm run inference:selftest \
   && node --test deploy/ui/*.test.mjs \
   && SOTY_UI_CADDY_BINARY=/usr/local/bin/soty-test-caddy node --test --test-concurrency=1 deploy/ui/*.acceptance.mjs \
@@ -58,6 +59,8 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/contracts ./contracts
 COPY --from=build /app/modules ./modules
+COPY --from=build /app/public/agents ./public/agents
+COPY --from=build /app/vendor/optical-glass/src ./vendor/optical-glass/src
 COPY --from=build /app/services/ai-gateway/packages/soty-bridge ./services/ai-gateway/packages/soty-bridge
 COPY --from=build /app/src/transport/human-call-ice.mjs ./src/transport/human-call-ice.mjs
 COPY --from=build /app/src/world/feedback-media.mjs ./src/world/feedback-media.mjs
@@ -69,7 +72,7 @@ ARG REVISION
 LABEL org.opencontainers.image.revision=${REVISION}
 LABEL io.soty.account-ai="1"
 LABEL io.soty.universal.legacy="${LEGACY_UNIVERSAL_MODE}"
-LABEL io.soty.storage.readers="{\"version\":7,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],\"notes\":[1,2],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1,2,3],\"connect\":[3,4],\"world\":[6,7]}}"
+LABEL io.soty.storage.readers="{\"version\":10,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],\"notes\":[1,2,3],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1,2,3],\"connect\":[3,4,5],\"world\":[6,7],\"canvasObjects\":[1,2],\"canvasWidgets\":[1],\"canvasVault\":[1,2],\"canvasPages\":[1,2],\"materials\":[1,2],\"invitations\":[1,2],\"referrals\":[1],\"appAgentDirectory\":[1],\"universalPublication\":[1],\"appsEndpoint\":[1],\"appsFrameContinuity\":[1,2],\"monitoring\":[1]}}"
 VOLUME ["/data"]
 EXPOSE 8080
 CMD ["node", "server/index.js"]

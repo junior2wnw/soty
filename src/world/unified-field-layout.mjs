@@ -1,6 +1,7 @@
 import { axialToPixel, pixelToAxial, hexVertices, SQRT3 } from '../geometry/hex.mjs';
-import { fieldEntityKey, FIELD_LIMITS } from '../../modules/field/contract.mjs';
+import { fieldEntityKey, FIELD_LIMITS, fieldShortcutPlacement, validateFieldPlacement, convertFieldDocumentToV2 } from '../../modules/field/contract.mjs';
 import { softContourPath } from './field-map-layout.mjs';
+import {validateFieldPresentation,fieldPresentationPoints} from './unified-field-presentation.mjs';
 
 export const UNIFIED_FIELD_METRICS = Object.freeze({ radius: 120, gap: 24, placementRadius: 6, placementGap: .5, person: 96, personLabel: 26,
   personLabelWidth: 120, deviceWidth: 208, deviceHeight: 44, contextTitleWidth: 280, contextTitleHeight: 76,
@@ -41,12 +42,15 @@ export function fieldFootprint(kind, point, metrics = UNIFIED_FIELD_METRICS) {
   return hexVertices(metrics.radius).map(p => ({ x: cx - p.y, y: cy + p.x }));
 }
 function nodeGeometry(shortcut, context, entity, metrics) {
-  const local = fieldSlotToPoint(shortcut.slot, metrics), cx = context.x + local.x, cy = context.y + local.y;
+  const placement=fieldShortcutPlacement(shortcut),free=placement.kind==='free';
+  const local = free?placement:fieldSlotToPoint(placement.slot, metrics), cx = context.x + local.x, cy = context.y + local.y;
   const kind = entity.entity.kind;
-  const width = metrics.radius * SQRT3, height = metrics.radius * 2;
-  const footprint = fieldFootprint(kind, { x: cx, y: cy }, metrics);
+  const width = free?placement.width:metrics.radius * SQRT3, height = free?placement.height:metrics.radius * 2;
+  const presentation=validateFieldPresentation(entity.presentation)??{shape:free?'rect':'hex'};
+  const footprint = !free&&presentation.shape==='hex'?fieldFootprint(kind, { x: cx, y: cy }, metrics)
+    :fieldPresentationPoints(presentation).map(point=>({x:cx+(point.x-.5)*width,y:cy+(point.y-.5)*height}));
   const top = cy - height / 2;
-  return { shortcutId: shortcut.shortcutId, entity, contextId: context.contextId, slot: [...shortcut.slot], kind,
+  return { shortcutId: shortcut.shortcutId, entity, contextId: context.contextId, slot: free?fieldPointToSlot(local,metrics):[...placement.slot], placement,presentation,kind,
     cx, cy, x: cx - width / 2, y: top, width, height, footprint, bounds: fieldBounds(footprint) };
 }
 
@@ -57,7 +61,7 @@ export function layoutUnifiedField(scene, entities, metrics = UNIFIED_FIELD_METR
   const nodes = [], contexts = [], contextById = new Map(scene.contexts.map(context => [context.contextId, context]));
   for (const shortcut of scene.shortcuts) {
     const entity = byEntity.get(fieldEntityKey(shortcut.entity)), context = contextById.get(shortcut.contextId);
-    if (entity && context) nodes.push(nodeGeometry(shortcut, context, entity, metrics));
+    if (entity && context && entity.hidden!==true) nodes.push(nodeGeometry(shortcut, context, entity, metrics));
   }
   for (const context of scene.contexts) {
     const children = nodes.filter(node => node.contextId === context.contextId);
@@ -110,15 +114,26 @@ export function nearestFieldNode(nodes, currentId, direction) {
 }
 
 export function fieldMovePreview(document, entities, shortcutId, target, metrics = UNIFIED_FIELD_METRICS) {
+  if(target?.placement){
+    try {
+      const placement=validateFieldPlacement(target.placement);if(placement.kind!=='free')return{valid:false,reason:'missing',target};
+      const scene=convertFieldDocumentToV2(document),source=scene.shortcuts.find(item=>item.shortcutId===shortcutId);
+      if(!source||!scene.contexts.some(item=>item.contextId===target.contextId))return{valid:false,reason:'missing',target};
+      source.contextId=target.contextId;source.placement=placement;
+      // Free placement is deliberately composable/overlapping. Automatic hex placement still avoids occupied content.
+      return{valid:true,reason:'free',target,layout:layoutUnifiedField(scene,entities,metrics)};
+    }catch{return{valid:false,reason:'missing',target};}
+  }
   if (!target || !Array.isArray(target.slot) || target.slot.length !== 2 || !target.slot.every(value => Number.isSafeInteger(value) && Math.abs(value) <= FIELD_LIMITS.slotCoordinate))
     return { valid: false, reason: 'missing', target };
   const source = document.shortcuts.find(item => item.shortcutId === shortcutId);
   if (!source || !document.contexts.some(item => item.contextId === target.contextId)) return { valid: false, reason: 'missing', target };
   const occupied = document.shortcuts.find(item => item.shortcutId !== shortcutId && item.contextId === target.contextId
-    && item.slot[0] === target.slot[0] && item.slot[1] === target.slot[1]);
+    && fieldShortcutPlacement(item).kind==='hex' && fieldShortcutPlacement(item).slot[0] === target.slot[0] && fieldShortcutPlacement(item).slot[1] === target.slot[1]);
   const scene = structuredClone(document), moved = scene.shortcuts.find(item => item.shortcutId === shortcutId);
-  if (occupied) { const other = scene.shortcuts.find(item => item.shortcutId === occupied.shortcutId); other.contextId = source.contextId; other.slot = [...source.slot]; }
-  moved.contextId = target.contextId; moved.slot = [...target.slot];
+  if (occupied) { const other = scene.shortcuts.find(item => item.shortcutId === occupied.shortcutId); other.contextId = source.contextId;
+    if(scene.schema==='soty.field.v1')other.slot=[...source.slot];else other.placement=fieldShortcutPlacement(source); }
+  moved.contextId = target.contextId;if(scene.schema==='soty.field.v1')moved.slot=[...target.slot];else moved.placement={kind:'hex',slot:[...target.slot]};
   const layout = layoutUnifiedField(scene, entities, metrics), changed = new Set([shortcutId, occupied?.shortcutId].filter(Boolean));
   for (const node of layout.nodes.filter(item => changed.has(item.shortcutId))) {
     if (layout.nodes.some(other => other.shortcutId !== node.shortcutId && fieldPolygonsOverlap(node.footprint, other.footprint, 10)))

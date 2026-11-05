@@ -1,12 +1,17 @@
-import { fieldEntityKey, validateFieldEntity } from '../../modules/field/contract.mjs';
-import type { FieldDocument, FieldEntityRef as FieldEntity } from '../../modules/field/contract.mjs';
+import { fieldEntityKey, validateAnyFieldEntity as validateFieldEntity } from '../../modules/field/contract.mjs';
+import type { AnyFieldDocument as FieldDocument, AnyFieldEntityRef as FieldEntity } from '../../modules/field/contract.mjs';
 import type { WorldCommunity, WorldProfile } from './types';
+import type {CanvasProjection} from './canvas-field-content';
+import {ownerRepresentation,type CanvasMask} from '../../modules/canvas-objects/contract.mjs';
 
-export interface DirectoryApi { request<T>(operation: string, args?: Record<string, unknown>): Promise<T> }
+export interface DirectoryApi { request<T>(operation: string, args?: Record<string, unknown>,options?:{signal?:AbortSignal}): Promise<T> }
 export interface DirectoryEntity {
   entity: FieldEntity; title: string; description?: string; symbol?: string; color?: string; avatarUrl?: string; avatarRevision?: number | null; coverKey?: string;
   source: 'public' | 'member' | 'owner' | 'builtin'; updatedAt?: number; unreadCount?: number; online?: boolean;
   personAction?: 'chat' | 'profile';
+  presentation?:CanvasMask;
+  hidden?:boolean;
+  ownerRepresents?:FieldEntity[];
 }
 export interface DirectoryApp {
   id: string; name: string; ownerAccountId: string; state: 'ready' | 'starting' | 'stopped' | 'offline';
@@ -16,9 +21,10 @@ export interface DirectoryApp {
 export interface DirectoryDevice { hostDeviceId: string; connectorId: string; name: string; online: boolean; claimed: boolean; bindingVersion?: number | null }
 export interface DirectoryContact { kind: 'contact'; relationshipId: string; peerAccountId: string; label: string; createdAt: number }
 export type DirectoryPerson = Pick<WorldProfile, 'profileId' | 'displayName' | 'avatarColor' | 'revision'> & Partial<WorldProfile>;
-export type DirectoryRecord = WorldProfile | DirectoryPerson | WorldCommunity | DirectoryApp | DirectoryDevice | DirectoryContact;
+export type DirectoryRecord = WorldProfile | DirectoryPerson | WorldCommunity | DirectoryApp | DirectoryDevice | DirectoryContact | CanvasProjection;
 export interface DirectoryPage { items: DirectoryEntity[]; cursor: string | null; status: 'ready' | 'partial' | 'offline'; errors: { source: string; code: string }[] }
 export interface DirectoryProgress { source: DirectorySource; items: DirectoryEntity[]; errors: DirectoryPage['errors'] }
+export interface DirectoryObjectMetadata {objectId:string;ownerRepresents?:FieldEntity[]}
 interface WorldPage { people: WorldProfile[]; communities: WorldCommunity[]; nextCursor: string | null }
 interface AppPage { apps: DirectoryApp[]; nextCursor: string | null }
 type DirectorySource = 'communities' | 'people' | 'apps' | 'contacts' | 'devices';
@@ -195,10 +201,22 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
     return { items, cursor: sources.some(source => !continuation.sources[source]!.done) ? encode(continuation) : null,
       status: errors.length ? items.length ? 'partial' : 'offline' : 'ready', errors };
   }
-  async function resolve(refs: FieldEntity[]): Promise<{ items: DirectoryEntity[]; unavailable: FieldEntity[]; errors: DirectoryPage['errors'] }> {
+  async function resolve(refs: FieldEntity[]): Promise<{ items: DirectoryEntity[]; unavailable: FieldEntity[]; errors: DirectoryPage['errors'];objectMetadata:DirectoryObjectMetadata[] }> {
     check(); if (!Array.isArray(refs) || refs.length > 256) fail('invalid_directory_entities');
     const unique = [...new Map(refs.map(ref => { const entity = validateFieldEntity(ref); return [fieldEntityKey(entity), entity]; })).values()];
-    const items: DirectoryEntity[] = [], unavailable: FieldEntity[] = [], errors: DirectoryPage['errors'] = [];
+    const items: DirectoryEntity[] = [], unavailable: FieldEntity[] = [], errors: DirectoryPage['errors'] = [],objectMetadata:DirectoryObjectMetadata[]=[];
+    const objects=unique.filter(ref=>ref.kind==='object');
+    for(let offset=0;offset<objects.length;offset+=40){
+      const batch=objects.slice(offset,offset+40);
+      try{
+        const result=await request<{items:CanvasProjection[]}>('canvas.objects.project',{expectedAccountId:accountId,objectIds:batch.map(ref=>ref.id)});check();
+        const byId=new Map(result.items.map(value=>[value.objectId,value]));
+        for(const ref of batch){const value=byId.get(ref.id),related=value?.ownerRepresents===undefined?{}:{ownerRepresents:ownerRepresentation(value.ownerRepresents)};objectMetadata.push({objectId:ref.id,...related});if(!value?.available){records.delete(fieldEntityKey(ref));if(value?.hidden===true)items.push({entity:ref,title:'Скрытый объект',source:'owner',hidden:true,...related});else unavailable.push(ref);continue;}
+          const widget=value.view?.kind==='widget'?value.view:null;
+          remember(ref,value);items.push({entity:ref,...related,title:widget?.app.name??(value.view&&'title'in value.view?value.view.title:undefined)??(value.protection?.kind==='password'?'Под паролем':'Объект'),
+            source:(widget?.canRefresh||value.view&&'canEdit'in value.view&&value.view.canEdit)?'owner':'member',...(value.presentation?{presentation:value.presentation.mask}:{}),...(value.revision===undefined?{}:{updatedAt:value.revision})});}
+      }catch(error){check();errors.push({source:'objects',code:code(error)});for(const ref of batch){records.delete(fieldEntityKey(ref));unavailable.push(ref);}}
+    }
     for (const kind of ['world', 'apps'] as const) {
       const candidates = unique.filter(ref => kind === 'world' ? ['person', 'community'].includes(ref.kind) : ref.kind === 'app');
       const selected = candidates.filter(ref => {
@@ -237,7 +255,7 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
         }
       } catch (error) { check(); errors.push({ source: 'contacts', code: code(error) }); }
     }
-    check(); return { items, unavailable, errors };
+    check(); return { items, unavailable, errors,objectMetadata };
   }
   return Object.freeze({
     search: (options: { query?: string; kinds?: string[]; cursor?: string; limit?: number; onProgress?: (progress: DirectoryProgress) => void } = {}) => page({ ...options, mode: 'search' }),

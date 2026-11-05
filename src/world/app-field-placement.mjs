@@ -1,4 +1,4 @@
-import { createFieldDocument, validateFieldDocument, validateFieldEntity, fieldEntityKey } from '../../modules/field/contract.mjs';
+import { createFieldDocument, validateAnyFieldDocument as validateFieldDocument, validateAnyFieldEntity as validateFieldEntity, fieldEntityKey } from '../../modules/field/contract.mjs';
 import { applyFieldCommand, nextFieldSlot } from './unified-field-state.mjs';
 
 const APP_ID = /^app-[a-f0-9]{32}$/u;

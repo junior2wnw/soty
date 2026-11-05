@@ -6,9 +6,17 @@ import { createConnectorScopedFactory } from '../scoped-embed/connector-host.mjs
 import { createSourceAuthorityClient } from '../scoped-embed/source-authority-client.mjs';
 import { selectedResourceProfile } from '../scoped-embed/resource-profile.mjs';
 import { HIVE_SELECTED_SOURCE } from '../scoped-embed/resource-route-adapters.mjs';
+import { scopedEmbedProfile } from '../scoped-embed/profile.mjs';
+import { createSourceAuthorityClient as packagedSourceClient } from '../../../test-fixtures/planner-source-ci/server/soty-source-host.mjs';
+import { createSourceAuthorityClient as oldPackagedSourceClient } from './fixtures/source-host-before-clock-margin.mjs';
+import { buildMaintainedSourceCiSdk, verifyMaintainedSourceCiSdk } from '../../../scripts/build-maintained-source-ci-sdk.mjs';
+import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Synthetic localhost authority fixture; the real installed IPC verifier is used unchanged.
-async function fixture(t, { issuerClock, receiverClock, changeContext = value => value } = {}) {
+async function fixture(t, { issuerClock, receiverClock, changeContext = value => value, createClient = createSourceAuthorityClient, planner = false } = {}) {
   const raw = { schema: 'soty.selected-human-embed.v2', appId: 'app-' + 'a'.repeat(32),
     connector: { linkId: 'link', hostDeviceId: 'device', connectorId: 'connector' },
     target: { revision: 1, digest: '1'.repeat(64) }, sourceProfile: { ...HIVE_SELECTED_SOURCE },
@@ -16,7 +24,12 @@ async function fixture(t, { issuerClock, receiverClock, changeContext = value =>
       resourceId: 'selected', selection: { kind: 'hive.project.v1', nativeId: 'selected-native', incarnationId: 'one' } },
     issuer: 'https://root.test/human-identity', clientId: 'hive.selected', embedOrigin: 'https://hive.root.test',
     nativeOrigin: 'https://native.test', parentOrigin: 'https://root.test' };
-  const profile = selectedResourceProfile(raw), key = randomBytes(32), observations = [];
+  if (planner) {
+    raw.schema = 'soty.selected-human-embed.v1';
+    raw.sourceProfile = { id: 'planner.selected-workspace', version: 1, digest: '9'.repeat(64) };
+    delete raw.resource.selection; raw.resource.workspaceId = 'selected-native';
+  }
+  const profile = planner ? scopedEmbedProfile(raw) : selectedResourceProfile(raw), key = randomBytes(32), observations = [];
   const context = { profileDigest: profile.digest, reference: { id: randomBytes(32).toString('base64url'), version: 1, digest: '9'.repeat(64) } };
   let rootReads = 0;
   const factory = createConnectorScopedFactory({ entries: [{ profile: raw, key: key.toString('base64url') }], clock: receiverClock });
@@ -31,7 +44,7 @@ async function fixture(t, { issuerClock, receiverClock, changeContext = value =>
   });
   t.after(async () => { factory.disconnected(); server.closeAllConnections(); await new Promise((done, reject) => server.close(error => error ? reject(error) : done())); });
   await new Promise((done, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', done); });
-  const port = server.address().port, client = createSourceAuthorityClient({ profile: raw, key, connectorPort: port, clock: issuerClock });
+  const port = server.address().port, client = createClient({ profile: raw, key, connectorPort: port, clock: issuerClock });
   const read = () => client({ reference: context.reference, connector: profile.connector });
   const rawPost = value => new Promise((done, reject) => {
     const text = JSON.stringify(value), signature = createHmac('sha256', key).update('authority\0' + text).digest('base64url');
@@ -92,4 +105,42 @@ test('current profile/reference and connector mismatches still deny without a re
   await assert.rejects(wrongReference.client({ reference: wrongReference.context.reference,
     connector: { ...wrongReference.connector, hostDeviceId: 'foreign-device' } }), { code: 'scoped_embed_connector_mismatch', status: 403 });
   assert.equal(wrongReference.observations.length, 1); assert.equal(wrongReference.rootReads(), 1);
+});
+
+test('actual packaged Planner issuer preserves the same bounded-skew oracle; literal OLD fails without widening the receiver', async t => {
+  const now = 100000;
+  const oracle = async f => { assert.deepEqual(await f.read(), f.context); assert.equal(f.rootReads(), 1); };
+  for (const skew of [-600, 1, 600, 1000]) {
+    const f = await fixture(t, { planner: true, createClient: packagedSourceClient, issuerClock: () => now + skew, receiverClock: () => now });
+    await oracle(f); assert.equal(f.observations[0].expiresAt, now + skew + 9000);
+  }
+  const old = await fixture(t, { planner: true, createClient: oldPackagedSourceClient, issuerClock: () => now + 600, receiverClock: () => now });
+  await assert.rejects(() => oracle(old), { code: 'scoped_embed_authority_denied', status: 403 });
+  assert.equal(old.rootReads(), 0); assert.equal(old.observations[0].expiresAt, now + 600 + 10000);
+  const excess = await fixture(t, { planner: true, createClient: packagedSourceClient, issuerClock: () => now + 1001, receiverClock: () => now });
+  await assert.rejects(excess.read(), { code: 'scoped_embed_authority_denied', status: 403 }); assert.equal(excess.rootReads(), 0);
+});
+
+test('maintained Source overlay check is reproducible and read-only; corrupt output and changed canonical input fail closed', async t => {
+  const root = fileURLToPath(new URL('../../../', import.meta.url)), source = join(root, 'test-fixtures/planner-source-ci');
+  const built = await buildMaintainedSourceCiSdk(), beforeSdk = await readFile(join(source, 'server/soty-source-host.mjs'));
+  const beforePins = await readFile(join(source, 'SOURCE-PINS.json'));
+  await verifyMaintainedSourceCiSdk();
+  assert.deepEqual(await readFile(join(source, 'server/soty-source-host.mjs')), beforeSdk);
+  assert.deepEqual(await readFile(join(source, 'SOURCE-PINS.json')), beforePins);
+  const temporary = await mkdtemp(join(tmpdir(), 'soty-ci-sdk-check-')), capsule = join(temporary, 'capsule'), clone = join(temporary, 'source');
+  t.after(async () => { assert.equal(dirname(resolve(temporary)), resolve(tmpdir())); assert.match(basename(temporary), /^soty-ci-sdk-check-/); await rm(temporary, { recursive: true, force: true }); });
+  await mkdir(join(capsule, 'server'), { recursive: true });
+  await writeFile(join(capsule, 'SOURCE-PINS.json'), beforePins); await writeFile(join(capsule, 'server/soty-source-host.mjs'), beforeSdk);
+  for (const name of [...Object.keys(built.inputs), 'modules/apps/test/fixtures/source-host-before-clock-margin.mjs']) {
+    const text = (await readFile(join(root, name), 'utf8')).replaceAll('\r\n', '\n');
+    await mkdir(dirname(join(clone, name)), { recursive: true }); await writeFile(join(clone, name), text);
+  }
+  await verifyMaintainedSourceCiSdk(capsule, clone);
+  await writeFile(join(capsule, 'server/soty-source-host.mjs'), Buffer.concat([beforeSdk, Buffer.from('\n')]));
+  await assert.rejects(verifyMaintainedSourceCiSdk(capsule, clone), /maintained_source_sdk_overlay_mismatch/);
+  await writeFile(join(capsule, 'server/soty-source-host.mjs'), beforeSdk);
+  const changed = join(clone, 'modules/apps/scoped-embed/source-authority-client.mjs');
+  await writeFile(changed, Buffer.concat([await readFile(changed), Buffer.from('\n')]));
+  await assert.rejects(verifyMaintainedSourceCiSdk(capsule, clone), /actual canonical input graph/);
 });

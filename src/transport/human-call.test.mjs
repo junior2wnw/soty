@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const { build } = createRequire(import.meta.url)(process.env.SOTY_ESBUILD_MODULE || 'esbuild');
 const built = await build({ stdin: { resolveDir: process.cwd(), contents: "export {createHumanCallPorts,createP2pPeer} from './src/sync.ts';export {createCallLifecycle} from './modules/personal-agent/call/lifecycle.mjs';" },
-  bundle: true, write: false, format: 'esm', platform: 'node' });
+  bundle: true, write: false, format: 'esm', platform: 'node',
+  plugins: process.env.SOTY_HUMAN_CALL_TEST_SOURCE ? [{name:'actual-call-source-control',setup(build){build.onLoad({filter:/[/\\]src[/\\]sync\.ts$/},args=>({contents:readFileSync(process.env.SOTY_HUMAN_CALL_TEST_SOURCE,'utf8'),loader:'ts',resolveDir:dirname(args.path)}));}}] : [] });
 const runtimePath = resolve(process.env.SOTY_HUMAN_CALL_TEST_OUTPUT || 'output/human-call-test-runtime.mjs');
 mkdirSync(dirname(runtimePath), { recursive: true }); writeFileSync(runtimePath, built.outputFiles[0].contents);
 const { createHumanCallPorts, createP2pPeer, createCallLifecycle } = await import(pathToFileURL(runtimePath));
@@ -235,4 +236,75 @@ test('reentrant leave during session construction releases observed clean socket
     assert.equal(f.sockets.length, n + 1, 'a fully observed clean close must not consume a retained socket slot');
   }
   assert.equal(f.sockets.every(socket => socket.closes === 1), true); assert.equal(f.captures(), 0);
+});
+
+test('voice roster exposes exact bound identities separately from connected RTC count, without capture', async t => {
+  const f=fixture(t);await f.join();
+  const expected=[{accountId:'account-self',deviceId:'device-self',label:'Self',microphone:false,isSelf:true},
+    {accountId:'account-peer-0',deviceId:'device-peer-0',label:'Peer',microphone:false,isSelf:false}];
+  assert.deepEqual(f.ports.snapshot().participants,expected);assert.equal(f.ports.snapshot().peers,1);
+  f.pcs[0].connectionState='connecting';f.pcs[0].onconnectionstatechange();
+  assert.equal(f.ports.snapshot().peers,0);assert.deepEqual(f.ports.snapshot().participants,expected);assert.equal(f.captures(),0);
+});
+
+test('voice roster publishes immutable copied mic/name metadata, never a speaking flag', async t => {
+  const f=fixture(t);const socket=await f.join(),roster=f.roster(true);roster[1].label='Аня';
+  socket.receive({type:'call.peers',peers:roster});const current=f.ports.snapshot().participants;
+  assert.equal(current[1].label,'Аня');assert.equal(current[1].microphone,true);assert.equal(Object.hasOwn(current[1],'speaking'),false);
+  assert.ok(Object.isFrozen(current)&&current.every(Object.isFrozen));
+  assert.throws(()=>{current[1].label='подмена';},TypeError);assert.throws(()=>current.push(current[0]),TypeError);
+  roster[1].label='поздняя подмена';assert.equal(f.ports.snapshot().participants[1].label,'Аня');
+});
+
+test('wrong call or epoch cannot replace current roster, while current peer removal updates it', async t => {
+  const f=fixture(t);const socket=await f.join(),before=f.ports.snapshot().participants;
+  socket.receive({type:'call.peers',callId:'another-call',peers:f.roster(true)});
+  socket.receive({type:'call.peers',epoch:2,peers:f.roster(true)});
+  assert.deepEqual(f.ports.snapshot().participants,before);
+  socket.receive({type:'call.peers',peers:[f.roster(false)[0]]});
+  assert.equal(f.ports.snapshot().participants.length,1);assert.equal(f.ports.snapshot().peers,0);assert.equal(f.pcs[0].closes,1);
+});
+
+test('leave and original-profile retirement synchronously scrub roster and reject late metadata', async t => {
+  for(const action of ['end','profile'])await t.test(action,async child=>{
+    const f=fixture(child);const socket=await f.join();assert.equal(f.ports.snapshot().participants.length,2);
+    if(action==='end')f.life.end();else f.life.setIdentity({accountId:'account-other',deviceId:'device-other'});
+    assert.deepEqual(f.ports.snapshot().participants,[]);
+    socket.receive({type:'call.peers',peers:f.roster(true)});assert.deepEqual(f.ports.snapshot().participants,[]);
+  });
+});
+
+test('malformed current voice identities cannot populate or retain a roster', async t => {
+  const broken={missingAccount:r=>{delete r[1].accountId;},badDevice:r=>{r[1].deviceId='bad device';},duplicateDevice:r=>{r[1].deviceId=r[0].deviceId;},
+    missingSelf:r=>{r.shift();},wrongSelf:r=>{r[0].accountId='forged-self';},longLabel:r=>{r[1].label='x'.repeat(161);},
+    nonBooleanMic:r=>{r[1].microphone=1;},overCapacity:r=>{for(let n=1;n<4;n++)r.push({...r[1],deviceId:'extra-'+n});}};
+  for(const[name,mutate]of Object.entries(broken))await t.test(name,async child=>{
+    const f=fixture(child);const socket=await f.join(),roster=f.roster(false);mutate(roster);socket.receive({type:'call.peers',peers:roster});
+    assert.equal(f.ports.snapshot().connection,'closed');assert.deepEqual(f.ports.snapshot().participants,[]);assert.equal(f.captures(),0);
+    socket.receive({type:'call.peers',peers:f.roster(true)});assert.deepEqual(f.ports.snapshot().participants,[]);
+  });
+});
+
+test('legacy missing labels become empty display text and names are normalized as text', async t => {
+  const f=fixture(t);const socket=await f.join(),roster=f.roster(false);delete roster[0].label;roster[1].label='  Аня\n\u0000 Сова  ';
+  socket.receive({type:'call.peers',peers:roster});
+  assert.equal(f.ports.snapshot().participants[0].label,'');assert.equal(f.ports.snapshot().participants[1].label,'Аня Сова');
+});
+
+test('voice peer metadata before the original call ready cannot become current roster', async t => {
+  const f=fixture(t),joining=f.life.join({roomId:'group-one',mode:'group'});await until(()=>f.sockets.length===1);
+  const socket=f.sockets[0];socket.open();socket.receive({type:'call.peers',peers:f.roster(false)});
+  assert.equal(f.ports.snapshot().connection,'closed');assert.deepEqual(f.ports.snapshot().participants,[]);
+  assert.equal((await joining).ok,false);assert.equal(f.captures(),0);
+});
+
+test('a roster observer ending the call cannot allocate peers after the retired admission', async t => {
+  const f=fixture(t);f.ports.subscribe(state=>{if(state.connection==='admitted'&&state.participants.length)f.life.end();});
+  const joining=f.life.join({roomId:'group-one',mode:'group'});await until(()=>f.sockets.length===1);
+  const socket=f.sockets[0],originalInterval=globalThis.setInterval,created=[];socket.open();
+  try{globalThis.setInterval=(...args)=>{const timer=originalInterval(...args);created.push(timer);return timer;};
+    socket.receive({type:'call.ready',self:f.roster(false)[0],peers:f.roster(false)});
+  }finally{globalThis.setInterval=originalInterval;for(const timer of created)clearInterval(timer);}
+  assert.equal((await joining).ok,false);assert.equal(f.pcs.length,0);assert.deepEqual(f.ports.snapshot().participants,[]);
+  assert.equal(created.length,0,'retired session cannot start a heartbeat');assert.equal(f.ports.snapshot().connection,'closed');assert.equal(f.captures(),0);
 });

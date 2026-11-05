@@ -57,7 +57,7 @@ test('discussion resolves an exact entry without admission, and a later runtime 
   assert.equal(calls.length, 1); assert.equal(calls[0][0], 'resolve');
   assert.deepEqual(calls[0][1], { ...target, expectedAccountId: 'account-a' });
   await launcher.launch();
-  assert.equal(calls[1][0], 'launch'); assert.deepEqual(calls[1][1], { ...target, expectedAccountId: 'account-a' });
+  assert.equal(calls[1][0], 'launch'); assert.deepEqual(calls[1][1], { ...target, expectedAccountId: 'account-a',hostSession:true });
 });
 
 test('an app launch racing a discussion resolve waits for the strict pin; stale profile results are discarded', async () => {
@@ -178,7 +178,7 @@ test('every fresh launch pins the original actor and target without sharing a ti
   assert.equal(await launcher.launch(), boot('A'));
   const window = makePopup(); assert.equal(await launcher.openExternal(() => window), 'opened');
   assert.deepEqual(window.visits, [boot('B')]); assert.equal(window.opener, null);
-  assert.equal(calls.length, 2); assert.deepEqual(calls[0], { ...target, expectedAccountId: 'account-a' });
+  assert.equal(calls.length, 2); assert.deepEqual(calls[0], { ...target, expectedAccountId: 'account-a',hostSession:true });
   assert.ok(Object.isFrozen(calls[0]));
   launcher.dispose(); assert.equal(window.closed, false, 'a completed external tab belongs to the user');
 });
@@ -331,10 +331,10 @@ test('saved root entry follows only exact workspace2 into embed and retains its 
           entry: { appId, domainId, origin, path }, ...(upgrade ? { scopedCleanup: () => { closed.push(true); } } : {}) }; } });
     if (preResolved) { await launcher.launch(); assert.equal(launcher.entry().path, '/'); upgrade = true; }
     await launcher.launch(); assert.deepEqual(launcher.entry(), { appId, domainId, origin, path: '/embed' });
-    assert.deepEqual(calls.at(-1), { appId, domainId, path: '/', expectedAccountId: 'account-a', instanceId: 'main' });
+    assert.deepEqual(calls.at(-1), { appId, domainId, path: '/', expectedAccountId: 'account-a', instanceId: 'main',hostSession:true });
     const pin = launcher.scopedCapture().source;
     await launcher.launch({ requireSameBinding: true });
-    assert.deepEqual(calls.at(-1), { appId, domainId, path: '/embed', expectedAccountId: 'account-a', instanceId: 'main' });
+    assert.deepEqual(calls.at(-1), { appId, domainId, path: '/embed', expectedAccountId: 'account-a', instanceId: 'main',hostSession:true });
     assert.deepEqual(launcher.scopedCapture().source, pin); launcher.dispose();
   }
 });
@@ -398,7 +398,7 @@ test('private Source launch permits omitted initial path but pins the full retur
   const calls=[];const launcher=createAppLauncher({target:{appId},accountId:'account-a',shellUrl,isCurrent:()=>true,
     request:async args=>{calls.push(args);return privateReply();}});
   await launcher.launch();await launcher.launch();assert.equal(calls[0].path,undefined);
-  assert.deepEqual(calls[1],{appId,domainId,path:privatePath,expectedAccountId:'account-a'});launcher.dispose();
+  assert.deepEqual(calls[1],{appId,domainId,path:privatePath,expectedAccountId:'account-a',hostSession:true});launcher.dispose();
 });
 
 test('private Source renewal uses public embed boot but retains the exact old path, source and current slot',async()=>{

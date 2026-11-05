@@ -108,7 +108,7 @@ test('the unavailable overview has an explicit retry that uses the current accou
   const calls = [], children = [], exports = {}, state = { current: true };
   const overview = { hidden: false, replaceChildren() { children.length = 0; }, append(...items) { children.push(...items); }, querySelector() { return null; } };
   const environment = { exports, ownAppsOverview: overview, ownAppsSignature: '', ownedAppsState: 'offline',
-    current: () => state.current, engine: {}, mode: 'mine', element: { dataset: { search: 'closed' } }, summary: null,
+    current: () => state.current, engine: {}, mode: 'mine', element: { dataset: { search: 'open' } }, summary: null,
     queries: { mine: '' }, filter: 'all', mineGeneration: 7, overviewApps: () => [],
     el: (_tag, _className, text) => ({ text, setAttribute() {} }),
     button: (label, _icon, _className, action) => ({ label, action, getAttribute: () => null }),
@@ -145,7 +145,7 @@ test('retry keeps focus during loading and moves it only if it is still on that 
   const environment = { exports, document: doc, ownAppsOverview: overview, ownAppsSignature: '',
     ownedAppsState: 'offline', ownedApps: [], ownAppsReadSequence: 0, ownAppsAppliedRead: 0, mineGeneration: 1,
     current: () => state.current, engine: { snapshot: () => ({ shortcuts: [] }) }, mode: 'mine',
-    element: { dataset: { search: 'closed' } }, summary: null, queries: { mine: '' }, filter: 'all', listView,
+    element: { dataset: { search: 'open' } }, summary: null, queries: { mine: '' }, filter: 'all', listView,
     overviewApps: () => environment.ownedApps, ownAppButton: app => new Element('button', 'uf-own-app', app.name),
     el: (tag, className, text) => new Element(tag, className, text),
     button: (label, _icon, className, action) => Object.assign(new Element('button', className, label), { action }),

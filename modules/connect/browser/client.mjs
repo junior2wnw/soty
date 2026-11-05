@@ -2,14 +2,20 @@ import {
   ConnectError, canonicalJson, base64url, unbase64url, sha256, cryptoApi, createInstallation,
   verifyInstallation, signMessage, publicJwk, sealLocalRoot, openLocalRoot,
   wrapEnrollmentRoot, unwrapEnrollmentRoot, wrapRecoveryRoot, unwrapRecoveryRoot, sealVault, openVault,
+  normalizeCredentialInput, credentialLookup, makeCredential, unlockCredential,
 } from './crypto.mjs';
 import { createIndexedDbStorage, emptyState, validateState } from './storage.mjs';
 import { capturePlatformInvitation } from './platform-invitation.mjs';
 
 // Fixed voice ports leave the local queue but retain account and generation fences.
 const detachedVoiceOperations = new Set(['voice.orb.status', 'voice.orb.start', 'voice.orb.turn', 'voice.orb.cancel', 'voice.orb.end']);
+const cancelablePageReads=new Set(['canvas.pages.read','canvas.pages.content','canvas.pages.wait','canvas.objects.get','canvas.widgets.get']);
 
 const parallelMetadataReads = new Set([
+  'platform.live.wait',
+  'canvas.pages.read', 'canvas.pages.content', 'canvas.pages.wait',
+  'canvas.objects.get', 'canvas.widgets.get',
+  'apps.entry.get',
   'world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get',
   'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list',
   // Startup polls and visible covers must not hold the field's identity queue.
@@ -133,14 +139,14 @@ export function createClientWithStorage(options, storage) {
     return validateState(value, scope);
   }
   async function ensureState() { return await read() || validateState(await storage.claim(emptyState(projectId, endpoint)), scope); }
-  async function mutate(update) {
+  async function mutate(update, options) {
     for (let attempt = 0; attempt < 5; attempt++) {
       const previous = await ensureState();
       const candidate = update(structuredClone(previous));
       if (!candidate) return previous;
       candidate.localRevision = previous.localRevision + 1;
       validateState(candidate, scope);
-      try { return await storage.compareAndSwap(previous.localRevision, candidate); }
+      try { return await storage.compareAndSwap(previous.localRevision, candidate, options); }
       catch (error) { if (error.code !== 'LOCAL_CONFLICT' || attempt === 4) throw error; }
     }
     throw new ConnectError('LOCAL_CONFLICT', 'Another tab kept changing this profile. Retry after it finishes.');
@@ -175,17 +181,20 @@ export function createClientWithStorage(options, storage) {
     catch (error) { throw error instanceof ConnectError ? error : new ConnectError('CORRUPT_LOCAL_STATE', 'The saved device keys could not be verified. Existing data was not replaced.', { cause: error }); }
     return item;
   }
-  async function post(body) {
+  async function post(body,requestSignal) {
+    if(requestSignal?.aborted)throw new ConnectError('REQUEST_CANCELLED','The page read was cancelled.');
     let response;
     // Only fixed signed work ports receive longer bounded deadlines.
     // Challenges, cancellation and all other RPCs retain the normal bound.
     const timeoutMs = !body.proof ? 20_000 : body.op === 'agent.turn' || body.op === 'voice.orb.turn' ? 120_000
       : body.op === 'voice.orb.start' ? 90_000 : body.op === 'voice.orb.end' ? 45_000 : 20_000;
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
+    const cancel=()=>controller.abort();requestSignal?.addEventListener('abort',cancel,{once:true});
     try {
       response = await fetcher(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: canonicalJson({ protocol: 1, ...body }),
         credentials: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal });
       const text = await response.text();
+      if(requestSignal?.aborted)throw new ConnectError('REQUEST_CANCELLED','The page read was cancelled.');
       const keyList = Boolean(body.proof && body.op === 'ai.keys.list'), maximum = (keyList ? 8 : 3) * 1024 * 1024;
       if (text.length > maximum || keyList && new TextEncoder().encode(text).byteLength > maximum)
         throw new ConnectError('INVALID_SERVER_RESPONSE', 'The server response was too large.');
@@ -198,9 +207,10 @@ export function createClientWithStorage(options, storage) {
       }
       return value;
     } catch (error) {
+      if(requestSignal?.aborted)throw new ConnectError('REQUEST_CANCELLED','The page read was cancelled.');
       if (error instanceof ConnectError) throw error;
       throw new ConnectError(error.name === 'AbortError' ? 'NETWORK_TIMEOUT' : 'NETWORK_ERROR', 'The request could not be confirmed. Existing local data was kept; retry the same action.', { cause: error });
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer);requestSignal?.removeEventListener('abort',cancel); }
   }
   const cleanupCredential = actor => canonicalJson({accountId:actor.accountId,deviceId:actor.deviceId,createdAt:actor.createdAt,
     signingPublicJwk:actor.signingPublicJwk,encryptionPublicJwk:actor.encryptionPublicJwk});
@@ -216,14 +226,52 @@ export function createClientWithStorage(options, storage) {
       if(cleanupCredential(current)!==state.credential)throw new ConnectError('CLEANUP_CREDENTIAL_CHANGED','The original installation changed.');
       // Only this fixed close is permitted with a retained signer. It grants no
       // access, renewal, application mutation, arbitrary operation or target.
-      await rpc('apps.scoped.close',state.args,actor,false);
+      if(state.kind==='host')await rpc('apps.session.close',state.args,actor,false);
+      else await rpc('apps.scoped.close',state.args,actor,false);
       releaseCleanup(state);
     })();
     state.pending=action;
     try {await action;}catch(error){state.pending=null;throw error;}
   }
   function captureAppCleanup(result, capture, args) {
-    if(!capture || !['soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(result.runtimeProfile))return null;
+    if(!capture)return null;
+    if(result.hostSession!==undefined){
+      const appId=result.entry?.appId,member=result.hostSession,until=result.hostSessionExpiresAt;
+      const opaque=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{43}$/u.test(value);
+      const sameTarget=capture.operation==='apps.launch'||member?.frameId===args.frameId
+        &&(capture.operation==='apps.session.renew'?member?.revision===args.revision+1&&member?.lease!==args.lease
+          :member?.revision===args.revision&&member?.lease===args.lease);
+      if(appId!==args.appId||!/^app-[a-f0-9]{32}$/u.test(appId??'')
+        ||!member||typeof member!=='object'||Array.isArray(member)||Object.keys(member).sort().join(',')!=='expiresAt,frameId,lease,revision,schema'
+        ||member.schema!=='soty.app-host-session.v1'||!opaque(member.frameId)||!opaque(member.lease)
+        ||!Number.isSafeInteger(member.revision)||member.revision<1||!Number.isSafeInteger(member.expiresAt)||member.expiresAt<=Date.now()
+        ||member.expiresAt>Date.now()+86410000||result.runtimeProfile!==undefined
+        ||until!==null&&(!Number.isSafeInteger(until)||until<=Date.now()||until>member.expiresAt)
+        ||until===null&&capture.operation!=='apps.session.context'
+        ||!sameTarget)
+        throw new ConnectError('INVALID_SERVER_RESPONSE','Invalid closed host cleanup reply.');
+      const fixed=Object.freeze({appId,frameId:member.frameId,lease:member.lease,revision:member.revision});
+      for(const value of appCleanups)if(value.expiresAt<=Date.now())releaseCleanup(value);
+      // Context rereads refresh the same private purpose; they cannot consume
+      // the capacity limit with duplicate callbacks for one immutable proof.
+      const prior=[...appCleanups].find(value=>value.kind==='host'&&!value.finished&&value.credential===capture.credential
+        &&value.actor?.accountId===capture.actor.accountId&&value.actor?.deviceId===capture.actor.deviceId
+        &&canonicalJson(value.args)===canonicalJson(fixed));
+      // Missing RAM HTTP authority is not a new signer-retention budget. A
+      // context read may reuse an unexpired captured purpose, never extend it.
+      if(until===null){if(prior)appCleanupReplies.set(result,Object.freeze({callback:prior.callback,state:prior}));return prior??null;}
+      const deadline=Math.min(until,member.expiresAt);
+      if(prior){clearTimeout(prior.timer);prior.actor=capture.actor;prior.expiresAt=deadline;
+        prior.timer=setTimeout(()=>releaseCleanup(prior),Math.max(1,deadline-Date.now()));prior.timer.unref?.();
+        appCleanupReplies.set(result,Object.freeze({callback:prior.callback,state:prior}));return prior;}
+      if(appCleanups.size>=256)throw new ConnectError('CLEANUP_CAPACITY','Too many active application admissions.');
+      const state={kind:'host',actor:capture.actor,credential:capture.credential,args:fixed,expiresAt:deadline,finished:false,pending:null,timer:null,callback:null};
+      const callback=(...parameters)=>{if(parameters.length)return Promise.reject(new ConnectError('INVALID_ARGUMENT','Cleanup takes no arguments.'));return serialize(()=>performCleanup(state));};
+      state.callback=callback;state.timer=setTimeout(()=>releaseCleanup(state),Math.max(1,deadline-Date.now()));state.timer.unref?.();
+      appCleanups.add(state);appCleanupReplies.set(result,Object.freeze({callback,state}));return state;
+    }
+    if(!['apps.launch','apps.scoped.renew'].includes(capture.operation)
+      ||!['soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(result.runtimeProfile))return null;
     const appId=result.entry?.appId,handle=result.scopedCloseHandle,expiresAt=result.scopedSlotExpiresAt;
     if(appId!==args.appId || typeof appId!=='string' || !/^app-[a-f0-9]{32}$/.test(appId)
       ||typeof handle!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(handle)||!Number.isSafeInteger(expiresAt)
@@ -274,18 +322,18 @@ export function createClientWithStorage(options, storage) {
     state.timer = setTimeout(() => releaseVoiceCleanup(state), duration + 90000); state.timer.unref?.();
     voiceCleanups.add(state); voiceCleanupReplies.set(result, Object.freeze({ callback, state })); return state;
   }
-  async function rpc(op, args, identity, requireCurrent = !identity, checkCurrent = assertCurrent) {
+  async function rpc(op, args, identity, requireCurrent = !identity, checkCurrent = assertCurrent,requestSignal) {
     if (op === 'card.resolve') return post({ op, args });
     const actor = identity || await installation();
     if (requireCurrent) await checkCurrent(actor);
     // Capture the real authenticated local signer before any challenge/network
     // await. The caller receives no signer object or generic retained RPC port.
-    const cleanupCapture=normalized.scopedAppCleanup===true && ['apps.launch','apps.scoped.renew'].includes(op)
-      ?Object.freeze({actor,credential:cleanupCredential(actor),startedAt:Date.now()}):null;
+    const cleanupCapture=normalized.scopedAppCleanup===true && ['apps.launch','apps.scoped.renew','apps.session.renew','apps.session.confirm','apps.session.context'].includes(op)
+      ?Object.freeze({actor,credential:cleanupCredential(actor),startedAt:Date.now(),operation:op}):null;
     const voiceCapture=normalized.scopedVoiceCleanup===true && op==='voice.orb.start'
       ?Object.freeze({actor,credential:cleanupCredential(actor)}):null;
     const digest = await sha256(canonicalJson(args));
-    const challenge = await post({ op: 'challenge', args: { operation: op, digest } });
+    const challenge = await post({ op: 'challenge', args: { operation: op, digest } },requestSignal);
     responseId(challenge.challengeId, 'challenge ID');
     if (typeof challenge.message !== 'string' || challenge.message.length > 8192 || expires(challenge.expiresAt) <= Date.now()) {
       throw new ConnectError('INVALID_CHALLENGE', 'The server challenge is invalid or expired.');
@@ -302,7 +350,7 @@ export function createClientWithStorage(options, storage) {
     }
     if (requireCurrent) await checkCurrent(actor);
     const proof = { challengeId: challenge.challengeId, publicJwk: actor.signingPublicJwk, signature: await signMessage(actor, challenge.message) };
-    const result = await post({ op, args, proof });
+    const result = await post({ op, args, proof },requestSignal);
     const cleanup=captureAppCleanup(result,cleanupCapture,args);
     const voiceCleanup=await captureVoiceCleanup(result,voiceCapture);
     if (requireCurrent && op !== 'bootstrap') {
@@ -332,14 +380,14 @@ export function createClientWithStorage(options, storage) {
     }
     return records;
   }
-  async function commitAccount(actor, accountId, rootEnvelope, complete) {
+  async function commitAccount(actor, accountId, rootEnvelope, complete, options) {
     const state = await mutate(draft => {
       const stored = draft.installations.find(item => item.deviceId === actor.deviceId);
       if (!stored || stored.accountId !== null && stored.accountId !== accountId) throw new ConnectError('ACCOUNT_MISMATCH', 'An existing device cannot change account ownership.');
       stored.accountId = accountId; stored.rootEnvelope = rootEnvelope;
       if (complete) complete(draft, stored);
       return draft;
-    });
+    }, options);
     await notify();
     return state;
   }
@@ -354,6 +402,79 @@ export function createClientWithStorage(options, storage) {
     return unbase64url(kit.secret, 32);
   }
 
+  const credentialLedgerKey = 'connect.browser.credentials.v1';
+  function credentialLedger(state) {
+    const ledger = state?.extensions?.[credentialLedgerKey] ?? { actions: [], logins: [], receipts: [] };
+    if (!ledger || !['actions', 'logins', 'receipts'].every(key => Array.isArray(ledger[key]))
+        || ledger.actions.length > 128 || ledger.logins.length > 64 || ledger.receipts.length > 64
+        || ledger.actions.some(item => !item || !['set', 'remove'].includes(item.operation) || !item.args?.requestId || !item.accountId)
+        || ledger.logins.some(item => !item?.record?.credentialId || !item.deviceId || !item.lookup || !item.label)
+        || ledger.receipts.some(item => !item?.credentialId || !item.deviceId || !item.accountId || !item.lookup)) {
+      throw new ConnectError('CORRUPT_LOCAL_STATE', 'The saved sign-in operations are invalid. Existing profiles were kept.');
+    }
+    return ledger;
+  }
+  function editCredentialLedger(draft, edit) {
+    const ledger = credentialLedger(draft); edit(ledger);
+    draft.extensions = { ...(draft.extensions ?? {}), [credentialLedgerKey]: ledger }; return draft;
+  }
+  async function assertSnapshot(snapshot) {
+    const current = await read();
+    if (current?.activeDeviceId !== snapshot.activeDeviceId || current?.localRevision !== snapshot.localRevision) {
+      throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The selected profile changed during sign-in. Review it and try again.');
+    }
+  }
+  function captureActivationOptions(options) {
+    const captured = { ...(options ?? {}) }, expected = captured.expectedState;
+    if (expected !== undefined) {
+      if (!expected || typeof expected !== 'object' || Array.isArray(expected)
+        || Object.keys(expected).sort().join(',') !== 'accountId,deviceId,localRevision'
+        || ![expected.accountId, expected.deviceId].every(value => value === null || typeof value === 'string' && value.length > 0 && value.length <= 256)
+        || !(expected.localRevision === null && expected.accountId === null && expected.deviceId === null
+          || Number.isSafeInteger(expected.localRevision) && expected.localRevision >= 0)) {
+        throw new ConnectError('INVALID_ARGUMENT', 'Invalid expected profile selection.');
+      }
+      captured.expectedState = Object.freeze({ accountId: expected.accountId, deviceId: expected.deviceId, localRevision: expected.localRevision });
+    }
+    return captured;
+  }
+  function selectedActivation(options, action) {
+    try { const captured = captureActivationOptions(options); return serialize(() => action(captured)); }
+    catch (error) { return Promise.reject(error); }
+  }
+  async function activationState(expected, ensure = false) {
+    const state = await read(), actual = publicLocalState(state);
+    if (expected && ['accountId', 'deviceId', 'localRevision'].some(key => actual[key] !== expected[key])) {
+      throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The selected profile changed after consent.');
+    }
+    if (state || !ensure) return state;
+    const claimed = await ensureState();
+    if (expected && claimed.activeDeviceId !== null) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'Another profile appeared during sign-in.');
+    return claimed;
+  }
+  function sameSnapshot(draft, snapshot) {
+    if (draft.activeDeviceId !== snapshot.activeDeviceId || draft.localRevision !== snapshot.localRevision) {
+      throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The selected profile changed during sign-in. Review it and try again.');
+    }
+  }
+  function checkedCredentialStatus(value, accountId) {
+    if (value?.schema !== 'connect.credentials.v1' || value.accountId !== accountId
+        || !['password', 'phrase'].every(kind => typeof value[kind]?.enabled === 'boolean'
+          && Number.isSafeInteger(value[kind].revision) && value[kind].revision >= 0)) {
+      throw new ConnectError('INVALID_SERVER_RESPONSE', 'The sign-in settings could not be confirmed.');
+    }
+    return value;
+  }
+  function credentialInputOperation(kind, input, creating, action, options) {
+    try { const captured = normalizeCredentialInput(kind, input, { creating }), activation = captureActivationOptions(options); return serialize(() => action(captured, activation)); }
+    catch (error) { return Promise.reject(error); }
+  }
+  async function clearCredentialAction(pending, state) {
+    await mutate(draft => { sameSnapshot(draft, state); return editCredentialLedger(draft, ledger => {
+      ledger.actions = ledger.actions.filter(item => item.args.requestId !== pending.args.requestId);
+    }); }); await notify();
+  }
+
   const client = {
     /** Private host effect cleanup. JSON clones cannot obtain a capability. */
     appSlotCleanup: reply => !disposed && reply && typeof reply==='object' ? appCleanupReplies.get(reply)?.callback ?? null : null,
@@ -366,13 +487,17 @@ export function createClientWithStorage(options, storage) {
       let payload;
       try { payload = JSON.parse(canonicalJson(args)); }
       catch { return Promise.reject(new ConnectError('INVALID_ARGUMENT', 'Extension arguments must be JSON.')); }
-      let expectedAccountId;
+      let expectedAccountId,readSignal;
       if (context !== undefined) {
         try {
-          if (!context || typeof context !== 'object' || Array.isArray(context) || Object.keys(context).some(key => key !== 'expectedAccountId')) {
+          if (!context || typeof context !== 'object' || Array.isArray(context) || Object.keys(context).some(key => key !== 'expectedAccountId'&&key!=='signal')) {
             throw new ConnectError('INVALID_ARGUMENT', 'Invalid extension account context.');
           }
           expectedAccountId = requiredString(context.expectedAccountId, 'Expected account ID');
+          if(Object.hasOwn(context,'signal')){
+            if(!cancelablePageReads.has(operation)||!(context.signal instanceof AbortSignal))throw new ConnectError('INVALID_ARGUMENT','Cancellation is available only for fixed page reads.');
+            readSignal=context.signal;if(readSignal.aborted)throw new ConnectError('REQUEST_CANCELLED','The page read was cancelled.');
+          }
         } catch (error) { return Promise.reject(error); }
       }
       if (detachedVoiceOperations.has(operation) && expectedAccountId === undefined) {
@@ -394,7 +519,7 @@ export function createClientWithStorage(options, storage) {
               throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The local profile changed while this read was running. Its result was not applied.');
             }
           };
-          return rpc(operation, payload, actor, true, checkReadCurrent);
+          return rpc(operation, payload, actor, true, checkReadCurrent,readSignal);
         });
       }
       if (operation === 'agent.turn' || operation === 'agent.cancel' || operation === 'voice.agent.turn' || operation === 'voice.agent.cancel') {
@@ -423,17 +548,21 @@ export function createClientWithStorage(options, storage) {
     },
     dispose: () => { disposed = true; channel?.close(); channel = null;for(const state of appCleanups)releaseCleanup(state);
       for(const state of voiceCleanups)void performVoiceCleanup(state).catch(()=>releaseVoiceCleanup(state)); },
-    bootstrap: (label, { invitationToken } = {}) => serialize(async () => {
+    bootstrap: (label, options = {}) => selectedActivation(options, async ({ invitationToken, signal, expectedState }) => {
+      const checkOpen = () => { if (signal?.aborted) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The profile creation was closed.'); };
+      checkOpen();
       label = deviceLabel(label);
-      let state = await read();
+      let state = await activationState(expectedState);
       if (!state?.activeDeviceId) {
         const candidate = await createInstallation(label), raw = cryptoApi().getRandomValues(new Uint8Array(32));
         try { candidate.rootEnvelope = await sealLocalRoot(candidate, projectId, raw); } finally { raw.fill(0); }
         if (!state) {
           const initial = emptyState(projectId, endpoint); initial.installations.push(candidate); initial.activeDeviceId = candidate.deviceId;
           state = validateState(await storage.claim(initial), scope);
+          if (expectedState && state.activeDeviceId !== candidate.deviceId) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'Another profile appeared during creation.');
         }
         if (!state.activeDeviceId) state = await mutate(draft => {
+          checkOpen(); if (expectedState) sameSnapshot(draft, state);
           if (draft.activeDeviceId) return null;
           draft.installations.push(candidate); draft.activeDeviceId = candidate.deviceId; return draft;
         });
@@ -441,11 +570,13 @@ export function createClientWithStorage(options, storage) {
       const actor = await installation(state.activeDeviceId, { requireAccount: false });
       // A readable, already committed root must exist before a server account can be created.
       await withRoot(actor, async () => undefined);
+      checkOpen(); if (expectedState) await assertSnapshot(state);
       const token = actor.accountId ? null : invitationToken ?? platformInvitation?.get();
       const result = await rpc('bootstrap', { label: actor.label, encryptionPublicJwk: actor.encryptionPublicJwk,
         ...(token !== null && token !== undefined ? { invitationToken: token } : {}) }, actor, true);
       checkAccountResult(result, actor);
-      await commitAccount(actor, result.accountId, actor.rootEnvelope);
+      checkOpen();
+      await commitAccount(actor, result.accountId, actor.rootEnvelope, draft => { checkOpen(); if (expectedState) sameSnapshot(draft, state); }, signal || expectedState ? { beforeCommit: checkOpen, signal } : undefined);
       platformInvitation?.clear();
       await assertCurrent(actor);
       return result;
@@ -454,6 +585,122 @@ export function createClientWithStorage(options, storage) {
       const actor = await installation(), result = await rpc('status', {}, actor, true);
       checkAccountResult(result, actor); return result;
     }),
+    credentialStatus: expectedAccountId => serialize(async () => {
+      const state = await read(), actor = await installation();
+      assertExpectedAccount(actor, requiredString(expectedAccountId, 'Expected account ID'));
+      return checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
+    }),
+    setAccountCredential: (kind, input, expectedAccountId) => credentialInputOperation(kind, input, true, async captured => {
+      let state = await read(); const actor = await installation();
+      assertExpectedAccount(actor, requiredString(expectedAccountId, 'Expected account ID'));
+      let pending = credentialLedger(state).actions.find(item => item.accountId === actor.accountId && item.kind === kind);
+      let current, obsoleteRequestId;
+      if (pending && pending.operation !== 'set') {
+        current = checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
+        if (current[kind].revision <= pending.args.expectedRevision) throw new ConnectError('CREDENTIAL_PENDING', 'Finish the saved sign-in change first.');
+        obsoleteRequestId = pending.args.requestId; pending = null;
+      }
+      if (pending) {
+        let opened;
+        try { opened = await unlockCredential(pending.record, captured, { projectId }); }
+        catch (error) {
+          if (error.code !== 'credential_unavailable') throw error;
+          current = checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
+          if (current[kind].revision <= pending.args.expectedRevision) throw error;
+          // An advanced revision fences the old request; this input is a new owner intent.
+          obsoleteRequestId = pending.args.requestId; pending = null;
+        }
+        if (opened) {
+          try { await withRoot(actor, raw => { if (!raw.every((byte, index) => byte === opened.raw[index])) throw new ConnectError('credential_unavailable', 'The saved sign-in change belongs to a different key.'); }); }
+          finally { opened.raw.fill(0); }
+          await assertSnapshot(state);
+        }
+      }
+      if (!pending) {
+        current ??= checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
+        const record = await withRoot(actor, raw => makeCredential(raw, captured, { projectId, accountId: actor.accountId }));
+        await assertSnapshot(state);
+        pending = { accountId: actor.accountId, kind, operation: 'set', record,
+          args: { kind, requestId: 'credential_' + base64url(cryptoApi().getRandomValues(new Uint8Array(24))),
+            expectedRevision: current[kind].revision, credentialId: 'credential_' + base64url(cryptoApi().getRandomValues(new Uint8Array(24))),
+            lookup: record.lookup, login: record.login, salt: record.salt, iterations: record.iterations,
+            verifier: record.verifier, wrappedKey: record.wrappedKey } };
+        state = await mutate(draft => { sameSnapshot(draft, state); return editCredentialLedger(draft, ledger => {
+          if (obsoleteRequestId) ledger.actions = ledger.actions.filter(item => item.args.requestId !== obsoleteRequestId);
+          ledger.actions.push(pending);
+        }); });
+      }
+      let result;
+      try { result = checkedCredentialStatus(await rpc('credentials.set', pending.args, actor, true, () => assertSnapshot(state)), actor.accountId); }
+      catch (error) {
+        if (['credential_exists', 'invalid_login', 'revision_conflict', 'credential_unavailable', 'request_conflict'].includes(error.code)) await clearCredentialAction(pending, state);
+        throw error;
+      }
+      if (!result[kind].enabled || result[kind].revision !== pending.args.expectedRevision + 1) throw new ConnectError('INVALID_SERVER_RESPONSE', 'The sign-in change was not confirmed.');
+      await clearCredentialAction(pending, state); return result;
+    }),
+    removeAccountCredential: (kind, expectedAccountId) => serialize(async () => {
+      if (!['password', 'phrase'].includes(kind)) throw new ConnectError('credential_unavailable', 'This sign-in method is unavailable.');
+      let state = await read(); const actor = await installation();
+      assertExpectedAccount(actor, requiredString(expectedAccountId, 'Expected account ID'));
+      let pending = credentialLedger(state).actions.find(item => item.accountId === actor.accountId && item.kind === kind && item.operation === 'remove');
+      if (!pending) {
+        const current = checkedCredentialStatus(await rpc('credentials.status', {}, actor, true, () => assertSnapshot(state)), actor.accountId);
+        pending = { accountId: actor.accountId, kind, operation: 'remove', args: { kind,
+          requestId: 'credential_' + base64url(cryptoApi().getRandomValues(new Uint8Array(24))), expectedRevision: current[kind].revision } };
+        state = await mutate(draft => { sameSnapshot(draft, state); return editCredentialLedger(draft, ledger => {
+          ledger.actions = ledger.actions.filter(item => item.accountId !== actor.accountId || item.kind !== kind); ledger.actions.push(pending);
+        }); });
+      }
+      let result;
+      try { result = checkedCredentialStatus(await rpc('credentials.remove', pending.args, actor, true, () => assertSnapshot(state)), actor.accountId); }
+      catch (error) { if (['revision_conflict', 'request_conflict'].includes(error.code)) await clearCredentialAction(pending, state); throw error; }
+      if (result[kind].enabled || result[kind].revision !== pending.args.expectedRevision + 1) throw new ConnectError('INVALID_SERVER_RESPONSE', 'The sign-in removal was not confirmed.');
+      await clearCredentialAction(pending, state); return result;
+    }),
+    loginWithCredential: (kind, input, label = 'Новое устройство', options = {}) => credentialInputOperation(kind, input, false, async (captured, { signal, expectedState }) => {
+      const checkOpen = () => { if (signal?.aborted) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'This sign-in screen was closed. Reopen it to continue the saved request.'); };
+      const checkCurrent = async snapshot => { checkOpen(); await assertSnapshot(snapshot); checkOpen(); };
+      checkOpen();
+      label = deviceLabel(label); let state = await activationState(expectedState, true), opened;
+      try {
+        const lookup = await credentialLookup(captured, projectId); await checkCurrent(state);
+        let pending = credentialLedger(state).logins.findLast(item => item.kind === kind && item.lookup === lookup), record = pending?.record;
+        if (record) { try { opened = await unlockCredential(record, captured, { projectId }); } catch (error) { if (error.code !== 'credential_unavailable') throw error; } }
+        if (!opened) {
+          const signer = state.activeDeviceId ? await installation(state.activeDeviceId, { requireAccount: false }) : await createInstallation(label);
+          record = await rpc('credentials.lookup', { kind, lookup }, signer, true, () => checkCurrent(state));
+          if (record?.kind !== kind || record?.lookup !== lookup || typeof record?.credentialId !== 'string') throw new ConnectError('credential_unavailable', 'This sign-in method could not be opened.');
+          opened = await unlockCredential(record, captured, { projectId }); pending = undefined;
+        }
+        await checkCurrent(state);
+        const completed = credentialLedger(state).receipts.find(item => item.credentialId === record.credentialId && item.lookup === lookup);
+        if (completed) {
+          const actor = await installation(completed.deviceId);
+          await withRoot(actor, raw => { if (!raw.every((byte, index) => byte === opened.raw[index])) throw new ConnectError('credential_unavailable', 'The saved profile key does not match.'); });
+          const result = await rpc('status', {}, actor, true, () => checkCurrent(state)); checkAccountResult(result, actor, completed.accountId);
+          await mutate(draft => { checkOpen(); sameSnapshot(draft, state); if (draft.activeDeviceId === actor.deviceId) return null; draft.activeDeviceId = actor.deviceId; return draft; }, { beforeCommit: checkOpen, signal });
+          await notify(); return { accountId: actor.accountId, deviceId: actor.deviceId, label: actor.label, alreadyCompleted: true };
+        }
+        if (!pending) {
+          const candidate = await createInstallation(label); candidate.rootEnvelope = await sealLocalRoot(candidate, projectId, opened.raw);
+          pending = { kind, lookup, record, deviceId: candidate.deviceId, accountId: record.accountId, label };
+          state = await mutate(draft => { checkOpen(); sameSnapshot(draft, state); draft.installations.push(candidate);
+            return editCredentialLedger(draft, ledger => { ledger.logins.push(pending); }); });
+        }
+        const actor = await installation(pending.deviceId, { requireAccount: false });
+        const result = await rpc('credentials.login', { kind, lookup, credentialId: record.credentialId,
+          authentication: opened.proof, encryptionPublicJwk: actor.encryptionPublicJwk, label: pending.label }, actor, true, () => checkCurrent(state));
+        checkAccountResult(result, actor, record.accountId);
+        if (result.credentialId !== record.credentialId || canonicalJson(result.wrappedKey) !== canonicalJson(record.wrappedKey)) throw new ConnectError('credential_unavailable', 'The sign-in key changed.');
+        await commitAccount(actor, result.accountId, actor.rootEnvelope, draft => {
+          checkOpen(); sameSnapshot(draft, state); draft.activeDeviceId = actor.deviceId;
+          editCredentialLedger(draft, ledger => { ledger.logins = ledger.logins.filter(item => item.deviceId !== actor.deviceId);
+            ledger.receipts.push({ kind, lookup, credentialId: record.credentialId, accountId: record.accountId, deviceId: actor.deviceId }); });
+        }, { beforeCommit: checkOpen, signal });
+        return { accountId: result.accountId, deviceId: result.deviceId, label: result.label };
+      } finally { opened?.raw.fill(0); }
+    }, options),
     rename: (label, expectedAccountId) => serialize(async () => {
       label = deviceLabel(label);
       const actor = await installation();
@@ -551,60 +798,88 @@ export function createClientWithStorage(options, storage) {
         preview.source = { deviceId: responseId(result.source?.deviceId, 'source device'), label: deviceLabel(result.source?.label) };
         if (completed && completed.accountId !== preview.account.accountId) throw new ConnectError('ACCOUNT_MISMATCH', 'The completed enrollment belongs to another account.');
       } else if (result.account !== null || result.source !== null) throw new ConnectError('INVALID_ENROLLMENT', 'An unconfirmed request cannot name an approving account.');
-      if ((await read())?.activeDeviceId !== state.activeDeviceId) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The active profile changed while checking the confirmation. Review it again.');
-      if (preview.account) enrollmentPreviews.set(requestId, { accountId: preview.account.accountId, activeDeviceId: state.activeDeviceId, deviceId: actor.deviceId });
+      const confirmed = await read();
+      if (confirmed?.activeDeviceId !== state.activeDeviceId || confirmed?.localRevision !== state.localRevision) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The active profile changed while checking the confirmation. Review it again.');
+      if (preview.account) enrollmentPreviews.set(requestId, { accountId: preview.account.accountId, activeDeviceId: state.activeDeviceId, localRevision: state.localRevision, deviceId: actor.deviceId });
       else enrollmentPreviews.delete(requestId);
       return preview;
     }),
-    finishEnrollment: (requestId, expectedAccountId) => serialize(async () => {
+    finishEnrollment: (requestId, expectedAccountId, options = {}) => selectedActivation(options, async ({ signal, expectedState }) => {
+      const checkOpen = () => { if (signal?.aborted) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The device connection was closed. Reopen it to continue the same request.'); };
+      checkOpen();
       requestId = requiredString(requestId, 'Request ID');
       expectedAccountId = requiredString(expectedAccountId, 'Expected account ID');
-      const state = await read();
+      const state = await activationState(expectedState);
+      const checkScope = async () => { checkOpen(); await assertSnapshot(state); checkOpen(); };
       const preview = enrollmentPreviews.get(requestId);
       if (!preview || preview.accountId !== expectedAccountId) throw new ConnectError('ENROLLMENT_PREVIEW_REQUIRED', 'Review the approving account before opening it on this device.');
-      if (state?.activeDeviceId !== preview.activeDeviceId) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The active profile changed after the confirmation preview. Review it again.');
       const completed = state?.installations.find(item => item.enrollmentRequestId === requestId && item.accountId);
+      if ((!completed || state.activeDeviceId !== completed.deviceId)
+          && (state?.activeDeviceId !== preview.activeDeviceId || state?.localRevision !== preview.localRevision)) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The active profile changed after the confirmation preview. Review it again.');
       if (completed) {
         assertExpectedAccount(completed, expectedAccountId);
-        await installation(completed.deviceId);
+        const actor = await installation(completed.deviceId);
+        const checked = await rpc('status', {}, actor, true, checkScope); checkAccountResult(checked, actor, expectedAccountId);
+        checkOpen();
         if (state.activeDeviceId !== completed.deviceId) {
           await mutate(draft => {
-            if (draft.activeDeviceId !== preview.activeDeviceId) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The profile changed before opening the approved account.');
+            checkOpen();
+            if (draft.activeDeviceId !== preview.activeDeviceId || draft.localRevision !== state.localRevision) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The profile changed before opening the approved account.');
             draft.activeDeviceId = completed.deviceId; return draft;
-          });
+          }, { beforeCommit: checkOpen, signal });
           await notify();
         }
-        enrollmentPreviews.set(requestId, { ...preview, activeDeviceId: completed.deviceId });
+        const committed = await read();
+        enrollmentPreviews.set(requestId, { ...preview, activeDeviceId: completed.deviceId, localRevision: committed.localRevision });
         return { accountId: completed.accountId, deviceId: completed.deviceId, label: completed.label, alreadyCompleted: true };
       }
       if (state?.pendingEnrollment?.requestId !== requestId) throw new ConnectError('NO_PENDING_ENROLLMENT', 'This browser did not start this enrollment.');
       const actor = await installation(state.pendingEnrollment.deviceId, { requireAccount: false });
       if (actor.deviceId !== preview.deviceId) throw new ConnectError('ENROLLMENT_PREVIEW_REQUIRED', 'Review this recipient before opening the approved account.');
-      const result = await rpc('enrollment.finish', { requestId, expectedAccountId }, actor);
+      const result = await rpc('enrollment.finish', { requestId, expectedAccountId }, actor, true, checkScope);
+      checkOpen();
       checkAccountResult(result, actor, expectedAccountId);
       const raw = await unwrapEnrollmentRoot(result.wrappedKey, actor, { projectId, accountId: result.accountId, requestId });
       let rootEnvelope;
       try { rootEnvelope = await sealLocalRoot(actor, projectId, raw); } finally { raw.fill(0); }
       await commitAccount(actor, result.accountId, rootEnvelope, (draft, stored) => {
+        checkOpen();
         if (draft.pendingEnrollment?.deviceId !== actor.deviceId) throw new ConnectError('LOCAL_CONFLICT', 'The pending enrollment changed.');
-        if (draft.activeDeviceId !== state.activeDeviceId) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The profile changed during enrollment. Retry to explicitly activate this approved profile.');
+        if (draft.activeDeviceId !== state.activeDeviceId || draft.localRevision !== state.localRevision) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The profile changed during enrollment. Retry to explicitly activate this approved profile.');
         stored.enrollmentRequestId = requestId;
         draft.activeDeviceId = actor.deviceId; draft.pendingEnrollment = null;
-      });
-      enrollmentPreviews.set(requestId, { ...preview, activeDeviceId: actor.deviceId });
+      }, { beforeCommit: checkOpen, signal });
+      const committed = await read();
+      enrollmentPreviews.set(requestId, { ...preview, activeDeviceId: actor.deviceId, localRevision: committed.localRevision });
       return { accountId: result.accountId, deviceId: result.deviceId, label: result.label };
     }),
     discardPendingEnrollment: () => serialize(async () => {
       // Keep the unregistered keys archived: abandoning a screen must never delete an existing profile.
       await mutate(draft => { if (draft.pendingEnrollment?.requestId) enrollmentPreviews.delete(draft.pendingEnrollment.requestId); draft.pendingEnrollment = null; return draft; }); await notify();
     }),
-    switchProfile: accountId => serialize(async () => {
+    discardPendingEnrollmentIfCurrent: (requestId, { localRevision, deviceId, accountId } = {}, { signal } = {}) => serialize(async () => {
+      requestId = requiredString(requestId, 'Request ID'); revision(localRevision);
+      if (deviceId !== null) requiredString(deviceId, 'Expected device ID');
+      if (accountId !== null) requiredString(accountId, 'Expected account ID');
+      const checkOpen = () => { if (signal?.aborted) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The device connection was closed.'); };
+      const state = await mutate(draft => {
+        checkOpen(); sameSnapshot(draft, { localRevision, activeDeviceId: deviceId });
+        const active = draft.installations.find(item => item.deviceId === draft.activeDeviceId);
+        if ((active?.accountId ?? null) !== accountId || draft.pendingEnrollment?.requestId !== requestId) {
+          throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The pending request changed. It was not discarded.');
+        }
+        draft.pendingEnrollment = null; return draft;
+      }, { beforeCommit: checkOpen, signal });
+      enrollmentPreviews.delete(requestId); await notify(); return view(state);
+    }),
+    switchProfile: (accountId, options = {}) => selectedActivation(options, async ({ signal, expectedState }) => {
       accountId = requiredString(accountId, 'Account ID');
-      const state = await read();
+      const checkOpen = () => { if (signal?.aborted) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The profile selection was closed.'); };
+      checkOpen(); const state = await activationState(expectedState);
       const target = state?.installations.find(item => item.accountId === accountId && !item.revoked);
       if (!target) throw new ConnectError('PROFILE_NOT_SAVED', 'That profile is not saved in this browser.');
       await installation(target.deviceId); await withRoot(target, async () => undefined);
-      await mutate(draft => { draft.activeDeviceId = target.deviceId; return draft; }); await notify();
+      await mutate(draft => { checkOpen(); if (expectedState) sameSnapshot(draft, state); draft.activeDeviceId = target.deviceId; return draft; }, signal || expectedState ? { beforeCommit: checkOpen, signal } : undefined); await notify();
       return view(await read());
     }),
     revokeDevice: deviceId => serialize(async () => {
@@ -665,14 +940,17 @@ export function createClientWithStorage(options, storage) {
         await notify(); return result;
       } finally { secret.fill(0); }
     }),
-    recover: (kit, label) => serialize(async () => {
+    recover: (kit, label, options = {}) => selectedActivation(options, async ({ signal, expectedState }) => {
+      const checkOpen = () => { if (signal?.aborted) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'This recovery screen was closed. Reopen it to continue the saved request.'); };
+      checkOpen();
       label = deviceLabel(label);
       const secret = validateKit(kit);
       let raw;
       try {
+        await activationState(expectedState);
         raw = await unwrapRecoveryRoot(kit.wrappedKey, secret, { projectId, accountId: kit.accountId });
         const kitFingerprint = await sha256(canonicalJson(kit));
-        let state = await ensureState();
+        let state = await activationState(expectedState, true);
         const completed = state.installations.find(item => item.recoveryFingerprint === kitFingerprint && item.accountId === kit.accountId);
         if (completed) {
           const actor = await installation(completed.deviceId);
@@ -682,15 +960,16 @@ export function createClientWithStorage(options, storage) {
             }
           });
           // A consumed kit may reopen its original recipient, never a revoked device.
-          const result = await rpc('status', {}, actor);
+          const result = await rpc('status', {}, actor, true, async () => { checkOpen(); await assertSnapshot(state); checkOpen(); });
           checkAccountResult(result, actor, kit.accountId);
           await mutate(draft => {
+            checkOpen();
             if (draft.localRevision !== state.localRevision) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The saved profiles changed during recovery. Review them before opening the recovered profile.');
             const target = draft.installations.find(item => item.deviceId === actor.deviceId);
             if (target.revoked) throw new ConnectError('DEVICE_REVOKED', 'This recovered device was disconnected. Use another saved sign-in method.');
             if (draft.activeDeviceId === actor.deviceId) return null;
             draft.activeDeviceId = actor.deviceId; return draft;
-          });
+          }, { beforeCommit: checkOpen, signal });
           await notify(); await assertCurrent(actor);
           return { accountId: actor.accountId, deviceId: actor.deviceId, label: actor.label, alreadyCompleted: true };
         }
@@ -708,15 +987,16 @@ export function createClientWithStorage(options, storage) {
         const pending = state.pendingRecovery;
         if (pending.kitFingerprint !== kitFingerprint || pending.label !== label) throw new ConnectError('RECOVERY_PENDING', 'Another tab started a different recovery.');
         const actor = await installation(pending.deviceId, { requireAccount: false });
-        const result = await rpc('recovery.use', { accountId: kit.accountId, recoveryId: kit.recoveryId, secret: kit.secret, encryptionPublicJwk: actor.encryptionPublicJwk, label }, actor);
+        const result = await rpc('recovery.use', { accountId: kit.accountId, recoveryId: kit.recoveryId, secret: kit.secret, encryptionPublicJwk: actor.encryptionPublicJwk, label }, actor, true, async () => { checkOpen(); await assertSnapshot(state); checkOpen(); });
         checkAccountResult(result, actor, kit.accountId);
         if (canonicalJson(result.wrappedKey) !== canonicalJson(kit.wrappedKey)) throw new ConnectError('RECOVERY_KEY_MISMATCH', 'The server returned another encrypted recovery key.');
         await commitAccount(actor, result.accountId, actor.rootEnvelope, (draft, stored) => {
+          checkOpen();
           if (draft.pendingRecovery?.deviceId !== actor.deviceId) throw new ConnectError('LOCAL_CONFLICT', 'The pending recovery changed.');
-          if (draft.activeDeviceId !== state.activeDeviceId) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The profile changed during recovery. Retry to explicitly activate the recovered profile.');
+          if (draft.activeDeviceId !== state.activeDeviceId || draft.localRevision !== state.localRevision) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The profile changed during recovery. Retry to explicitly activate the recovered profile.');
           stored.recoveryFingerprint = kitFingerprint;
           draft.activeDeviceId = actor.deviceId; draft.pendingRecovery = null;
-        });
+        }, { beforeCommit: checkOpen, signal });
         return { accountId: result.accountId, deviceId: result.deviceId, label: result.label, recoveryConsumed: true };
       } finally { secret.fill(0); raw?.fill(0); }
     }),

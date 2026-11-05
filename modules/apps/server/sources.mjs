@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, runtimePath, textId, connectorKey } from './protocol.mjs';
 import { RUNTIME_PROFILE, selectedRuntimeProfile, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
 import { nativeTargetTuple, verifyNativeEntryCandidate, verifySourceEntryCandidate, assertNativePortAvailable, readPairedNativeEntry } from './native-entry.mjs';
+import { SELF_IP_PROFILE, ENDPOINT_SCHEMA, normalizeSelfEndpoint, targetFromRow, insertRuntimeEndpoint } from './endpoint-targets.mjs';
 
 export const sourceOperations = new Set(['apps.source.prepare', 'apps.source.promote', 'apps.source.history']);
 export const SOURCE_RECEIPTS_PER_APP = 64;
@@ -17,7 +18,7 @@ const safeClock = value => { assertApps(Number.isSafeInteger(value) && value >= 
 /** One registry/database owns durable mutations. Preparation is bounded process
  * memory and is never authority for an active route before the commit. */
 export function createSourceRegistry({ db, now = Date.now, assertActor, publications, prepareTarget, verifyPreparedTarget,
-  onChanged = () => {}, blockedPorts = [], limits: overrides = {}, scopedAdmission }) {
+  onChanged = () => {}, blockedPorts = [], limits: overrides = {}, scopedAdmission, endpointAdmission }) {
   assertApps(db && typeof assertActor === 'function' && typeof publications?.sourceStateInTransaction === 'function'
     && typeof publications?.promoteSourceInTransaction === 'function' && typeof prepareTarget === 'function'
     && typeof verifyPreparedTarget === 'function' && typeof onChanged === 'function', 'apps_source_dependencies_required', 500);
@@ -51,8 +52,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
     return current;
   }
   function targetTuple(row) {
-    return Object.freeze({ appId: row.app_id, revision: row.revision, ownerAccountId: row.owner_account_id,
-      connectorKey: row.connector_key, port: row.port, entryPath: row.entry_path, profile: row.profile, digest: row.digest });
+    return Object.freeze(targetFromRow(db, row));
   }
   function deviceFor(key, owner) {
     const row = db.prepare('SELECT * FROM app_devices WHERE connector_key=?').get(key);
@@ -64,7 +64,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
   }
   function targetView(target) {
     return { revision: target.revision, digest: target.digest, profile: target.profile, port: target.port, entryPath: target.entryPath,
-      ...deviceFor(target.connectorKey, target.ownerAccountId) };
+      ...deviceFor(target.connectorKey, target.ownerAccountId), ...(target.endpoint ? { endpoint: target.endpoint } : {}) };
   }
   function occupied(id, key, port) {
     assertApps(!db.prepare(`SELECT 1 FROM local_apps a JOIN app_publications p ON p.app_id=a.id
@@ -88,11 +88,14 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
     const sourceEntryAction = normalizeSourceAction(args.sourceEntryAction);
     assertApps(!nativeEntry || !nativeEntryAction, 'invalid_native_pair_action');
     if (args.targetRevision !== undefined) return { id, epoch, revision, targetRevision: positive(args.targetRevision), nativeEntry, nativeEntryAction, sourceEntryAction };
-    exact(args.source, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile']);
+    exact(args.source, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile', 'endpoint']);
     const profile = args.source.profile ?? RUNTIME_PROFILE;
     assertApps(supportedRuntimeProfile(profile), 'app_scoped_admission_required', 503);
+    const endpoint = profile === SELF_IP_PROFILE ? normalizeSelfEndpoint(args.source.endpoint) : undefined;
+    assertApps(endpoint || args.source.endpoint === undefined, 'apps_endpoint_invalid');
     return { id, epoch, revision, nativeEntry, nativeEntryAction, sourceEntryAction, source: { hostDeviceId: textId(args.source.hostDeviceId), connectorId: textId(args.source.connectorId),
-      port: appPort(args.source.port, blockedPorts), entryPath: runtimePath(args.source.entryPath), profile } };
+      port: appPort(args.source.port, blockedPorts), entryPath: runtimePath(args.source.entryPath), profile,
+      ...(endpoint ? { schema: ENDPOINT_SCHEMA, endpoint } : {}) } };
   }
   function normalizeNativeAction(action) {
     if (action === undefined) return undefined;
@@ -134,7 +137,8 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       const max = db.prepare('SELECT max(revision) AS revision FROM app_runtime_targets WHERE app_id=?').get(intent.id).revision;
       assertApps(Number.isSafeInteger(max) && max < Number.MAX_SAFE_INTEGER, 'apps_source_revision_exhausted', 409);
       const tuple = { appId: intent.id, revision: max + 1, ownerAccountId: actor.accountId, connectorKey: matches[0].connector_key,
-        port: intent.source.port, entryPath: intent.source.entryPath, profile: intent.source.profile };
+        port: intent.source.port, entryPath: intent.source.entryPath, profile: intent.source.profile,
+        ...(intent.source.endpoint ? { schema: ENDPOINT_SCHEMA, endpoint: intent.source.endpoint } : {}) };
       target = Object.freeze({ ...tuple, digest: runtimeTargetDigest(tuple) });
     }
     assertApps(supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest(target), 'apps_registry_corrupt', 500);
@@ -142,6 +146,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       assertApps(scopedAdmission, 'app_scoped_admission_required', 503);
       scopedAdmission.verifyCandidate(target);
     }
+    if (target.profile === SELF_IP_PROFILE) { assertApps(typeof endpointAdmission === 'function', 'apps_endpoint_connector_upgrade_required', 503); endpointAdmission(target); }
     deviceFor(target.connectorKey, actor.accountId); occupied(intent.id, target.connectorKey, target.port);
     return target;
   }
@@ -178,6 +183,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
   }
   function verification(entry, actor) {
     for (const [index, target] of [entry.target, ...(entry.nativeEntry ? [entry.nativeEntry.target] : [])].entries()) {
+      if (target.profile === SELF_IP_PROFILE) endpointAdmission(target);
       const result = verifyPreparedTarget({ evidence: entry.evidence[index], preparationId: entry.id, actor, target, requiredBindingVersion: 2 });
       if (isAsync(result)) Promise.resolve(result).catch(() => {});
       assertApps(result === true, 'apps_source_preparation_stale', 409);
@@ -248,7 +254,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       exact(args.exposureAck, ['scope', 'targetRevision', 'targetDigest', 'profile']);
       assertApps(Number.isSafeInteger(args.exposureAck.targetRevision) && args.exposureAck.targetRevision >= 1
         && typeof args.exposureAck.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(args.exposureAck.targetDigest)
-        && (args.exposureAck.scope === 'whole-port' && args.exposureAck.profile === RUNTIME_PROFILE
+        && (args.exposureAck.scope === 'whole-port' && [RUNTIME_PROFILE, SELF_IP_PROFILE].includes(args.exposureAck.profile)
           || args.exposureAck.scope === 'authenticated-workspace' && args.exposureAck.profile === 'soty.selected-human-embed.v2'), 'app_exposure_ack_required');
       exposureAck = { scope: args.exposureAck.scope, targetRevision: args.exposureAck.targetRevision, targetDigest: args.exposureAck.targetDigest, profile: args.exposureAck.profile };
     } else assertApps(args.exposureAck === undefined || args.exposureAck === null, 'unexpected_exposure_ack');
@@ -311,6 +317,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
         assertApps(maximum + 1 === target.revision, 'app_source_target_conflict', 409);
         db.prepare('INSERT INTO app_runtime_targets VALUES (?,?,?,?,?,?,?,?,?)').run(intent.id, target.revision, actor.accountId,
           target.connectorKey, target.port, target.entryPath, target.profile, target.digest, safeClock(now()));
+        insertRuntimeEndpoint(db, target);
       } else {
         const retained = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(intent.id, target.revision);
         assertApps(retained && retained.digest === target.digest, 'apps_source_target_unavailable', 409);

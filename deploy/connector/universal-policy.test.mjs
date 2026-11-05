@@ -474,7 +474,7 @@ test('image modes enforce legacy v5 baseline before feature writes; copied conta
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('1'), originalImage: image('1', currentStorageReaders, 'b') }), failCode('universal_policy_image_mode_mismatch'));
   assert.throws(() => assertUniversalImagePrerequisites(baseline, { candidateImage: image(undefined), originalImage: image('0', reader3, 'b') }), failCode('universal_policy_image_mode_mismatch'));
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('0', reader3), originalImage: image('1', currentStorageReaders, 'b') }), failCode('universal_policy_reader_baseline_required'));
-  const future = JSON.parse(currentStorageReaders); future.version = 8;
+  const future = JSON.parse(currentStorageReaders); future.version = 9;
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('0', JSON.stringify(future)), originalImage: image('1', currentStorageReaders, 'b') }), failCode('storage_reader_unknown'));
 });
 
@@ -500,11 +500,11 @@ test('actual host factories initialize feature stores/HTTP; storageReady alone a
     namedAppZone: '', discoveryOrigin: '', universalAppsEnabled: true, ...loaded });
   f.beforeRemove.push(() => app.locals.closeServices());
   const dto = runtime(f, app, profile); assert.equal(assertUniversalPreparedness(handle, dto, { allowFixture: true }).ok, true);
-  const format = await readStorageFormat(data); assert.equal(format.schema, 'soty.storage-format.v7'); assert.equal(format.humanIdentity, 1);
-  assert.equal(format.connect, 4);
+  const format = await readStorageFormat(data); assert.equal(format.schema, 'soty.storage-format.v10'); assert.equal(format.humanIdentity, 1);
+  assert.equal(format.connect, 5);
   const connectDb = new DatabaseSync(path.join(data, 'connect', 'accounts.sqlite'), { readOnly: true });
   try {
-    assert.equal(connectDb.prepare("SELECT value FROM connect_meta WHERE key='schema_version'").get().value, '4');
+    assert.equal(connectDb.prepare("SELECT value FROM connect_meta WHERE key='schema_version'").get().value, '5');
     assert.equal(connectDb.prepare("SELECT value FROM connect_meta WHERE key='min_reader'").get().value, '2');
   } finally { connectDb.close(); }
   assertStorageCompatible(image('1'), format); assert.throws(() => assertStorageCompatible(image('0', reader3), format), failCode('storage_reader_incompatible'));

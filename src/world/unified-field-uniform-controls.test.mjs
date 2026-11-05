@@ -11,6 +11,7 @@ const root = process.env.SOTY_REVIEW_FIELD_ROOT
 const ts = createRequire(new URL('package.json', root))('typescript');
 const geometry = await import(new URL('src/world/unified-field-layout.mjs', root));
 const camera = await import(new URL('src/world/unified-field-camera.mjs', root));
+const {fieldPresentationClip}=await import(new URL('src/world/unified-field-presentation.mjs',root));
 const { resolveAppArt } = await import(new URL('src/world/app-art.mjs', root));
 const { fieldEntityKey } = await import(new URL('modules/field/contract.mjs', root));
 const source = readFileSync(process.env.SOTY_REVIEW_FIELD_SOURCE || new URL('src/world/unified-field.ts', root), 'utf8');
@@ -19,7 +20,7 @@ const printer = ts.createPrinter(), print = node => printer.printNode(ts.EmitHin
 const named = (nodes, name) => { const node = nodes.find(item => ts.isFunctionDeclaration(item) && item.name?.text === name); assert.ok(node, name); return node; };
 const engine = named(parsed.statements, 'createUnifiedField');
 const compile = value => ts.transpileModule(value, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-const compiled = compile([named(parsed.statements, 'compactOverviewTitles'), ...['renderNode', 'render', 'focusPreview'].map(name => named(engine.body.statements, name))].map(print).join('\n')
+const compiled = compile([named(parsed.statements, 'compactOverviewTitles'), ...['renderNode', 'render', 'focusPreview','inspectShortcut'].map(name => named(engine.body.statements, name))].map(print).join('\n')
   + '\nexports.titles = compactOverviewTitles; exports.render = render;');
 
 // Reuse the maintained actual-render fixture through AST declarations. Do not
@@ -32,7 +33,7 @@ const fixtureNodes = ['Port', 'app', 'specimen', 'harness'].map(name => {
     || ts.isVariableStatement(item) && item.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === name));
   assert.ok(node, `maintained actual-render fixture ${name}`); return node;
 });
-const fixtureContext = vm.createContext({ exports: {}, vm, compiled, ...geometry, ...camera, resolveAppArt, fieldEntityKey, AbortController, Date, performance, clearTimeout });
+const fixtureContext = vm.createContext({ exports: {}, vm, compiled, ...geometry, ...camera, resolveAppArt, fieldEntityKey,fieldPresentationClip, AbortController, Date, performance, clearTimeout });
 new vm.Script(compile(fixtureNodes.map(fixturePrint).join('\n') + '\nexports.harness = harness;')).runInContext(fixtureContext);
 const harness = fixtureContext.exports.harness;
 const near = (a, b, message) => assert.ok(Math.abs(a - b) < 1e-7, `${message}: ${a} != ${b}`);
@@ -65,6 +66,14 @@ for (const scale of [.3, .5, 1.18]) test(`actual inspector stays attached to the
   }
 });
 
+test('recreated inspectors remain the immediate siblings of their own retained nodes',()=>{
+  const h=harness(1280,800,{scale:.5,focus:'studio'});h.render();
+  assert.ok(h.environment.inspectElements.size>1,'fixture must retain independently inspectable nodes');
+  for(const action of h.environment.inspectElements.values())action.remove();h.environment.inspectElements.clear();h.render();
+  const siblings=h.environment.plane.children;
+  for(const[id,action]of h.environment.inspectElements){const node=h.environment.nodeElements.get(id);assert.equal(siblings[siblings.indexOf(node)+1],action,`inspector for ${id} must not attach to another node after focus/back recreation`);}
+});
+
 for (const scale of [.3, .5, 1.18]) test(`actual overview title occupancy is kind-independent for common hex geometry at scale ${scale}`, () => {
   const h = harness(393, 900, { scale }); Object.assign(h.camera, { x: 0, y: 0, scale });
   const placements = (kind, x, y) => {
@@ -82,4 +91,24 @@ for (const scale of [.3, .5, 1.18]) test(`actual overview title occupancy is kin
   for (const x of [-240, -120, 0, 120, 240]) for (const y of [-600, -400, -270, -180, 0, 180, 270]) {
     assert.equal(placements('device', x, y), placements('app', x, y), `same footprint, ${scale}, obstacle ${x},${y}`);
   }
+});
+
+for (const scale of [.5, 1, 1.15]) test(`mobile native action stays above the editor at scale ${scale}`, () => {
+  const h = harness(390,844,{scale,focus:'personal'}),env=h.environment;
+  const document={schema:'soty.field.v2',contexts:[{contextId:'personal',title:'Личное',x:0,y:0}],shortcuts:[
+    {shortcutId:'note',entity:{kind:'object',id:'object_note'},contextId:'personal',placement:{kind:'free',x:0,y:0,width:340,height:300}},
+  ]};
+  h.data.document=document;h.data.entities=[{entity:document.shortcuts[0].entity,title:'Записка',presentation:{shape:'rect'}}];
+  h.data.layout=geometry.layoutUnifiedField(document,h.data.entities);env.fieldDocument=document;env.index=geometry.createFieldSpatialIndex(h.data.layout.nodes);
+  Object.assign(h.camera,{x:0,y:0,scale});env.options.readableMobileFocus=true;
+  env.options.objectKey=()=> 'note:source';env.options.createObject=()=>({element:env.el('article','test-note'),update(){},setVisible(){},hasUnsavedChanges:()=>false,dispose(){}});
+  h.render();
+  const node=h.data.layout.nodes[0],action=env.inspectElements.get('note');assert.ok(action);
+  // Actual production render emits world CSS positions. The action's fixed
+  // 44px hit target scales around its 22px local centre inside the canvas.
+  const centre=camera.fieldWorldToScreen({x:parseFloat(action.style.left)+22,y:parseFloat(action.style.top)+22},h.camera,h.view);
+  const bodyTop=camera.fieldWorldToScreen({x:node.x,y:node.y+80},h.camera,h.view).y;
+  assert.ok(centre.y+22<=bodyTop,`action bottom ${centre.y+22} covers editor at ${bodyTop}`);
+  assert.ok(centre.x-22>=8&&centre.x+22<=382,'whole action remains within the mobile screen');
+  action.dispatch('click');assert.equal(h.calls.inspect.length,1);assert.equal(h.calls.activate.length,0);
 });

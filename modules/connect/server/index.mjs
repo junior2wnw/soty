@@ -1,10 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, createPublicKey, ECDH, randomBytes, timingSafeEqual, verify } from 'node:crypto';
+import { createHash, createHmac, createPublicKey, ECDH, randomBytes, timingSafeEqual, verify } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrateDatabase, READER_EPOCH, SCHEMA_VERSION } from './schema.mjs';
 import { createPlatformInvitations, PLATFORM_INVITATION_OPERATIONS } from './platform-invitations.mjs';
+import {createEphemeralChallengeStore} from './ephemeral-challenges.mjs';
 
 export { READER_EPOCH, SCHEMA_VERSION };
 const MODULE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -28,7 +29,7 @@ const RECOVERY_PREPARE_MS = 15 * 60_000;
 const CONTACT_MS = 7 * 24 * 60 * 60_000;
 const MAX_ENVELOPE_BYTES = 2 * 1024 * 1024;
 const MAX_WRAPPED_BYTES = 256 * 1024;
-const MAX_ARGS_BYTES = MAX_ENVELOPE_BYTES + 16 * 1024;
+export const MAX_ARGS_BYTES = MAX_ENVELOPE_BYTES + 16 * 1024;
 const OPERATIONS = new Set([
   ...PLATFORM_INVITATION_OPERATIONS,
   'bootstrap', 'status', 'profile.rename', 'card.get', 'card.rotate', 'contacts.request', 'contacts.list',
@@ -36,6 +37,7 @@ const OPERATIONS = new Set([
   'contacts.sendInvite', 'contacts.dismissInvite',
   'enrollment.start', 'enrollment.inspect', 'enrollment.approve', 'enrollment.preview', 'enrollment.finish',
   'device.revoke', 'vault.get', 'vault.put', 'recovery.set', 'recovery.confirm', 'recovery.use',
+  'credentials.status', 'credentials.set', 'credentials.remove', 'credentials.lookup', 'credentials.login',
 ]);
 
 export class ConnectError extends Error {
@@ -163,29 +165,32 @@ function roomInviteUrl(value, origin) {
 }
 
 /** Local product identity + contacts. Not an OIDC provider or shared identity authority. */
-export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false, platformAdminAccountIds = [], initializePlatformInvitations = true } = {}) {
+export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false, platformAdminAccountIds = [], initializePlatformInvitations = true, onContactsChanged = () => {} } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(Array.isArray(allowedOrigins) && allowedOrigins.length > 0 && allowedOrigins.length <= 64, 'allowed_origins_required');
   const origins = new Set(allowedOrigins.map(originValue));
   assert(typeof clock === 'function', 'invalid_clock');
   assert(typeof canRequestContact === 'function', 'invalid_contact_policy');
+  assert(typeof onContactsChanged === 'function', 'invalid_contact_listener');
   assert(typeof initializePlatformInvitations === 'boolean', 'invalid_platform_initialization');
   assert(Array.isArray(platformAdminAccountIds) && platformAdminAccountIds.length <= 32 && platformAdminAccountIds.every(id => typeof id === 'string' && /^acct_[A-Za-z0-9_-]{32}$/u.test(id)), 'invalid_platform_admins');
   assert(Array.isArray(extensions) && extensions.length <= 32, 'invalid_extensions');
-  const extensionOperations = new Map(), extensionResultLimits = new Map();
+  const extensionOperations = new Map(), extensionResultLimits = new Map(),ephemeralOperations=new Set();
   for (const extension of extensions) {
     const sync = extension && typeof extension.execute === 'function' && extension.execute.constructor.name !== 'AsyncFunction';
     const async = extension && typeof extension.executeAsync === 'function';
     assert(extension && extension.operations instanceof Set && ((sync && !extension.executeAsync) || (async && !extension.execute)), 'invalid_extension');
     assert(extension.maxResultBytes === undefined || Number.isSafeInteger(extension.maxResultBytes)
       && extension.maxResultBytes >= 1024 && extension.maxResultBytes <= 8 * 1024 * 1024, 'invalid_extension_result_limit');
+    assert(extension.challengeStorage===undefined||['persistent','memory'].includes(extension.challengeStorage),'invalid_extension_challenge_storage');
     for (const operation of extension.operations) {
       assert(typeof operation === 'string' && /^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*){1,4}$/u.test(operation)
         && operation.length <= 100 && !OPERATIONS.has(operation) && operation !== 'card.resolve'
         && !extensionOperations.has(operation), 'invalid_extension_operation');
       extensionOperations.set(operation, extension);
       extensionResultLimits.set(operation, extension.maxResultBytes ?? MAX_ARGS_BYTES);
+      if(extension.challengeStorage==='memory')ephemeralOperations.add(operation);
     }
   }
   const supports = operation => OPERATIONS.has(operation) || extensionOperations.has(operation);
@@ -196,7 +201,8 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   }
   const db = new DatabaseSync(file);
-  try { migrateDatabase(db, projectId, { supportedVersion: initializePlatformInvitations ? SCHEMA_VERSION : 3 }); } catch (error) { db.close(); throw error; }
+  let ephemeralChallenges;
+  try { migrateDatabase(db, projectId, { supportedVersion: initializePlatformInvitations ? SCHEMA_VERSION : 3 });ephemeralChallenges=createEphemeralChallengeStore({db,operations:ephemeralOperations,clock}); } catch (error) { db.close(); throw error; }
   let closed = false, transactionActive = false, activeActorRef = null, actorFenceActive = false, actorFenceActor = null;
   let hostAuthorityFrame = null, currentContactFrame = null;
   // Only actor objects emitted by this signed dispatcher can enter the private
@@ -211,6 +217,13 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   const all = (sql, ...params) => db.prepare(sql).all(...params);
   const run = (sql, ...params) => db.prepare(sql).run(...params);
   const platformInvitations = createPlatformInvitations({ get, all, run, assert, exactArgs, textId, adminAccountIds: platformAdminAccountIds });
+  let credentialDecoyKey = null;
+  if (get('PRAGMA user_version').user_version >= 5) {
+    run('INSERT OR IGNORE INTO credential_security(id,decoy_key) VALUES(1,?)', randomBytes(32).toString('hex'));
+    const key = get('SELECT decoy_key FROM credential_security WHERE id=1')?.decoy_key;
+    assert(typeof key === 'string' && /^[a-f0-9]{64}$/u.test(key), 'connect_storage_corrupt');
+    credentialDecoyKey = Buffer.from(key, 'hex');
+  }
   function requireIdle() {
     assert(!closed, 'service_closed');
     assert(!transactionActive && !db.isTransaction, 'connect_transaction_nested');
@@ -301,6 +314,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       ON CONFLICT(key) DO UPDATE SET bucket=excluded.bucket,count=CASE WHEN rate_limits.bucket=excluded.bucket THEN rate_limits.count+1 ELSE 1 END`, key, bucket);
   }
   function cleanup(timestamp) {
+    ephemeralChallenges.cleanup(timestamp);
     run('DELETE FROM challenges WHERE expires_at<?', timestamp - 60 * 60_000);
     run("UPDATE contact_requests SET state='expired' WHERE state='pending' AND expires_at<=?", timestamp);
     run("UPDATE recovery_methods SET state='expired' WHERE state='pending' AND expires_at<=?", timestamp);
@@ -316,6 +330,28 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   function accountReply(accountId, deviceId) {
     const account = get('SELECT id,label FROM accounts WHERE id=?', accountId);
     return { accountId: account.id, deviceId, label: account.label };
+  }
+  function credentialKind(value) { assert(['password', 'phrase'].includes(value), 'credential_unavailable'); return value; }
+  function credentialState(accountId) {
+    const state = { schema: 'connect.credentials.v1', accountId };
+    for (const kind of ['password', 'phrase']) {
+      const method = get('SELECT enabled,revision,login FROM credential_methods WHERE account_id=? AND kind=?', accountId, kind);
+      state[kind] = { enabled: Boolean(method?.enabled), revision: method?.revision ?? 0,
+        ...(kind === 'password' ? { login: method?.enabled ? method.login : null } : {}) };
+    }
+    return state;
+  }
+  function credentialDescriptor(row) {
+    return { credentialId: row.id, projectId, accountId: row.account_id, kind: row.kind, lookup: row.lookup,
+      salt: row.salt, iterations: 600_000, wrappedKey: JSON.parse(row.wrapped_key) };
+  }
+  function decoyCredential(kind, lookup) {
+    const part = label => createHmac('sha256', credentialDecoyKey).update(canonicalJson([kind, lookup, label])).digest();
+    const accountId = 'acct_' + part('account').subarray(0, 24).toString('base64url'), salt = part('salt').toString('base64url');
+    const binding = { schema: 'connect.credential-key.v1', projectId, accountId, kind, lookup, salt, iterations: 600_000 };
+    return { credentialId: 'credential_' + part('id').subarray(0, 24).toString('base64url'), projectId, accountId, kind, lookup,
+      salt, iterations: 600_000, wrappedKey: { ...binding, iv: part('iv').subarray(0, 12).toString('base64url'),
+        ciphertext: Buffer.concat([part('ciphertext'), part('tag').subarray(0, 16)]).toString('base64url') } };
   }
   function assertCandidate(deviceId, encryption) {
     const existing = installation(deviceId);
@@ -416,6 +452,38 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     return item;
   }
   function act(op, args, ctx, timestamp) {
+    if (op.startsWith('credentials.')) assert(get('PRAGMA user_version').user_version >= 5, 'unsupported_operation');
+    if (op === 'credentials.lookup') {
+      exactArgs(args, ['kind', 'lookup']); const kind = credentialKind(args.kind);
+      base64(args.lookup, 32, 'credential_unavailable');
+      const method = get('SELECT * FROM credential_methods WHERE kind=? AND lookup=? AND enabled=1', kind, args.lookup);
+      return method ? credentialDescriptor(method) : decoyCredential(kind, args.lookup);
+    }
+    if (op === 'credentials.login') {
+      exactArgs(args, ['kind', 'lookup', 'credentialId', 'authentication', 'encryptionPublicJwk', 'label']);
+      const kind = credentialKind(args.kind), lookup = args.lookup;
+      base64(lookup, 32, 'credential_unavailable'); base64(args.authentication, 32, 'credential_unavailable');
+      const encryption = canonicalJson(normalizePublicJwk(args.encryptionPublicJwk)), deviceLabel = label(args.label);
+      const known = installation(ctx.deviceId);
+      assert(known?.state !== 'revoked', 'device_revoked');
+      const receipt = get('SELECT * FROM credential_logins WHERE device_id=?', ctx.deviceId);
+      if (receipt) {
+        assert(known?.state === 'active' && known.account_id === receipt.account_id && known.encryption_jwk === encryption
+          && receipt.credential_id === args.credentialId && receipt.kind === kind && receipt.lookup === lookup
+          && same(receipt.digest, ctx.digest), 'credential_unavailable');
+        return JSON.parse(receipt.result_json);
+      }
+      const method = get('SELECT * FROM credential_methods WHERE id=? AND kind=? AND lookup=? AND enabled=1', textId(args.credentialId), kind, lookup);
+      const valid = same(method?.verifier ?? 'A'.repeat(43), sha256(args.authentication));
+      assert(method && valid, 'credential_unavailable');
+      assertCandidate(ctx.deviceId, encryption);
+      if (known) run("UPDATE installations SET account_id=?,label=?,state='active',activated_at=?,enrolled_by=? WHERE id=?", method.account_id, deviceLabel, timestamp, method.id, ctx.deviceId);
+      else insertInstallation(ctx, encryption, deviceLabel, timestamp, method.account_id, method.id);
+      const result = { ...accountReply(method.account_id, ctx.deviceId), wrappedKey: JSON.parse(method.wrapped_key), credentialId: method.id };
+      run('INSERT INTO credential_logins(device_id,credential_id,account_id,kind,lookup,digest,result_json,created_at) VALUES(?,?,?,?,?,?,?,?)',
+        ctx.deviceId, method.id, method.account_id, kind, lookup, ctx.digest, canonicalJson(result), timestamp);
+      return result;
+    }
     if (op === 'bootstrap') {
       exactArgs(args, ['label', 'encryptionPublicJwk'], ['invitationToken']);
       const deviceLabel = label(args.label);
@@ -522,6 +590,43 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     }
 
     const { device, account } = authenticated(ctx.deviceId);
+    if (op === 'credentials.status') { exactArgs(args); return credentialState(account.id); }
+    if (op === 'credentials.set' || op === 'credentials.remove') {
+      const setting = op === 'credentials.set';
+      exactArgs(args, setting ? ['kind', 'requestId', 'expectedRevision', 'credentialId', 'lookup', 'login', 'salt', 'iterations', 'verifier', 'wrappedKey']
+        : ['kind', 'requestId', 'expectedRevision']);
+      const kind = credentialKind(args.kind); textId(args.requestId);
+      assert(Number.isSafeInteger(args.expectedRevision) && args.expectedRevision >= 0, 'revision_conflict');
+      const previous = get('SELECT * FROM credential_methods WHERE account_id=? AND kind=?', account.id, kind);
+      if (previous?.request_id === args.requestId) {
+        assert(same(previous.digest, ctx.digest), 'request_conflict'); return credentialState(account.id);
+      }
+      assert((previous?.revision ?? 0) === args.expectedRevision, 'revision_conflict');
+      let credentialId = previous?.id ?? randomId('credential'), lookup = null, login = null, salt = null, verifier = null, wrapped = null;
+      if (setting) {
+        credentialId = textId(args.credentialId);
+        base64(args.lookup, 32, 'credential_unavailable'); base64(args.salt, 32, 'credential_unavailable'); base64(args.verifier, 32, 'credential_unavailable');
+        assert(args.iterations === 600_000, 'credential_unavailable');
+        if (kind === 'password') {
+          assert(typeof args.login === 'string' && args.login.isWellFormed() && args.login === args.login.normalize('NFC').trim().toLowerCase()
+            && [...args.login].length >= 3 && [...args.login].length <= 80 && !/[\p{C}\s]/u.test(args.login), 'invalid_login');
+          assert(args.lookup === sha256(canonicalJson(['connect.password.lookup.v1', projectId, args.login])), 'invalid_login'); login = args.login;
+        } else assert(args.login === null, 'credential_unavailable');
+        const occupied = get('SELECT account_id FROM credential_methods WHERE kind=? AND lookup=? AND enabled=1', kind, args.lookup);
+        assert(!occupied || occupied.account_id === account.id, 'credential_exists');
+        const binding = { schema: 'connect.credential-key.v1', projectId, accountId: account.id, kind, lookup: args.lookup, salt: args.salt, iterations: 600_000 };
+        assert(record(args.wrappedKey) && Object.keys(args.wrappedKey).length === 9
+          && Object.entries(binding).every(([key, value]) => args.wrappedKey[key] === value), 'credential_unavailable');
+        base64(args.wrappedKey.iv, 12, 'credential_unavailable'); base64(args.wrappedKey.ciphertext, 48, 'credential_unavailable');
+        lookup = args.lookup; salt = args.salt; verifier = args.verifier; wrapped = envelopeJson(args.wrappedKey, 2048);
+      }
+      run(`INSERT INTO credential_methods(account_id,kind,id,enabled,revision,login,lookup,salt,verifier,wrapped_key,request_id,digest,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,kind) DO UPDATE SET id=excluded.id,enabled=excluded.enabled,
+        revision=excluded.revision,login=excluded.login,lookup=excluded.lookup,salt=excluded.salt,verifier=excluded.verifier,
+        wrapped_key=excluded.wrapped_key,request_id=excluded.request_id,digest=excluded.digest,updated_at=excluded.updated_at`,
+        account.id, kind, credentialId, setting ? 1 : 0, args.expectedRevision + 1, login, lookup, salt, verifier, wrapped, args.requestId, ctx.digest, timestamp);
+      return credentialState(account.id);
+    }
     if (PLATFORM_INVITATION_OPERATIONS.includes(op)) {
       assert(get('PRAGMA user_version').user_version >= 4, 'unsupported_operation');
       return platformInvitations.dispatch(op, args, account.id, ctx.digest, timestamp);
@@ -762,9 +867,23 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     projectId,
     schemaVersion: SCHEMA_VERSION,
     readerEpoch: READER_EPOCH,
-    close() { if (!closed) { requireIdle(); db.close(); closed = true; revocationListeners.clear(); accountListeners.clear(); } },
+    close() { if (!closed) { requireIdle(); db.close(); closed = true;ephemeralChallenges.close();revocationListeners.clear(); accountListeners.clear(); } },
     withAuthorityFence,
     withActorAuthorityFence,
+    /** Host composition only; retains the original signed actor and canonical
+     * admission policy/receipt. This does not register another incoming RPC. */
+    platformAdmission({ actor, op, args = {} }) {
+      assert(['platform.admission.get', 'platform.admission.update', 'platform.admission.receipt'].includes(op), 'unsupported_operation');
+      const argsJson = canonicalJson(args);
+      assert(Buffer.byteLength(argsJson, 'utf8') <= MAX_ARGS_BYTES, 'arguments_too_large');
+      return withActorAuthorityFence(actor, () => {
+        assert(get('PRAGMA user_version').user_version >= 4, 'unsupported_operation');
+        const digest = sha256(argsJson);
+        return op === 'platform.admission.receipt'
+          ? platformInvitations.readAdmissionReceipt(args, actor.accountId, digest)
+          : platformInvitations.dispatch(op, args, actor.accountId, digest, now());
+      });
+    },
     /** Host-only current reciprocal contact predicate inside this actor's fence.
      * Discovery/contact-request policy and copied actor fields grant no calls. */
     hasCurrentContact(actor, peerAccountId) {
@@ -800,7 +919,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       assert(!closed && typeof listener === 'function', 'invalid_listener'); accountListeners.add(listener);
       return () => accountListeners.delete(listener);
     },
-    async handle(input) {
+    async handle(input, { signal } = {}) {
       try {
         requireIdle();
         assert(record(input), 'invalid_request');
@@ -822,7 +941,8 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
             const challengeId = randomId('challenge');
             const expiresAt = timestamp + CHALLENGE_MS;
             const message = canonicalJson({ schema: 'connect.proof.v1', projectId, origin, operation: args.operation, digest: args.digest, challengeId, expiresAt });
-            run('INSERT INTO challenges(id,origin,operation,digest,message,expires_at) VALUES (?,?,?,?,?,?)', challengeId, origin, args.operation, args.digest, message, expiresAt);
+            if(ephemeralChallenges.hasOperation(args.operation))ephemeralChallenges.issue({id:challengeId,origin,operation:args.operation,digest:args.digest,message,expires_at:expiresAt,consumed_at:null});
+            else run('INSERT INTO challenges(id,origin,operation,digest,message,expires_at) VALUES (?,?,?,?,?,?)', challengeId, origin, args.operation, args.digest, message, expiresAt);
             return { ok: true, challengeId, message, expiresAt };
           });
         }
@@ -846,10 +966,11 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
         const deviceId = deviceIdForKey(publicJwk);
         const signature = base64(proof.signature, 64, 'invalid_signature');
         const digest = sha256(argsJson);
-        let deferred = null, createdAccountId = null;
+        let deferred = null, createdAccountId = null, contactAccounts = null;
         const reply = transaction(() => {
           cleanup(timestamp);
-          const challenge = get('SELECT * FROM challenges WHERE id=?', proof.challengeId);
+          const ephemeral=ephemeralChallenges.hasOperation(op);
+          const challenge = ephemeral?ephemeralChallenges.get(proof.challengeId):get('SELECT * FROM challenges WHERE id=?', proof.challengeId);
           assert(challenge && challenge.expires_at > timestamp, 'challenge_expired');
           assert(challenge.consumed_at === null, 'challenge_consumed');
           assert(challenge.origin === origin && challenge.operation === op && same(challenge.digest, digest), 'challenge_mismatch');
@@ -857,12 +978,19 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
           try { valid = verify('sha256', Buffer.from(challenge.message, 'utf8'), { key: createPublicKey({ key: publicJwk, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, signature); }
           catch { /* Return only a fixed, non-sensitive error. */ }
           assert(valid, 'invalid_signature');
-          run('UPDATE challenges SET consumed_at=? WHERE id=?', timestamp, challenge.id);
+          if(ephemeral)assert(ephemeralChallenges.consume(challenge.id,timestamp),'challenge_consumed');
+          else run('UPDATE challenges SET consumed_at=? WHERE id=?', timestamp, challenge.id);
           // Valid proofs remain consumed even if the requested operation fails. All operation
           // writes roll back together, independently of the proof and persisted rate limit.
           try {
             hitLimit('signed:' + deviceId, 240, 60_000, timestamp);
             if (op === 'recovery.use') hitLimit('recovery:peer:' + peer, 120, 60_000, timestamp);
+            if (op === 'credentials.lookup' || op === 'credentials.login') {
+              try {
+                hitLimit('credentials:peer:' + peer, 60, 60_000, timestamp);
+                if (typeof args.lookup === 'string' && args.lookup.length === 43) hitLimit('credentials:lookup:' + args.lookup + ':peer:' + peer, 40, 15 * 60_000, timestamp);
+              } catch (error) { if (error.code === 'rate_limited') fail('credential_rate_limited'); throw error; }
+            }
           } catch (error) { return publicError(error); }
           db.exec('SAVEPOINT connect_action');
           try {
@@ -875,6 +1003,17 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
             }
             const previousAccount = op === 'bootstrap' ? installation(deviceId)?.account_id : null;
             const result = act(op, args, { origin, publicJwk, publicJson, deviceId, digest }, timestamp);
+            if(op.startsWith('contacts.')&&op!=='contacts.list'){
+              const own=installation(deviceId).account_id,affected=new Set([own]);
+              if(typeof args.peerAccountId==='string')affected.add(args.peerAccountId);
+              const request=(args.requestId||result.requestId)&&get('SELECT sender_id,recipient_id FROM contact_requests WHERE id=?',args.requestId||result.requestId);
+              if(request){affected.add(request.sender_id);affected.add(request.recipient_id);}
+              const relation=(args.relationshipId||result.relationshipId)&&get('SELECT first_id,second_id FROM relationships WHERE id=?',args.relationshipId||result.relationshipId);
+              if(relation){affected.add(relation.first_id);affected.add(relation.second_id);}
+              const invite=args.invitationId&&get('SELECT sender_id,recipient_id FROM contact_invitations WHERE id=?',args.invitationId);
+              if(invite){affected.add(invite.sender_id);affected.add(invite.recipient_id);}
+              contactAccounts=[...affected];
+            }
             db.exec('RELEASE connect_action');
             if (op === 'bootstrap' && !previousAccount) createdAccountId = result.accountId;
             return { ok: true, ...result };
@@ -888,12 +1027,13 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
           const event = Object.freeze({ accountId: createdAccountId });
           for (const listener of accountListeners) { try { listener(event); } catch { /* Reconciliation repairs missed delivery. */ } }
         }
+        if(reply.ok&&contactAccounts){try{onContactsChanged(Object.freeze({accountIds:Object.freeze(contactAccounts),authorityChanged:true}));}catch{/* Contact state is already committed. */}}
         if (reply.ok && deferred) {
           // Proof and rate limit are committed before external I/O. Never hold an SQLite
           // transaction across an await. Async modules recheck authorization at commit and
           // persist their own request IDs for safe retry after a lost network response.
           try {
-            const value = await extensionOperations.get(op).executeAsync({ op, ...deferred });
+            const value = await extensionOperations.get(op).executeAsync({ op, ...deferred, ...(signal ? { signal } : {}) });
             return { ok: true, ...extensionResult(value, extensionResultLimits.get(op)) };
           } catch (error) { return publicError(extensionError(error)); }
         }

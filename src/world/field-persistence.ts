@@ -1,5 +1,5 @@
-import { createFieldDocument, validateFieldDocument } from '../../modules/field/contract.mjs';
-import type { FieldDocument } from '../../modules/field/contract.mjs';
+import { createFieldDocument, validateAnyFieldDocument as validateFieldDocument } from '../../modules/field/contract.mjs';
+import type { AnyFieldDocument as FieldDocument } from '../../modules/field/contract.mjs';
 import type { DirectoryApi } from './field-directory';
 
 export interface FieldEnvelope { revision: number; document: FieldDocument; contentHash: string; updatedAt: number }

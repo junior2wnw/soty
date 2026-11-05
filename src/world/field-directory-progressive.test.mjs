@@ -41,7 +41,9 @@ function fixture({ groups = 20, people = 20, apps = 20, waits = {}, failed = '',
   vm.createContext(environment);
   const module = (source, key) => { vm.runInContext(`globalThis.${key}={};\n(function(exports,require){\n${source}\n})(globalThis.${key},globalThis.require);`, environment); return environment[key]; };
   const contract = module(contractCode, 'contractExports');
-  environment.require = specifier => { assert.equal(specifier, '../../modules/field/contract.mjs'); return contract; };
+  environment.require = specifier => { assert.ok(['../../modules/field/contract.mjs','../field/contract.mjs'].includes(specifier)); return contract; };
+  const objectContract=module(compile(readFileSync(join(repo,'modules/canvas-objects/contract.mjs'),'utf8')),'objectContractExports');
+  environment.require=specifier=>{if(specifier==='../../modules/canvas-objects/contract.mjs')return objectContract;assert.equal(specifier,'../../modules/field/contract.mjs');return contract;};
   const directory = module(directoryCode, 'directoryExports').createFieldDirectory({ api, accountId: 'owner', isCurrent: () => current });
   const onProgress = value => state.progress.push(plain(value));
   return { directory, state, onProgress, stop() { current = false; } };

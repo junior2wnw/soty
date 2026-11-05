@@ -125,7 +125,14 @@ function sitemap(catalog, origin) {
 
 /** Read-only public transport. It neither authenticates nor executes an action. */
 export function attachCapabilitiesDiscovery(app, { catalog, origin = '', status = () => ({ notesCreateEnabled: false, audience: null }),
-  openApi = buildDiscoveryOpenApi() }) {
+  openApi = buildDiscoveryOpenApi(),mcpTools }) {
+  if(mcpTools!==undefined){
+    assert(Array.isArray(mcpTools)&&mcpTools.length<=128&&mcpTools.every(tool=>tool&&typeof tool.name==='string'&&/^[a-z][a-z0-9_]{0,79}$/u.test(tool.name))
+      &&new Set(mcpTools.map(tool=>tool.name)).size===mcpTools.length,'discovery_mcp_catalog_invalid');
+    // Clone only protocol metadata; it confers no authority to use the tools.
+    openApi=structuredClone(openApi);
+    if(openApi['x-soty-mcp'])openApi['x-soty-mcp'].tools=mcpTools.map(tool=>tool.name);
+  }
   const openapi = JSON.stringify(openApi);
   const connectionProfile = createAgentConnectionProfile(openApi);
   app.use((req, res, next) => {

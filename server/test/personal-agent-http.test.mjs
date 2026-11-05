@@ -255,14 +255,22 @@ test('signed Root turn advertises only current tools and preserves prior reads f
 });
 
 test('observed four-call shape still fails the Root serial guard without executing Source tools or retrying', async t => {
-  const f = await fixture(t, { cachedMultiCall: true }); let credentialReads = 0;
+  const f = await fixture(t, { cachedMultiCall: true }); let credentialReads = 0, offeredPermissionReads = 0;
   await f.restart({ personalAgent: { ...f.configuration, historyEnabled: false,
     sourceReferences: [{ capabilityId: 'synthetic_source', version: 1, digest: 'a'.repeat(64) }],
-    sourceCredentialFor() { credentialReads++; throw Error('must_not_execute'); } } });
+    sourceCredentialFor({ actor, reference }) {
+      assert.equal(actor.accountId, f.a.accountId);
+      assert.deepEqual(reference, { capabilityId: 'synthetic_source', version: 1, digest: 'a'.repeat(64) });
+      // Current tool offering performs one permission-only discovery before the
+      // model request. The malformed response must cause no further lookup.
+      if (f.calls.length === 0) offeredPermissionReads++; else credentialReads++;
+      throw Error('must_not_execute');
+    } } });
   const result = await f.turn(f.alice, 'cached_four_calls_001', 'Synthetic general question');
   assert.equal(result.ok, false); assert.equal(result.error.code, 'agent_output_invalid');
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0].body.parallel_tool_calls, false);
   assert.equal(f.settledReceipts(), 1, 'the complete incompatible response retains its accounted charge');
+  assert.equal(offeredPermissionReads, 1, 'exactly one current permission discovery occurs before model dispatch');
   assert.equal(credentialReads, 0);
   const notes = await f.call(f.alice, 'notes.list', { expectedAccountId: f.a.accountId });
   assert.equal(notes.ok, true); assert.equal(notes.notes.length, 0);

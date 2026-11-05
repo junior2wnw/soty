@@ -319,8 +319,58 @@ The existing `soty.universal-rollout-policy.v1` feature plan may explicitly incl
 
 The operator supplies a private `soty.personal-agent-installed.v1` file for the existing [runtime loader](../../server/personal-agent-configuration.js), with the exact intended account IDs in `accountIds`. The policy reuses that validator without network calls, binds the private bytes and file identity to the existing encrypted witness, and adds only `SOTY_PERSONAL_AGENT_ENABLED=1`, `SOTY_PERSONAL_AGENT_CONFIG_FILE=/run/secrets/soty-personal-agent.json`, and the matching read-only bind mount. Conflicting inherited settings or shadowing mounts are refused. No key, account, credential, provider configuration or authority is generated. Private contents and their digests do not enter the public receipt. Runtime actor/source checks still apply; policy validation does not claim a successful model turn or billing receipt.
 
+## Monitoring reader-first and configuration-only mode changes
+
+The current complete probe/readers envelope is version 10. It includes the
+independent monitoring 1 database and keeps historical 3–9 observations readable;
+a historical observation cannot authorize a fresh START. The current Connect
+implementation declares 3/4/5 after its credential/SDK/Root compatibility gates.
+Parser knowledge alone still does not qualify an actual image or current DATA.
+
+First deploy the reader-capable image under the normal latest-data release
+with monitoring absent/reader-only. A legacy image without this family is
+compatible only while the actual complete probe reports monitoring empty;
+nonempty or unknown data is never hidden to make rollback possible. Qualify
+the new image and its real reader rollback before enabling writes.
+
+An existing features plan may then add the closed configuration-only input:
+
+```json
+{
+  "expectedCurrentPreparednessSha256": "FRESH_ACTUAL_PRIVATE_OPERATOR_MEASUREMENT_SHA256",
+  "featureMonitoring": { "expectedMode": "reader", "mode": "writer" }
+}
+```
+
+Both modes must be reader/writer and different. The original and candidate
+must be the **same exact image** with explicit monitoring 1 readers. The loaded
+original module's actual mode and the effective old environment must match;
+the candidate's actual captured mode is checked after startup. Preparedness
+includes only closed `{mode,schemaVersion:1,installed:boolean}` metadata from
+the instantiated service, not an environment guess or Source readiness ACK.
+Fresh hash/CAS, all existing module checks and full backup requirements remain.
+
+The policy changes only SOTY_MONITORING_MODE and proves that undoing it recovers
+the whole original configuration. It cannot add ACLs, change other environment
+values/mounts, or combine this operation with a selected-registry replacement.
+Omitting the feature remains reader/default-absent; an inherited writer flag
+cannot silently enable first writes. To upgrade code while writer is active,
+switch to reader first, upgrade, then explicitly enable writer again.
+
+Writer→reader uses the same feature with reversed modes and retains the data.
+Each promotion has a fresh transaction/journal/review/full backup. Use existing
+CLI prepare/promote plus its universal plan/custody/witness flags. For Windows
+DPAPI→promote stdin use maintained `windows-backup-key.py send-connector`, not
+the GPG helper's different `--plan` interface. The separate policy AES 32 recovery
+and exclusive host 0600 provisioning commands are documented in
+[GPG-RELEASE-BACKUP.md](../connect/GPG-RELEASE-BACKUP.md).
+
+Production monitoring administrator identity and permissions are separate
+explicit configuration. A backup/witness key, application owner, invitation
+administrator or local QA identity does not obtain platform rights here.
+
 ## Offline SQLite observation
 
 After the exact single writer has stopped, the probe mounts the inspected /data read-only and copies its bounded recognized store files into private RAM. SQLite reads that snapshot normally with WAL; it may create SHM in RAM. It never uses immutable=1 and never creates SHM in the production volume. Unknown store files and orphan journals remain rejection evidence. Retained legacy room JSON is omitted only when rooms-v2.sqlite is present, matching the original probe priority. File and directory identities, sizes and timestamps are checked again after copying. Symlinks and non-regular files fail closed.
 
-The helper is limited to 256 MiB memory, 64 MiB tmpfs and 48 MiB copied file bytes. Exceeding the budget blocks the rollout; operators must review resource increases as stores grow. This bounded format observation is not a coordinated backup, a restore test, or an integrity audit of the entire production volume. The live probe still reads the existing SQLite view directly. Docker list entries that omit a volume Source are resolved by inspecting that exact container; genuinely unresolved sources and overlapping writers remain blocked.
+The helper is limited to 512 MiB memory, 256 MiB tmpfs and 192 MiB copied file bytes, including monitoring and its WAL. Exceeding the aggregate budget blocks the rollout; operators must measure selected bytes and review resource increases as stores grow. This bounded format observation is not a coordinated backup, a restore test, or an integrity audit of the entire production volume. The live probe still reads the existing SQLite view directly. Docker list entries that omit a volume Source are resolved by inspecting that exact container; genuinely unresolved sources and overlapping writers remain blocked.

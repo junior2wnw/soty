@@ -1,0 +1,18 @@
+{
+  "schema": "soty.local-module.v1",
+  "id": "soty.materials",
+  "version": "1.0.0",
+  "description": "Owner-scoped personal images, audio and scoped WebM video as one universal field content provider",
+  "serverEntry": "server/index.mjs",
+  "browserEntry": "browser/client.mjs",
+  "documentation": "README.md",
+  "identityNamespace": "builtin:materials/<materialId>",
+  "storage": { "schemaVersion": 1, "engine": "node:sqlite", "truthOwner": "MaterialsService", "owner": "trusted actor.accountId" },
+  "operations": ["materials.list", "materials.get", "materials.begin", "materials.chunk", "materials.commit", "materials.status", "materials.read", "materials.trash", "materials.restore", "materials.cancel"],
+  "mediaTypes": ["image/png", "image/jpeg", "image/webp", "audio/webm", "audio/ogg", "audio/wav", "video/webm"],
+  "requiresTrustedSignedTransport": true,
+  "trustedHostPorts": ["native.withSourceAuthority", "native.readMetadata", "native.readChunk"],
+  "publicDataEndpoint": null,
+  "publicationPerformed": false,
+  "verification": { "browserPixels": false, "browserPlayback": false, "physicalAndroid": false }
+}

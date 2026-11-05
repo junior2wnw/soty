@@ -1,0 +1,11 @@
+export interface PasswordContainerContext{ownerId:string;objectId:string;version:number}
+export interface PasswordContainer{schema:'soty.password-container.v1';context:PasswordContainerContext;payload:{iv:string;ciphertext:string;tag:string};key:{iv:string;ciphertext:string;tag:string;kdf:{name:'scrypt';N:32768;r:8;p:3;salt:string}}}
+export const PASSWORD_CONTAINER_SCHEMA:'soty.password-container.v1';
+export const PASSWORD_CONTAINER_MAX_BYTES:number;
+export function sealPasswordContainer(input:{context:PasswordContainerContext;password:string;bytes:Uint8Array}):PasswordContainer;
+export function openPasswordContainer(input:{container:PasswordContainer;context:PasswordContainerContext;password:string}):Uint8Array;
+export function rewrapPasswordContainer(input:{container:PasswordContainer;context:PasswordContainerContext;oldPassword:string;newPassword:string}):PasswordContainer;
+export function inspectPasswordContainer(input:{container:PasswordContainer;context:PasswordContainerContext}):{context:PasswordContainerContext;kdf:PasswordContainer['key']['kdf']};
+export function unwrapPasswordContainerWithKey(input:{container:PasswordContainer;context:PasswordContainerContext;wrappingKey:Uint8Array}):Uint8Array;
+export function readPasswordContainerWithKey(input:{container:PasswordContainer;context:PasswordContainerContext;dataKey:Uint8Array}):Uint8Array;
+export function sealPasswordContainerWithKeys(input:{context:PasswordContainerContext;bytes:Uint8Array;dataKey:Uint8Array;wrappingKey:Uint8Array;keyDerivation:PasswordContainer['key']['kdf']}):PasswordContainer;

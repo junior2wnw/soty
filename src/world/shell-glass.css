@@ -1,0 +1,13 @@
+.sw-app.glass-ui,.sw-dialog.glass-ui,.cp-screen.glass-ui,.workspace-dialog.glass-ui{
+ --sw-ink:var(--glass-ui-ink);--sw-muted:var(--glass-ui-muted);--sw-surface:var(--glass-ui-surface);--sw-surface-subtle:var(--glass-ui-surface);--sw-surface-raised:var(--glass-ui-surface-strong);--sw-control-border:var(--glass-ui-edge);--sw-shadow-small:var(--glass-ui-shadow);--sw-focus:var(--glass-ui-focus);--sw-honey-ink:var(--glass-ui-accent);
+}
+.connect-panel.glass-ui{
+ --connect-surface:var(--glass-ui-surface-strong);--connect-ink:var(--glass-ui-ink);--connect-muted:var(--glass-ui-muted);--connect-edge:var(--glass-ui-edge);--connect-control:var(--glass-ui-surface);--connect-field:var(--glass-ui-surface);--connect-hover:color-mix(in srgb,var(--glass-ui-ink) 4%,var(--glass-ui-surface));--connect-selected:color-mix(in srgb,var(--glass-ui-accent) 14%,var(--glass-ui-surface-strong));--connect-accent:var(--glass-ui-accent);--connect-selected-ink:var(--glass-ui-ink);--connect-backdrop:#14202b66;
+}
+.glass-ui[data-shell-glass] .uf-canvas-dock,.glass-ui[data-shell-glass] .uf-object-focus-bar{backdrop-filter:blur(20px) saturate(1.25)}
+.glass-ui[data-shell-glass] .sw-dialog-header,.glass-ui[data-shell-glass] .sw-dialog-form-actions{position:relative;z-index:1;background:transparent}
+.glass-ui[data-shell-glass] .sw-dialog-content{position:relative;z-index:1}
+.glass-ui.sw-dialog[data-shell-glass]{isolation:isolate}
+@media(max-width:540px){
+ .sw-dialog.glass-ui[data-shell-glass][data-glass-material][open]{inset:auto 0 0;margin:0;width:100%;max-width:none;border-radius:24px 24px 0 0;max-height:calc(var(--soty-visible-height,100dvh) - max(12px,env(safe-area-inset-top)))}
+}

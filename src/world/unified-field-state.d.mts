@@ -1,13 +1,14 @@
-import type { FieldDocument, FieldEntityRef, FieldEntityKind } from '../../modules/field/contract.mjs';
+import type { AnyFieldDocument as FieldDocument, AnyFieldEntityRef as FieldEntityRef, AnyFieldEntityKind as FieldEntityKind,FieldPlacement } from '../../modules/field/contract.mjs';
 import type {UnifiedFieldMetrics} from './unified-field-layout.mjs';
 export type FieldCommand = {expected?:FieldDocument} & (
   {type:'add-context';contextId:string;title:string;x:number;y:number} |
   {type:'rename-context';contextId:string;title:string} |
   {type:'move-context';contextId:string;x:number;y:number} |
   {type:'remove-context';contextId:string;removeShortcuts?:boolean} |
-  {type:'add-shortcut';shortcutId:string;entity:FieldEntityRef;contextId:string;slot?:[number,number]} |
+  {type:'add-shortcut';shortcutId:string;entity:FieldEntityRef;contextId:string;slot?:[number,number];placement?:FieldPlacement} |
   {type:'remove-shortcut';shortcutId:string} |
   {type:'move-shortcut';shortcutId:string;contextId:string;slot:[number,number];swap?:boolean} |
+  {type:'place-shortcut';shortcutId:string;contextId:string;placement:FieldPlacement} |
   {type:'restore';document:FieldDocument});
 export interface FieldChange {before:FieldDocument;document:FieldDocument;changed:boolean;affected:string[];type:FieldCommand['type']}
 export interface FieldHistory {limit:number;entries:{before:FieldDocument;after:FieldDocument}[]}

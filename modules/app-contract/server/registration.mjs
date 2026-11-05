@@ -69,12 +69,13 @@ function feedbackProof(input, expected) {
  * No provider/transport discovery, executable descriptor or capability grant is installed here.
  */
 export function createUniversalRegistrationService({ databasePath, registryId, environmentId, actorActive,
-  withReviewedAppAuthority, reviewedProfile, approvedReferences = {}, selectApprovedReferences, feedback, now = Date.now, limits = {},
+  withReviewedAppAuthority, readPublicationAuthority, reviewedProfile, approvedReferences = {}, selectApprovedReferences, feedback, now = Date.now, limits = {},
   maxDatabaseBytes = REGISTRATION_STORAGE_LIMITS.maxDatabaseBytes } = {}) {
   literalId(registryId); literalId(environmentId);
   require(typeof databasePath === 'string' && databasePath.length > 0, 'registration_database_required', 503);
   validFunction(actorActive, 'registration_authority_required'); validFunction(withReviewedAppAuthority, 'registration_authority_required');
   validFunction(now, 'registration_clock_invalid');
+  if(readPublicationAuthority!==undefined)validFunction(readPublicationAuthority,'registration_publication_authority_invalid');
   if (selectApprovedReferences !== undefined) validFunction(selectApprovedReferences, 'registration_reference_selector_invalid');
   require(Number.isSafeInteger(maxDatabaseBytes) && maxDatabaseBytes >= REGISTRATION_STORAGE_LIMITS.minDatabaseBytes
     && maxDatabaseBytes <= REGISTRATION_STORAGE_LIMITS.maxDatabaseBytes, 'registration_database_quota_invalid', 503);
@@ -338,6 +339,27 @@ export function createUniversalRegistrationService({ databasePath, registryId, e
           nextGeneration: (existing?.generation || 0) + 1, descriptorDigest: plan.descriptorDigest, authorityDigest: plan.authorityDigest,
           descriptor, feedback: { state: 'pending-feedback', provisioningKey: plan.feedbackIntent.provisioningKey },
           gates: { ui: 'pending-feedback', agent: 'not-admitted', local: 'not-admitted' } };
+      });
+    },
+    /** Host-only: Apps' current private frame is held across the journal read. */
+    withPublicationState({actor,appId},callback) {
+      validFunction(callback,'registration_publication_authority_invalid');
+      require(readPublicationAuthority,'registration_publication_authority_unavailable',503);
+      return fenced(actor,appId,(_captured,context)=>synchronous(callback(Object.freeze({
+        registration:project(head(context.scopeKey),context),authority:synchronous(readPublicationAuthority()) }))));
+    },
+    /** This guard is host code, never an RPC JSON proof. It runs inside the SAME
+     * Apps authority + registration write transaction as CAS and COMMIT. */
+    reconcilePublication({actor,appId,requestId,expectedRevision,descriptor,verifyCurrent}) {
+      validFunction(verifyCurrent,'registration_publication_authority_invalid');
+      const args=argsFor('apps.universal.admit',actor,{expectedAccountId:actor.accountId,appId,requestId,expectedRevision,proposal:{kind:'descriptor-json',json:encode(descriptor)}});
+      const requested=proposal(args.proposal);
+      return fenced(actor,appId,(captured,context)=>{
+        require(readPublicationAuthority,'registration_publication_authority_unavailable',503);
+        require(synchronous(verifyCurrent(synchronous(readPublicationAuthority())))===true,'registration_publication_source_changed',409);
+        const result=write(captured,context,args,requested);
+        require(synchronous(verifyCurrent(synchronous(readPublicationAuthority())))===true,'registration_publication_source_changed',409);
+        return result;
       });
     },
     /** Host orchestration only, under an outer Connect authority fence. Never register this method as an incoming ready mutation. */

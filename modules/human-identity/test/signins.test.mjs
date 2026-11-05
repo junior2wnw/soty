@@ -62,6 +62,7 @@ test('a full20row UTF8 page fits its own response budget without widening OAuth 
 });
 
 test('real signed Human management lists only issuer authorization metadata and closes one exact family', { timeout: 20000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Math.floor(Date.now() / 1000) * 1000 });
   const f = await environment(t);
   await f.login(f.rps[0], f.actor, f.freshWire(), undefined, 86400);
   await f.login(f.rps[1], f.actor, f.freshWire(), undefined, 86400);
@@ -86,6 +87,20 @@ test('real signed Human management lists only issuer authorization metadata and 
   const replay = await revoke(f, args);
   assert.equal(replay.outcome, 'already_revoked'); assert.equal(replay.revokedAt, closed.revokedAt);
   await assert.rejects(revoke(f, { ...args, entryId: before.entries.find(entry => entry !== selected).entryId }), code('human_identity_decision_conflict'));
+});
+
+test('session expiry stays anchored to approval when grant issuance crosses a second', { timeout: 20000 }, async t => {
+  const start = Math.floor(Date.now() / 1000) * 1000;
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const f = await environment(t), flow = await f.begin(f.rps[0], f.freshWire());
+  await f.approve(flow, f.actor, { stayInAppSeconds: 86400 });
+  t.mock.timers.tick(1000);
+  const completed = await f.complete(flow);
+  assert.equal((await flow.session.request(completed.callback)).status, 200);
+  const selected = (await list(f)).entries[0];
+  assert.equal(selected.createdAt, start + 1000);
+  assert.equal(selected.expiresAt, start + 86400000);
+  assert.equal(selected.expiresAt - selected.createdAt, 86399000);
 });
 
 test('current-device and explicit account scopes preserve the original caller while managing its other device', { timeout: 20000 }, async t => {

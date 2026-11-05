@@ -157,7 +157,7 @@ for(const previous of [1,2,3,4,5])test(`Apps${previous+1} migration rejects a ro
  assert.equal(f.map.get(args.originalId).State.Running,false);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'no');
  assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));
- assert.equal(f.run.state.applicationStart.storageGuard.schema,'soty.storage-start.v7');
+ assert.equal(f.run.state.applicationStart.storageGuard.schema,'soty.storage-start.v10');
  assert.equal(f.run.state.applicationStart.storageGuard.world,'empty');
  assert.equal(f.run.state.applicationStart.storageGuard.apps,previous);
 });
@@ -193,7 +193,7 @@ test('the first v3 bridge cannot silently replace a serving v2-manifest image',a
 
 for(const store of ['notes','capabilities'])test(`fresh ${store} format is checked before stopping the original`,async()=>{
  const f=fixture();await f.run.prepare(args);
- f.run.storageProbe=async()=>currentObservation({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:store==='capabilities'?4:3});
+ f.run.storageProbe=async()=>currentObservation({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:4});
  await assert.rejects(f.run.promote(),/storage_probe_invalid/);
  assert.equal(f.map.get(args.originalId).State.Running,true);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'unless-stopped');

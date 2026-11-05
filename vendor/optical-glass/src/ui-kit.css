@@ -1,0 +1,942 @@
+:root {
+  --glass-ui-font: Inter, Manrope, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --glass-ui-ink: #f5fbff;
+  --glass-ui-muted: #c2d1d9;
+  --glass-ui-accent: #74d9ff;
+  --glass-ui-success: #78e6ad;
+  --glass-ui-danger: #ff9b9b;
+  --glass-ui-focus: #8be4ff;
+  --glass-ui-control-edge: color-mix(in srgb, currentColor 38%, transparent);
+  --glass-ui-control-track: color-mix(in srgb, #071923 42%, transparent);
+  --glass-ui-control-fill: #61caff;
+  --glass-ui-gap: clamp(12px, 1.4vw, 22px);
+  --glass-ui-control: 44px;
+  --glass-ui-panel-padding: clamp(18px, 2vw, 30px);
+  --glass-ui-radius: clamp(22px, 3vw, 46px);
+  --glass-ui-surface: rgba(20, 37, 49, 0.88);
+  --glass-ui-surface-strong: rgba(20, 37, 49, 0.96);
+  --glass-ui-edge: rgba(222, 243, 255, 0.35);
+  --glass-ui-shadow: 0 8px 24px rgba(0, 10, 19, 0.2);
+  --glass-ui-static-highlight: rgba(255, 255, 255, 0.17);
+}
+
+.glass-ui:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  --glass-ui-static-surface: var(--glass-ui-surface-strong);
+  --glass-ui-static-edge: var(--glass-ui-edge);
+  color-scheme: dark;
+  color: var(--glass-ui-ink);
+  font-family: var(--glass-ui-font);
+  font-size: 16px;
+  line-height: 1.45;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.glass-ui[data-glass-tone="light"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  color-scheme: light;
+  --glass-ui-ink: #102733;
+  --glass-ui-muted: #425c68;
+  --glass-ui-accent: #087fa5;
+  --glass-ui-success: #087d4d;
+  --glass-ui-danger: #ad3030;
+  --glass-ui-focus: #087fa5;
+  --glass-ui-surface: rgba(245, 250, 253, 0.88);
+  --glass-ui-surface-strong: rgba(245, 250, 253, 0.96);
+  --glass-ui-edge: rgba(43, 77, 96, 0.3);
+  --glass-ui-shadow: 0 8px 24px rgba(25, 54, 72, 0.14);
+  --glass-ui-static-highlight: rgba(255, 255, 255, 0.95);
+}
+
+.glass-ui:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui *:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui *:not(:where([data-glass-ignore], [data-glass-ignore] *))::before,
+.glass-ui *:not(:where([data-glass-ignore], [data-glass-ignore] *))::after {
+  box-sizing: border-box;
+}
+
+.glass-ui :where(button, input, select, textarea):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  color: inherit;
+  font: inherit;
+}
+
+.glass-ui :where(button, [role="button"], input, select):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-block-size: var(--glass-ui-control);
+}
+
+.glass-ui :where(button, [role="button"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-inline-size: var(--glass-ui-control);
+  touch-action: manipulation;
+}
+
+.glass-ui :where(:focus-visible):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  outline: 3px solid var(--glass-ui-focus);
+  outline-offset: 3px;
+}
+
+.glass-ui [data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: transparent;
+  border-color: transparent;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+}
+
+/* A material fallback, not a claim that a WebGL handle rendered a frame.
+ * It is shared by explicit static mode, accessibility preferences and failure. */
+.glass-ui[data-glass-render-mode="static"][data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui[data-glass-render-mode="static"] [data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background-color: var(--glass-ui-static-surface);
+  background-image: linear-gradient(155deg, var(--glass-ui-static-highlight), transparent 48%);
+  border: 1px solid var(--glass-ui-static-edge);
+  border-radius: var(--glass-ui-radius);
+  box-shadow: inset 0 1px 0 var(--glass-ui-static-highlight), var(--glass-ui-shadow);
+  color: var(--glass-ui-ink);
+}
+
+.glass-ui[data-glass-render-mode="static"] :is([data-glass-role="control"], [data-glass-role="accent"], [data-glass-role="field"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  border-radius: 999px;
+}
+
+.glass-ui[data-glass-render-mode] :is(textarea[data-glass-role="field"], [data-glass-role="field"]:has(textarea), [contenteditable][data-glass-role="field"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  border-radius: 20px;
+}
+
+/* These rules read native state; they do not change values, ARIA, submission,
+ * disabled behavior or selection ownership on behalf of the application. */
+.glass-ui :where(button, input, select, textarea, [role="button"], [data-glass-role]):is(:disabled, [aria-disabled="true"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.glass-ui :where(button, input, select, textarea, [role="button"], [data-glass-role])[aria-busy="true"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  cursor: progress;
+  outline: 2px dashed var(--glass-ui-accent);
+  outline-offset: 2px;
+}
+
+.glass-ui :where(input, select, textarea, [data-glass-role]):is([aria-invalid="true"], :user-invalid):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  --glass-ui-static-edge: var(--glass-ui-danger);
+  border-color: var(--glass-ui-danger);
+  outline: 2px solid var(--glass-ui-danger);
+  outline-offset: 2px;
+}
+
+.glass-ui :where(button, input, [role="option"], [role="tab"], [data-glass-role]):is([aria-selected="true"], [aria-pressed="true"], :checked):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  --glass-ui-static-edge: var(--glass-ui-accent);
+  border-color: var(--glass-ui-accent);
+  box-shadow: inset 0 0 0 1px var(--glass-ui-accent);
+}
+
+.glass-ui :where([data-glass-role="control"], [data-glass-role="field"]):has(> input:checked):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  --glass-ui-static-edge: var(--glass-ui-accent);
+  --glass-ui-static-surface: color-mix(in srgb, var(--glass-ui-accent) 14%, var(--glass-ui-surface-strong));
+  border-color: var(--glass-ui-accent);
+  box-shadow: inset 0 0 0 1px var(--glass-ui-accent);
+}
+
+.glass-ui :where([data-glass-role="control"], [data-glass-role="field"]):has(> input:disabled):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.glass-ui [data-glass-role="field"]:is(:focus-visible, :focus-within):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  outline: 3px solid var(--glass-ui-focus);
+  outline-offset: 3px;
+}
+
+.glass-ui [data-glass-role] :where(h1, h2, h3, h4, h5, h6, p, li, label, legend, output, summary):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Action roles retain their hit area inside flexible material containers.
+ * The generic material/text reset above must not collapse an icon-only action. */
+.glass-ui :is([data-glass-role="control"], [data-glass-role="accent"]):is(button, summary, [role="button"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-inline-size: var(--glass-ui-control);
+  min-block-size: var(--glass-ui-control);
+}
+
+/* Ignored native components must not inherit Glass container hit suppression.
+ * The zero-specificity boundary reset preserves explicit component pointer rules. */
+:where(.glass-ui[data-glass-ignore], .glass-ui [data-glass-ignore]) {
+  pointer-events: auto;
+}
+
+.glass-ui [data-glass-ui-hit="container"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  pointer-events: none;
+}
+
+.glass-ui :where(
+  [data-glass-ui-hit="control"],
+  [data-glass-ui-hit="container"]:is(a, button, input, select, textarea, summary, label, [role="button"]),
+  [data-glass-ui-hit="container"] :is(a, button, input, select, textarea, summary, label, [role="button"], [tabindex], [contenteditable="true"])
+):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  pointer-events: auto;
+}
+
+.glass-ui__shell:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: grid;
+  gap: var(--glass-ui-gap);
+  inline-size: min(100%, 1480px);
+  margin-inline: auto;
+  padding: clamp(16px, 2.4vw, 36px);
+}
+
+.glass-ui__nav:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui__toolbar:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui__cluster:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  align-items: center;
+  display: flex;
+  gap: clamp(10px, 1.2vw, 18px);
+}
+
+.glass-ui__nav:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-block-size: 66px;
+  padding: 10px clamp(14px, 2vw, 28px);
+}
+
+.glass-ui__nav-links:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui__tabs:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.glass-ui__nav-links a:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui__tabs :where(button, a):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  color: inherit;
+  min-block-size: var(--glass-ui-control);
+  padding: 10px 14px;
+  text-decoration: none;
+}
+
+.glass-ui__nav-spacer:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  flex: 1 1 auto;
+}
+
+.glass-ui__grid:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: grid;
+  gap: var(--glass-ui-gap);
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.glass-ui__grid > *:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  grid-column: span 12;
+  min-inline-size: 0;
+}
+
+.glass-ui__grid--cards:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+}
+
+.glass-ui__grid--cards > *:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  grid-column: auto;
+}
+
+.glass-ui__panel:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui__card:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-inline-size: 0;
+  padding: var(--glass-ui-panel-padding);
+}
+
+.glass-ui__card:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  padding: clamp(16px, 1.6vw, 24px);
+}
+
+.glass-ui__stack:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: grid;
+  gap: clamp(10px, 1.2vw, 18px);
+}
+
+.glass-ui__control:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui__field:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  display: inline-flex;
+  gap: 10px;
+  justify-content: center;
+  min-block-size: var(--glass-ui-control);
+  max-inline-size: 100%;
+  padding: 10px 18px;
+}
+
+.glass-ui__control:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  text-align: center;
+  text-wrap: balance;
+  white-space: normal;
+}
+
+.glass-ui__field:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  justify-content: flex-start;
+  min-inline-size: min(100%, 220px);
+  outline: 0;
+}
+
+.glass-ui__field:where(input, select):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  appearance: none;
+}
+
+.glass-ui :where(input, select, textarea, progress, meter):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  max-inline-size: 100%;
+}
+
+.glass-ui [data-glass-role="field"] :where(input, select, textarea):not(:where([data-glass-ignore], [data-glass-ignore] *)), .glass-ui :where(input, select, textarea)[data-glass-role="field"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  inline-size: 100%;
+  min-inline-size: 0;
+  outline: 0;
+}
+
+.glass-ui :where(select)[data-glass-role="field"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) 50%,
+    calc(100% - 12px) 50%;
+  background-repeat: no-repeat;
+  background-size: 5px 5px;
+  padding-inline-end: 38px;
+}
+
+.glass-ui :where(textarea)[data-glass-role="field"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-block-size: 96px;
+  resize: block;
+}
+
+.glass-ui :where(input[type="checkbox"], input[type="radio"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  appearance: none;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.2), rgba(5, 20, 28, 0.18));
+  block-size: 22px;
+  border: 1px solid var(--glass-ui-control-edge);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.42),
+    inset 0 -2px 4px rgba(2, 12, 18, 0.34),
+    0 4px 10px rgba(2, 12, 18, 0.2);
+  display: inline-grid;
+  flex: 0 0 22px;
+  inline-size: 22px;
+  margin: 0;
+  min-block-size: 22px;
+  place-content: center;
+}
+
+.glass-ui input[type="checkbox"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) { border-radius: 7px; }
+.glass-ui input[type="radio"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) { border-radius: 50%; }
+
+.glass-ui :where(input[type="checkbox"], input[type="radio"]):not(:where([data-glass-ignore], [data-glass-ignore] *))::before {
+  background: #f4fcff;
+  block-size: 10px;
+  box-shadow: 0 0 9px color-mix(in srgb, var(--glass-ui-control-fill) 70%, transparent);
+  content: "";
+  inline-size: 10px;
+  scale: 0;
+  transition: scale 150ms ease;
+}
+
+.glass-ui input[type="checkbox"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::before {
+  background: transparent;
+  block-size: 6px;
+  border-block-end: 2px solid #f4fcff;
+  border-inline-start: 2px solid #f4fcff;
+  inline-size: 11px;
+  rotate: -45deg;
+  translate: 0 -1px;
+}
+
+.glass-ui input[type="radio"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::before { border-radius: 50%; }
+
+.glass-ui :where(input[type="checkbox"], input[type="radio"]):checked:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background:
+    radial-gradient(circle at 34% 22%, rgba(255, 255, 255, 0.5), transparent 34%),
+    linear-gradient(145deg, #74d9ff, #178bc8);
+  border-color: color-mix(in srgb, #baf0ff 72%, transparent);
+}
+
+.glass-ui :where(input[type="checkbox"], input[type="radio"]):checked:not(:where([data-glass-ignore], [data-glass-ignore] *))::before { scale: 1; }
+.glass-ui :where(input[type="checkbox"], input[type="radio"]):disabled:not(:where([data-glass-ignore], [data-glass-ignore] *)) { cursor: not-allowed; opacity: 0.42; }
+
+.glass-ui label:has(> :where(input[type="checkbox"], input[type="radio"])):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  cursor: pointer;
+  min-inline-size: 0;
+}
+
+.glass-ui label:has(> :where(input[type="checkbox"], input[type="radio"]):disabled):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  cursor: not-allowed;
+}
+
+.glass-ui :where(.glass-ui__switch, .switch) > input:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  block-size: 1px;
+  inline-size: 1px;
+  opacity: 0;
+  position: absolute;
+}
+
+.glass-ui :where(.glass-ui__switch, .switch) > span:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background:
+    linear-gradient(155deg, rgba(255, 255, 255, 0.18), transparent 42%),
+    color-mix(in srgb, #071923 45%, transparent);
+  block-size: 30px;
+  border: 1px solid var(--glass-ui-control-edge);
+  border-radius: 999px;
+  box-shadow:
+    inset 0 3px 7px rgba(2, 12, 18, 0.4),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.22),
+    0 4px 10px rgba(2, 12, 18, 0.2);
+  display: inline-grid;
+  flex: 0 0 52px;
+  inline-size: 52px;
+  padding: 4px;
+  transition: background 170ms ease, border-color 170ms ease;
+}
+
+.glass-ui :where(.glass-ui__switch, .switch) > span:not(:where([data-glass-ignore], [data-glass-ignore] *))::after {
+  background:
+    radial-gradient(circle at 34% 22%, #fff 0 12%, transparent 34%),
+    linear-gradient(145deg, #f0fbff, #90cce4);
+  block-size: 20px;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 -3px 5px rgba(11, 60, 82, 0.24),
+    0 3px 8px rgba(2, 16, 24, 0.36);
+  content: "";
+  inline-size: 20px;
+  transition: translate 170ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.glass-ui :where(.glass-ui__switch, .switch) > input:checked + span:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background:
+    linear-gradient(155deg, rgba(255, 255, 255, 0.3), transparent 42%),
+    linear-gradient(100deg, #167fb9, #60cfff);
+  border-color: color-mix(in srgb, #baf0ff 64%, transparent);
+}
+
+.glass-ui :where(.glass-ui__switch, .switch) > input:checked + span:not(:where([data-glass-ignore], [data-glass-ignore] *))::after { translate: 22px; }
+
+.glass-ui :where(.glass-ui__switch, .switch) > input:focus-visible + span:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  outline: 3px solid var(--glass-ui-focus);
+  outline-offset: 3px;
+}
+
+.glass-ui input[type="range"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  --glass-ui-range-progress: 50%;
+  appearance: none;
+  background: transparent;
+  block-size: 44px;
+  cursor: pointer;
+  inline-size: 100%;
+  margin: 0;
+}
+
+.glass-ui input[type="range"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    90deg,
+    var(--glass-ui-control-fill) 0 var(--glass-ui-range-progress),
+    var(--glass-ui-control-track) var(--glass-ui-range-progress) 100%
+  );
+  block-size: 9px;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 999px;
+  box-shadow:
+    inset 0 2px 4px rgba(2, 12, 18, 0.38),
+    0 1px 1px rgba(255, 255, 255, 0.18);
+}
+
+.glass-ui input[type="range"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-slider-thumb {
+  appearance: none;
+  background:
+    radial-gradient(circle at 34% 22%, #fff 0 12%, transparent 34%),
+    linear-gradient(145deg, #eafaff, #8fcde6);
+  block-size: 25px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 50%;
+  box-shadow:
+    inset 0 -3px 5px rgba(11, 60, 82, 0.24),
+    0 4px 12px rgba(2, 16, 24, 0.35),
+    0 0 0 1px rgba(12, 52, 70, 0.14);
+  inline-size: 25px;
+  margin-block-start: -9px;
+}
+
+.glass-ui input[type="range"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::-moz-range-track {
+  background: var(--glass-ui-control-track);
+  block-size: 9px;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 999px;
+}
+
+.glass-ui input[type="range"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::-moz-range-progress {
+  background: var(--glass-ui-control-fill);
+  block-size: 9px;
+  border-radius: 999px;
+}
+
+.glass-ui input[type="range"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::-moz-range-thumb {
+  background: linear-gradient(145deg, #f7fdff, #8fcde6);
+  block-size: 25px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 50%;
+  box-shadow: 0 4px 12px rgba(2, 16, 24, 0.35);
+  inline-size: 25px;
+}
+
+.glass-ui :where(progress, meter):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  appearance: none;
+  background: transparent;
+  block-size: 11px;
+  border: 0;
+  border-radius: 999px;
+  inline-size: 100%;
+  overflow: hidden;
+}
+
+.glass-ui progress:not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-progress-bar,
+.glass-ui meter:not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-meter-bar {
+  background: var(--glass-ui-control-track);
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  box-shadow: inset 0 2px 4px rgba(2, 12, 18, 0.38);
+}
+
+.glass-ui progress:not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-progress-value,
+.glass-ui meter:not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-meter-optimum-value {
+  background: linear-gradient(90deg, #32aeea, #8be8ff);
+  border-radius: 999px;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--glass-ui-control-fill) 58%, transparent);
+}
+
+.glass-ui progress:not(:where([data-glass-ignore], [data-glass-ignore] *))::-moz-progress-bar,
+.glass-ui meter:not(:where([data-glass-ignore], [data-glass-ignore] *))::-moz-meter-bar {
+  background: linear-gradient(90deg, #32aeea, #8be8ff);
+  border-radius: 999px;
+}
+
+.glass-ui :where(input[type="file"]):not(:where([data-glass-ignore], [data-glass-ignore] *))::file-selector-button {
+  background: color-mix(in srgb, #bfefff 18%, transparent);
+  border: 1px solid var(--glass-ui-control-edge);
+  border-radius: 999px;
+  color: inherit;
+  font: inherit;
+  margin-inline-end: 12px;
+  min-block-size: 36px;
+  padding: 7px 14px;
+}
+
+.glass-ui :where(fieldset)[data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-inline-size: 0;
+}
+
+.glass-ui :where(fieldset)[data-glass-role] > legend:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  inline-size: 100%;
+  margin-block-end: 1em;
+  padding: 0;
+  position: relative;
+  translate: 0 1em;
+}
+
+.glass-ui :where(details) > summary:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  cursor: pointer;
+  font-weight: 750;
+  min-block-size: 36px;
+  padding-block: 7px;
+}
+
+.glass-ui :where(img, video, canvas, svg):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  max-inline-size: 100%;
+}
+
+.glass-ui__eyebrow:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui__caption:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  color: var(--glass-ui-muted);
+  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.875rem);
+}
+
+.glass-ui__eyebrow:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.glass-ui__stat:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: grid;
+  gap: 3px;
+}
+
+.glass-ui__stat strong:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  font-size: clamp(1.35rem, 1.1rem + 1vw, 2.15rem);
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+}
+
+.glass-ui__positive:not(:where([data-glass-ignore], [data-glass-ignore] *)) { color: var(--glass-ui-success); }
+.glass-ui__negative:not(:where([data-glass-ignore], [data-glass-ignore] *)) { color: var(--glass-ui-danger); }
+
+.glass-ui__scroll:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  max-inline-size: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.glass-ui__sr-only:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+}
+
+[data-glass-ui-state="error"] {
+  outline: 2px dashed var(--glass-ui-danger);
+  outline-offset: 3px;
+}
+
+.webgl-unavailable .glass-ui [data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: color-mix(in srgb, #dcebf3 18%, transparent);
+  border: 1px solid color-mix(in srgb, white 44%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 40%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+@media (min-width: 760px) {
+  .glass-ui__span-4:not(:where([data-glass-ignore], [data-glass-ignore] *)) { grid-column: span 4; }
+  .glass-ui__span-5:not(:where([data-glass-ignore], [data-glass-ignore] *)) { grid-column: span 5; }
+  .glass-ui__span-6:not(:where([data-glass-ignore], [data-glass-ignore] *)) { grid-column: span 6; }
+  .glass-ui__span-7:not(:where([data-glass-ignore], [data-glass-ignore] *)) { grid-column: span 7; }
+  .glass-ui__span-8:not(:where([data-glass-ignore], [data-glass-ignore] *)) { grid-column: span 8; }
+}
+
+@media (max-width: 900px) {
+  .glass-ui__nav-links:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    display: none;
+  }
+
+  .glass-ui__nav:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 620px) {
+  .glass-ui__shell:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    padding: 12px;
+  }
+
+  .glass-ui__nav-spacer:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    display: none;
+  }
+
+  .glass-ui__toolbar:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .glass-ui__control:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+  .glass-ui__field:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    inline-size: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-ui *:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+  .glass-ui *:not(:where([data-glass-ignore], [data-glass-ignore] *))::before,
+  .glass-ui *:not(:where([data-glass-ignore], [data-glass-ignore] *))::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .glass-ui[data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+  .glass-ui [data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    background: Canvas;
+    border: 2px solid CanvasText;
+    box-shadow: none;
+    color: CanvasText;
+  }
+
+  .glass-ui :where(input[type="checkbox"], input[type="radio"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    appearance: auto;
+    background: Canvas;
+    border: initial;
+    box-shadow: none;
+  }
+
+  .glass-ui :where(.glass-ui__switch, .switch) > input:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    block-size: 22px;
+    inline-size: 22px;
+    opacity: 1;
+    position: static;
+  }
+
+  .glass-ui :where(.glass-ui__switch, .switch) > span:not(:where([data-glass-ignore], [data-glass-ignore] *)) { display: none; }
+}
+
+/* Working material: an opt-in hierarchy; existing UI defaults remain intact. */
+.glass-ui[data-glass-material="working"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  --glass-ui-ink: #eef0f7;
+  --glass-ui-muted: #b1b7c8;
+  --glass-ui-accent: #b9adff;
+  --glass-ui-focus: #b9adff;
+  --glass-ui-accent-ink: #201c39;
+  --glass-ui-surface: rgba(29, 34, 45, 0.88);
+  --glass-ui-surface-strong: rgba(24, 29, 40, 0.96);
+  --glass-ui-edge: rgba(210, 218, 238, 0.2);
+  --glass-ui-shadow: 0 4px 14px rgba(4, 8, 18, 0.14);
+  --glass-ui-static-highlight: rgba(222, 230, 248, 0.06);
+  --glass-ui-control-fill: var(--glass-ui-accent);
+  --glass-ui-control-edge: var(--glass-ui-edge);
+  --glass-ui-control-track: rgba(185, 173, 255, 0.12);
+  --glass-ui-radius: 20px;
+  --glass-ui-working-surface: rgba(29, 34, 45, 0.76);
+  --glass-ui-working-field: rgba(20, 25, 35, 0.82);
+  --glass-ui-working-selected: rgba(68, 59, 99, 0.88);
+  --glass-ui-working-rim: inset 0 1px 0 rgba(222, 230, 248, 0.06);
+}
+.glass-ui[data-glass-material="working"][data-glass-tone="light"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  --glass-ui-ink: #202331;
+  --glass-ui-muted: #586171;
+  --glass-ui-accent: #6050cc;
+  --glass-ui-focus: #6050cc;
+  --glass-ui-accent-ink: #ffffff;
+  --glass-ui-surface: rgba(247, 249, 253, 0.88);
+  --glass-ui-surface-strong: rgba(247, 249, 253, 0.96);
+  --glass-ui-edge: rgba(67, 80, 105, 0.22);
+  --glass-ui-shadow: 0 4px 14px rgba(35, 48, 75, 0.08);
+  --glass-ui-static-highlight: rgba(255, 255, 255, 0.32);
+  --glass-ui-control-track: rgba(96, 80, 204, 0.12);
+  --glass-ui-working-surface: rgba(247, 249, 253, 0.35);
+  --glass-ui-working-field: rgba(255, 255, 255, 0.38);
+  --glass-ui-working-selected: rgba(96, 80, 204, 0.1);
+  --glass-ui-working-rim: inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode][data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui[data-glass-material="working"][data-glass-render-mode] [data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: var(--glass-ui-working-surface);
+  border: 1px solid var(--glass-ui-edge);
+  border-radius: 20px;
+  box-shadow: var(--glass-ui-working-rim), var(--glass-ui-shadow);
+  color: var(--glass-ui-ink);
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode="static"][data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui[data-glass-material="working"][data-glass-render-mode="static"] [data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background-color: var(--glass-ui-surface-strong);
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode] :is([data-glass-role="field"], [data-glass-role="control"], [data-glass-role="accent"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  border-radius: 16px;
+  box-shadow: var(--glass-ui-working-rim);
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode] [data-glass-role="field"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: var(--glass-ui-working-field);
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode="static"] [data-glass-role="field"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background-color: var(--glass-ui-surface-strong);
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode] :is(textarea[data-glass-role="field"], [data-glass-role="field"]:has(textarea), [contenteditable][data-glass-role="field"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  border-radius: 20px;
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode] [data-glass-role="accent"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: var(--glass-ui-accent);
+  border-color: transparent;
+  color: var(--glass-ui-accent-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 3px 9px color-mix(in srgb, var(--glass-ui-accent) 18%, transparent);
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode] [data-glass-role="control"][aria-label]:has(> svg:only-child):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  border-radius: 50%;
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode] :is([data-glass-role="control"], [data-glass-role="field"], [data-glass-role="card"], [role="tab"], [role="option"]):is([aria-selected="true"], [aria-pressed="true"], [aria-current]:not([aria-current="false"], [aria-current=""]), :checked):not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui[data-glass-material="working"][data-glass-render-mode] :is([data-glass-role="control"], [data-glass-role="field"]):has(> input:checked):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: var(--glass-ui-working-selected);
+  border-color: var(--glass-ui-accent);
+  box-shadow: inset 0 0 0 1px var(--glass-ui-accent);
+}
+.glass-ui[data-glass-material="working"] :is([data-glass-role], button, a, input, select, textarea):focus-visible:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui[data-glass-material="working"] [data-glass-role="field"]:focus-within:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  outline: 2px solid var(--glass-ui-focus);
+  outline-offset: 3px;
+}
+.glass-ui[data-glass-material="working"] [data-glass-role="field"] :is(input, select, textarea, [contenteditable]):focus-visible:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  outline: 0;
+  box-shadow: none;
+}
+.glass-ui[data-glass-material="working"][data-glass-render-mode] :is([data-glass-role], input, textarea, select):is([aria-invalid="true"], :user-invalid):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  border-color: var(--glass-ui-danger);
+  outline: 2px solid var(--glass-ui-danger);
+  outline-offset: 3px;
+}
+.glass-ui[data-glass-material="working"] :is(input[type="checkbox"], input[type="radio"]):checked:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: var(--glass-ui-accent);
+  border-color: var(--glass-ui-accent);
+  box-shadow: var(--glass-ui-working-rim);
+}
+.glass-ui[data-glass-material="working"] input[type="radio"]:checked:not(:where([data-glass-ignore], [data-glass-ignore] *))::before {
+  background: var(--glass-ui-accent-ink);
+  box-shadow: none;
+}
+.glass-ui[data-glass-material="working"] input[type="checkbox"]:checked:not(:where([data-glass-ignore], [data-glass-ignore] *))::before {
+  border-color: var(--glass-ui-accent-ink);
+}
+.glass-ui[data-glass-material="working"] :where(.glass-ui__switch, .switch) > span:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: var(--glass-ui-control-track);
+  border-color: var(--glass-ui-edge);
+  box-shadow: inset 0 1px 3px rgba(4, 8, 18, 0.12);
+}
+.glass-ui[data-glass-material="working"] :where(.glass-ui__switch, .switch) > input:checked + span:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: var(--glass-ui-accent);
+  border-color: var(--glass-ui-accent);
+}
+.glass-ui[data-glass-material="working"] :where(.glass-ui__switch, .switch) > span:not(:where([data-glass-ignore], [data-glass-ignore] *))::after {
+  background: #f5f8ff;
+  box-shadow: 0 1px 4px rgba(4, 8, 18, 0.2);
+}
+.glass-ui[data-glass-material="working"] input[type="range"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-slider-thumb {
+  background: var(--glass-ui-surface-strong);
+  border-color: var(--glass-ui-accent);
+  box-shadow: var(--glass-ui-working-rim), 0 2px 6px rgba(4, 8, 18, 0.12);
+}
+.glass-ui[data-glass-material="working"] input[type="range"]:not(:where([data-glass-ignore], [data-glass-ignore] *))::-moz-range-thumb {
+  background: var(--glass-ui-surface-strong);
+  border-color: var(--glass-ui-accent);
+  box-shadow: var(--glass-ui-working-rim), 0 2px 6px rgba(4, 8, 18, 0.12);
+}
+.glass-ui[data-glass-material="working"] :is(progress, meter):not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-progress-value,
+.glass-ui[data-glass-material="working"] :is(progress, meter):not(:where([data-glass-ignore], [data-glass-ignore] *))::-webkit-meter-optimum-value {
+  background: var(--glass-ui-accent);
+  box-shadow: none;
+}
+.glass-ui[data-glass-material="working"] :is(progress, meter):not(:where([data-glass-ignore], [data-glass-ignore] *))::-moz-progress-bar,
+.glass-ui[data-glass-material="working"] :is(progress, meter):not(:where([data-glass-ignore], [data-glass-ignore] *))::-moz-meter-bar {
+  background: var(--glass-ui-accent);
+  box-shadow: none;
+}
+@media (forced-colors: active) {
+  .glass-ui[data-glass-material="working"][data-glass-render-mode][data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+  .glass-ui[data-glass-material="working"][data-glass-render-mode] [data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    background: Canvas;
+    border: 2px solid CanvasText;
+    box-shadow: none;
+    color: CanvasText;
+  }
+  .glass-ui[data-glass-material="working"] :is([data-glass-role], button, a, input, select, textarea):is(:focus-visible, :focus-within, [aria-invalid="true"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    outline-color: Highlight;
+  }
+}
+
+/* Compact widget composition. The Source owns its live DOM and data.
+ * CSS-only consumers explicitly declare data-glass-render-mode="static".
+ * No viewport-height rule may hide the editor or shrink its native actions. */
+.glass-ui.glass-ui__widget:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  inline-size: 100%;
+  block-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 122px;
+  padding: 12px;
+  container-type: inline-size;
+}
+.glass-ui__widget-content:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  min-block-size: 44px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 4px;
+}
+.glass-ui__widget-identity:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  margin: 0 0 8px;
+  color: var(--glass-ui-muted);
+  font-size: .875rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.glass-ui__widget-glance:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: grid;
+  gap: 6px;
+  margin-block: 0 12px;
+  overflow-wrap: anywhere;
+}
+.glass-ui__widget-glance > output:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  font-size: clamp(2rem, 10vw, 4rem);
+  font-size: clamp(2rem, 15cqi, 4rem);
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: -.035em;
+  font-variant-numeric: tabular-nums;
+}
+.glass-ui__widget-actions:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
+}
+.glass-ui__widget-actions > :is(button, a, [role="button"]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-inline-size: 44px;
+  min-block-size: 44px;
+  max-inline-size: 100%;
+  padding: 8px 12px;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+.glass-ui__widget :is(input, textarea, select)[data-glass-role="field"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  min-block-size: 44px;
+}
+
+/* Explicit widget context. Only the configured parent selects the UI mode;
+ * neither iframe size nor the editor's keyboard height can select it. */
+.glass-ui.glass-ui__widget[data-glass-widget-mode="glance"] .glass-ui__widget-actions:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui.glass-ui__widget[data-glass-widget-mode="glance"] .glass-ui__widget-editor:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: none;
+}
+.glass-ui.glass-ui__widget[data-glass-widget-mode="glance"] .glass-ui__widget-glance:not([hidden]):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: grid;
+}
+
+@media (forced-colors: none) {
+  .glass-ui.glass-ui__widget[data-glass-widget-mode="glance"][data-glass-role]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+    border-radius: 0;
+    border-color: transparent;
+    box-shadow: none;
+  }
+}
+
+/* A shared glass plate owns action rows; individual rows do not need lenses. */
+.glass-ui[data-glass-material="working"] .glass-ui__action-list > :is(button, a.sw-button):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  display: flex; align-items: center; justify-content: flex-start; gap: 10px;
+  box-sizing: border-box; min-height: 44px; width: 100%; padding: 10px 12px;
+  border: 0; border-radius: 12px; background: transparent; box-shadow: none;
+  color: var(--glass-ui-ink); font: inherit; text-align: start; cursor: pointer;
+}
+.glass-ui[data-glass-material="working"] .glass-ui__action-list > :is(button, a.sw-button):hover:not(:disabled):not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background: var(--glass-ui-working-selected);
+}
+@media (forced-colors: active) {
+  .glass-ui .glass-ui__action-list > :is(button, a.sw-button) { color: ButtonText; background: Canvas; border: 1px solid ButtonText; }
+}
+
+/* Modal text needs a dense glass plate even when optical rendering is active. */
+.glass-ui[data-glass-material="working"][data-glass-render-mode][data-glass-role="overlay"]:not(:where([data-glass-ignore], [data-glass-ignore] *)),
+.glass-ui[data-glass-material="working"][data-glass-render-mode] [data-glass-role="overlay"]:not(:where([data-glass-ignore], [data-glass-ignore] *)) {
+  background-color: var(--glass-ui-surface-strong);
+}

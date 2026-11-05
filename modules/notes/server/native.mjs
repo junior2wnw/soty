@@ -25,13 +25,13 @@ export function createNativeNotesPort({ db, projectId, clock, limits, verifyNati
     ensureOpen();
     check(typeof verifyNativeContext === 'function', 'native_unavailable');
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    check(version === 2, 'native_unavailable');
+    check([2,3].includes(version), 'native_unavailable');
     const metadata = db.prepare('SELECT key,value FROM notes_meta ORDER BY key').all();
     const values = Object.fromEntries(metadata.map(row => [row.key, row.value]));
-    check(metadata.length === 3 && values.lineage === 'soty.notes.sqlite.v2'
+    check(metadata.length === 3 && values.lineage === `soty.notes.sqlite.v${version}`
       && typeof values.registry_id === 'string' && /^[a-f0-9]{32}$/u.test(values.registry_id), 'notes_storage_corrupt');
     check(values.project_id === projectId, 'native_store_mismatch');
-    return Object.freeze({ projectId, registryId: values.registry_id, schemaVersion: 2 });
+    return Object.freeze({ projectId, registryId: values.registry_id, schemaVersion: version });
   }
   function validateDraftInput(args) {
     ensureOpen(); exact(args, ['input']);

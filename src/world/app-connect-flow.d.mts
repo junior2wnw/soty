@@ -1,0 +1,16 @@
+import type {WorldApi} from './types';
+import type {AppFieldPlacementController} from './app-field-placement.d.mts';
+import type {CanvasCreateResult} from './canvas-create-flow.mjs';
+export interface AppConnectInput {name:string;address:string;hostDeviceId:string;connectorId:string;audience:'private'|'link'|'public'|'community';communityId?:string;resultKind?:'shortcut'|'selection'|'canvas';canvasProjectId?:string}
+export interface AppConnectEndpoint {scope:'connector-self';scheme:'http';family:'IPv4';address:string}
+export interface AppConnectRecord {schema:1|2|3|4;accountId:string;id:string;intent:AppConnectInput&{port:number;entryPath:string;profile?:'soty.relay-self-ip.v1';endpoint?:AppConnectEndpoint};dispatched:boolean;complete:boolean;rejected?:boolean;configured?:boolean;appId?:string;appName?:string;shortcutId?:string;canvasResult?:CanvasCreateResult;canvasSettled?:boolean}
+export interface AppConnectJournal {read():AppConnectRecord|null;begin(input:AppConnectInput):Promise<AppConnectRecord>;dispatched(record:AppConnectRecord):Promise<AppConnectRecord>;rejected(record:AppConnectRecord):Promise<AppConnectRecord>;registered(record:AppConnectRecord,app:{id:string;name:string}):Promise<AppConnectRecord>;configured(record:AppConnectRecord):Promise<AppConnectRecord>;complete(record:AppConnectRecord,shortcutId:string):Promise<AppConnectRecord>;completeSelection(record:AppConnectRecord):Promise<AppConnectRecord>;completeCanvas(record:AppConnectRecord,result:CanvasCreateResult):Promise<AppConnectRecord>;settledCanvas(record:AppConnectRecord):Promise<AppConnectRecord>}
+interface AppConnectBaseResult {app:{id:string;name:string};audience:'private'|'link'|'public'|null;publication:unknown}
+export interface AppConnectSelectionResult extends AppConnectBaseResult {resultKind:'selection';requestId:string}
+export interface AppConnectShortcutResult extends AppConnectBaseResult {resultKind:'shortcut';shortcutId:string;contextId:string}
+export interface AppConnectCanvasResult extends AppConnectBaseResult {resultKind:'canvas';requestId:string;creation:CanvasCreateResult}
+export interface AppConnectCanvasBridge {projectId:string;prepare(requestId:string):Promise<unknown>;complete(input:{requestId:string;app:{id:string;name:string}}):Promise<CanvasCreateResult>;settle(requestId:string):Promise<void>}
+export type AppConnectResult=AppConnectSelectionResult|AppConnectShortcutResult|AppConnectCanvasResult;
+export function parseAppConnectAddress(input:string):{port:number;entryPath:string;address:string;profile?:'soty.relay-self-ip.v1';endpoint?:AppConnectEndpoint};
+export function createAppConnectJournal(options:{accountId:string;storage:Pick<Storage,'getItem'|'setItem'>;locks:Pick<LockManager,'request'>;randomId?:()=>string}):AppConnectJournal;
+export function createAppConnectFlow(options:{api:WorldApi;accountId:string;journal:AppConnectJournal;storage:Pick<Storage,'getItem'|'setItem'>;locks:Pick<LockManager,'request'>;createPlacement(appId:string,options:{initialAppIds:string[]}):AppFieldPlacementController;canvas?:AppConnectCanvasBridge;isCurrent?():boolean;preferredContextId?:string;initialAppIds?:string[];onStatus?(text:string):void}):{pending():AppConnectRecord|null;run(input:AppConnectInput):Promise<AppConnectResult>;confirmSelection(result:AppConnectSelectionResult):Promise<void>};

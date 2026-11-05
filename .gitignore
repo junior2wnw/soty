@@ -42,3 +42,11 @@ modules/source-app/python/__pycache__/
 /output/app-art-history/
 /scripts/app-art/registry.json
 /scripts/app-art/prompts/
+
+# The pinned chart distribution is a source dependency, not build output.
+!vendor/uplot/dist/
+vendor/uplot/dist/*
+!vendor/uplot/dist/uPlot.esm.js
+!vendor/uplot/dist/uPlot.cjs.js
+!vendor/uplot/dist/uPlot.d.ts
+!vendor/uplot/dist/uPlot.min.css

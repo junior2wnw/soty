@@ -1,7 +1,7 @@
 {
-  "schema": "soty.maintained-source-ci-capsule.v1",
+  "schema": "soty.maintained-source-ci-capsule.v2",
   "sourceRevision": "6c614feb489767266ce23676b2bc0df6342f8370",
-  "purpose": "actual maintained Source in Root build-only integration tests",
+  "purpose": "actual maintained Source in Root build-only tests;85 original Git files plus one declared maintained SDK overlay",
   "productionSourceInstalled": false,
   "files": {
     "AGENTS.md": {
@@ -109,8 +109,8 @@
       "sha256": "0f6976f760db0e84abb798ef3bac7ca0471c8db6e9f49682d339207f0b7ef392"
     },
     "server/soty-source-host.mjs": {
-      "bytes": 19440,
-      "sha256": "052ad8d61c55f96f967f893f859d17da90c4c02d9936241ffd9c961e88bb8f0d"
+      "bytes": 36563,
+      "sha256": "648507f5b643b2fd704df8a99f010df8e82490427bf0dc50af322abe5f98511d"
     },
     "server/source-rp/index.d.mts": {
       "bytes": 3772,
@@ -347,6 +347,72 @@
     "vite.config.ts": {
       "bytes": 288,
       "sha256": "9ed275b9e40ee1e71a4d0b70306a15246da24ab5c2942fb2c5105e13265b6489"
+    }
+  },
+  "sdkOverlay": {
+    "schema": "soty.maintained-source-sdk-overlay.v1",
+    "version": 1,
+    "inputEncoding": "utf-8-lf",
+    "entry": "modules/apps/scoped-embed/source-host.mjs",
+    "generator": "scripts/build-maintained-source-ci-sdk.mjs",
+    "esbuild": "0.27.7",
+    "baseFile": {
+      "bytes": 19440,
+      "sha256": "052ad8d61c55f96f967f893f859d17da90c4c02d9936241ffd9c961e88bb8f0d"
+    },
+    "inputs": {
+      "modules/apps/scoped-embed/local-broker.mjs": {
+        "bytes": 23111,
+        "sha256": "ac8f029b4ae721a8653b730459a6444223b09723da032655ca7ba20f92930c19"
+      },
+      "modules/apps/scoped-embed/profile-dispatch.mjs": {
+        "bytes": 1496,
+        "sha256": "276562bd2f5587c9f346e09fe7a3500d9d01a6649a0b27da6b0334571a9a3d6a"
+      },
+      "modules/apps/scoped-embed/profile.mjs": {
+        "bytes": 8423,
+        "sha256": "584ec7073a4794aec4b8bda44ba663e737b22fbb470d1036fddd0f283e2444bc"
+      },
+      "modules/apps/scoped-embed/resource-profile.mjs": {
+        "bytes": 3994,
+        "sha256": "93027992be0fe7ce6527c82074d8e2df083e22ff7aafd089b0f37c1a8379d9c0"
+      },
+      "modules/apps/scoped-embed/resource-proof.mjs": {
+        "bytes": 9975,
+        "sha256": "808f0435d31d32ed3cdbbbaebf0261a45efbc857602b52b8e774f3b947805145"
+      },
+      "modules/apps/scoped-embed/resource-route-adapters.mjs": {
+        "bytes": 9937,
+        "sha256": "c7fc881fe3defc9ec38d2b3bd2432fdb118f383342e4bb064c4cb58383c595dd"
+      },
+      "modules/apps/scoped-embed/source-authority-client.mjs": {
+        "bytes": 6461,
+        "sha256": "039c5dc0b6a93f18f9bf051895a87704a1c87bb57791315a1c391ff7a3fa354b"
+      },
+      "modules/apps/scoped-embed/source-continuation.mjs": {
+        "bytes": 1472,
+        "sha256": "216b7b37c8a7a8276fcc385aa214e3d3c4509775626d822801376d2f25d4bc21"
+      },
+      "modules/apps/scoped-embed/source-host.mjs": {
+        "bytes": 436,
+        "sha256": "1081ae459bbdcd0f1497b39fe4f6ead085be4a1ff869f0e59d5823837065a7d3"
+      },
+      "modules/apps/scoped-embed/source-proof.mjs": {
+        "bytes": 9580,
+        "sha256": "88830eb66526e53df40372908446de32847dbad34944c06a3aeb66a91abf998e"
+      },
+      "modules/source-app/server/standard-profile.mjs": {
+        "bytes": 6952,
+        "sha256": "1dd59c4862f299943f062ff802871f69050add0e49e49b0223d27c553eb45dfd"
+      },
+      "modules/source-app/server/wire.mjs": {
+        "bytes": 3235,
+        "sha256": "0532c7afb2a74ff5f560c9a7e308c6f1f5010395e4ef547329f7970ec43d6bb8"
+      },
+      "scripts/build-maintained-source-ci-sdk.mjs": {
+        "bytes": 5082,
+        "sha256": "213020527fe3bd7ad9f1f2886ee88a188ec7e17e951a1111faa9264968ff2d92"
+      }
     }
   }
 }

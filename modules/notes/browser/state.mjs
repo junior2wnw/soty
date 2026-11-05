@@ -1,4 +1,5 @@
 import { invalidateNoteCache } from './cache.mjs';
+import {createNativeDraftStore} from './native-local.mjs';
 
 // A draft is a separate branch. Two tabs never silently replace each other's text.
 export const NOTE_COLORS = Object.freeze(['plain', 'honey', 'sage', 'lilac', 'blue', 'coral']);
@@ -9,58 +10,7 @@ const documentOf = note => ({ title: note.title, body: note.body, items: clone(n
 export function noteErrorCode(error) { return String(error?.code || error?.error?.code || error?.message || 'notes_network_error'); }
 
 /** Local storage is best effort and origin-scoped. Every key additionally includes project and verified account. */
-export function createDraftStore(accountId, projectId = 'default') {
-  const scope = JSON.stringify([location.origin, projectId, accountId]);
-  let opening;
-  const database = () => {
-    if (!opening) opening = new Promise((resolve, reject) => {
-      if (!globalThis.indexedDB) { reject(new Error('notes_local_unavailable')); return; }
-      const request = indexedDB.open('soty-notes-drafts-v1', 1);
-      request.onupgradeneeded = () => { const store = request.result.createObjectStore('drafts', { keyPath: 'key' }); store.createIndex('scope', 'scope'); };
-      request.onerror = () => reject(new Error('notes_local_unavailable'));
-      request.onblocked = () => reject(new Error('notes_local_unavailable'));
-      request.onsuccess = () => { const db = request.result; db.onversionchange = () => { db.close(); opening = undefined; }; resolve(db); };
-    }).catch(error => { opening = undefined; throw error; });
-    return opening;
-  };
-  const keyOf = (noteId, branchId) => JSON.stringify([scope, noteId, branchId]);
-  return {
-    async put(value) {
-      const record = { ...clone(value), scope, key: keyOf(value.note.noteId, value.branchId) };
-      const bytes = new TextEncoder().encode(JSON.stringify(record)).length;
-      if (bytes > 800 * 1024) throw new Error('notes_local_quota');
-      const db = await database();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction('drafts', 'readwrite'); const store = tx.objectStore('drafts'); let failure;
-        const records = store.index('scope').getAll(scope, 33);
-        records.onsuccess = () => {
-          const others = records.result.filter(item => item.key !== record.key);
-          if (others.length >= 32 || others.reduce((sum, item) => sum + (item.bytes || 0), bytes) > 4 * 1024 * 1024) { failure = new Error('notes_local_quota'); tx.abort(); return; }
-          store.put({ ...record, bytes });
-        };
-        tx.oncomplete = () => resolve();
-        tx.onabort = tx.onerror = () => reject(failure || new Error('notes_local_unavailable'));
-      });
-    },
-    async list() {
-      const db = await database();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction('drafts', 'readonly'); const request = tx.objectStore('drafts').index('scope').getAll(scope, 33); let result;
-        request.onsuccess = () => { result = request.result.sort((a, b) => b.savedAt - a.savedAt); };
-        tx.oncomplete = () => resolve(result); tx.onabort = tx.onerror = () => reject(new Error('notes_local_unavailable'));
-      });
-    },
-    async remove(noteId, branchId, savedAt) {
-      const db = await database();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction('drafts', 'readwrite'); const store = tx.objectStore('drafts'); const key = keyOf(noteId, branchId); const request = store.get(key);
-        // Conditional removal cannot delete a source branch that another tab changed meanwhile.
-        request.onsuccess = () => { if (request.result && (savedAt === undefined || request.result.savedAt === savedAt)) store.delete(key); };
-        tx.oncomplete = () => resolve(); tx.onabort = tx.onerror = () => reject(new Error('notes_local_unavailable'));
-      });
-    },
-  };
-}
+export function createDraftStore(accountId, projectId = 'default', options) { return createNativeDraftStore(accountId, projectId, options); }
 
 /** Autosave is a durable local outbox followed by a serialized compare-and-swap.
  * A lost response retries the identical mutation, including after reload. */
@@ -70,20 +20,30 @@ export function createNoteSession({ api, accountId, store, note, draft, cache, o
   let committedGeneration = draft ? draft.committedGeneration : 0;
   let durableGeneration = draft ? generation : 0;
   let pending = draft?.pending ? clone(draft.pending) : null;
+  // Kept inside the same durable draft until a successor ACK is committed.
+  // A restored branch has a new branchId; mutation identity must survive it.
+  const retiredMutations = clone(draft?.retiredMutations || []);
   let localQueue = Promise.resolve(); let sending = null; let retryFlight = null; let timer; let disposed = false; let abandoned = false;
+  let resolutionFlight = null;
   let conflict = Boolean(draft?.conflict); let error = ''; let localError = ''; let cacheError = ''; let confirmedAt = 0; let lastSavedAt = 0;
+  let suspended = false, localProtection = null, unregister = null;
   let source = draft ? { noteId: draft.note.noteId, branchId: draft.branchId, savedAt: draft.savedAt } : null;
   const notify = () => { if (!disposed) onChange(state()); };
-  const state = () => ({ note: clone(current), dirty: generation > committedGeneration || Boolean(pending), localDurable: durableGeneration >= generation,
-    saving: Boolean(sending), conflict, error, localError, cacheError, confirmedAt, branchId });
+  const state = () => ({ note: localProtection ? { ...clone(current), title: '', body: '', preview: '', items: [] } : clone(current), dirty: generation > committedGeneration || Boolean(pending), localDurable: durableGeneration >= generation,
+    saving: Boolean(sending), conflict, error, localError, cacheError, confirmedAt, branchId, ...(localProtection ? { localProtection } : {}) });
+  const retirementSnapshot = () => retiredMutations.length ? { retiredMutations: clone(retiredMutations) } : {};
+  const retireMutation = (mutationId, atGeneration) => { if (mutationId && !retiredMutations.some(value => value.mutationId === mutationId)) retiredMutations.push({mutationId, generation:atGeneration}); };
+  const privateSnapshot = () => ({ note: clone(current), branchId, generation, committedGeneration, pending: pending ? clone(pending) : null, conflict, savedAt: lastSavedAt || Date.now(), ...retirementSnapshot() });
   function snapshot() { lastSavedAt = Math.max(Date.now(), lastSavedAt + 1); return { note: clone(current), branchId, generation, committedGeneration,
-    pending: pending ? clone(pending) : null, conflict, savedAt: lastSavedAt }; }
+    pending: pending ? clone(pending) : null, conflict, savedAt: lastSavedAt, ...retirementSnapshot() }; }
   function persist() {
     const record = snapshot();
     // Persist the exact captured generation. A later write may already be waiting behind it.
     localQueue = localQueue.catch(() => {}).then(async () => {
       try {
         await store.put(record); durableGeneration = Math.max(durableGeneration, record.generation); localError = '';
+        const retired = new Set((record.retiredMutations || []).filter(value => value.generation <= record.committedGeneration).map(value => value.mutationId));
+        for (let index = retiredMutations.length - 1; index >= 0; index--) if (retired.has(retiredMutations[index].mutationId)) retiredMutations.splice(index, 1);
         if (source) {
           // Move the recovered branch only after its replacement is durable. If an older
           // tab wrote again, conditional removal leaves that independent branch intact.
@@ -101,28 +61,29 @@ export function createNoteSession({ api, accountId, store, note, draft, cache, o
     try { await store.remove(current.noteId, branchId, lastSavedAt); if (source) { await store.remove(source.noteId, source.branchId, source.savedAt); source = null; } }
     catch { /* Keeping an already committed branch is safe; replay/CAS protects a subsequent recovery. */ }
   }
-  function schedule() { clearTimeout(timer); if (!disposed) timer = setTimeout(() => { void save(); }, debounceMs); }
-  async function save() {
+  function schedule() { clearTimeout(timer); if (!disposed && !suspended) timer = setTimeout(() => { void save(); }, debounceMs); }
+  async function save(allowSuspended=false) {
     clearTimeout(timer);
     if (sending) return sending;
-    if (disposed || abandoned || conflict || (generation === committedGeneration && !pending)) return;
+    if (disposed || abandoned || suspended&&!allowSuspended || conflict || (generation === committedGeneration && !pending)) return;
     sending = (async () => {
       try {
         while (!conflict && (pending || generation > committedGeneration)) {
           if (!pending) pending = { mutationId: uid(), expectedRevision: current.revision, generation, document: documentOf(current) };
           // Do not send an outbox that cannot survive a lost HTTP response. This also guarantees recoverable offline text.
           await persist();
-          if (disposed || abandoned) break;
+          if (disposed || abandoned || suspended&&!allowSuspended) break;
           const outbox = clone(pending);
           let cacheToken = null;
           if (cache) { try { cacheToken = await cache.capture(); } catch { cacheError = 'notes_cache_unavailable'; } }
-          if (disposed || abandoned) break;
+          if (disposed || abandoned || suspended&&!allowSuspended) break;
           const ack = await api.request('notes.put', { expectedAccountId: accountId, noteId: current.noteId,
             mutationId: outbox.mutationId, expectedRevision: outbox.expectedRevision, ...outbox.document });
           current.revision = ack.revision; current.updatedAt = ack.updatedAt;
           if (outbox.expectedRevision === 0) current.createdAt = ack.updatedAt;
           current.preview = (current.body.trim() || current.items.map(item => `${item.done ? '✓ ' : '□ '}${item.text}`).join(' · ')).replace(/\s+/gu, ' ').slice(0, 180);
-          committedGeneration = outbox.generation; pending = null; error = ''; confirmedAt = Date.now();
+          committedGeneration = outbox.generation; retireMutation(outbox.mutationId, outbox.generation); pending = null; error = ''; confirmedAt = Date.now();
+          if (abandoned) break;
           if (cache) {
             // An ACK confirms the captured outbox, never the newer text typed
             // while this request was running. Cache failure cannot undo the ACK.
@@ -132,7 +93,7 @@ export function createNoteSession({ api, accountId, store, note, draft, cache, o
             catch { cacheError = 'notes_cache_unavailable'; }
           }
           await persist(); await clean();
-          if (disposed) break;
+          if (disposed || suspended) break;
         }
       } catch (cause) {
         error = noteErrorCode(cause);
@@ -143,7 +104,7 @@ export function createNoteSession({ api, accountId, store, note, draft, cache, o
     notify(); return sending;
   }
   function retry() {
-    if (disposed || abandoned) return Promise.resolve();
+    if (disposed || abandoned || suspended) return Promise.resolve();
     if (retryFlight) return retryFlight;
     error = '';
     if (!sending) return save();
@@ -158,18 +119,66 @@ export function createNoteSession({ api, accountId, store, note, draft, cache, o
     })().finally(() => { retryFlight = null; });
     return retryFlight;
   }
+  function keepLocal() {
+    if (disposed || abandoned || suspended || !conflict) return Promise.resolve();
+    if (resolutionFlight) return resolutionFlight;
+    const chosenGeneration = generation;
+    resolutionFlight = (async () => {
+      try {
+        await flushLocal();
+        if (disposed || abandoned || suspended || !conflict) return;
+        const {note:remote} = await api.request('notes.get', {expectedAccountId:accountId, noteId:current.noteId});
+        if (disposed || abandoned || suspended || !conflict) return;
+        if (generation !== chosenGeneration) throw new Error('notes_local_draft_changed');
+        if (remote?.noteId !== current.noteId || !Number.isSafeInteger(remote.revision) || remote.revision < current.revision) throw new Error('notes_revision_conflict');
+        if (remote.state === 'trashed') throw new Error('notes_note_deleted');
+        generation++;
+        retireMutation(pending?.mutationId, generation);
+        current = {...current, revision:remote.revision, createdAt:remote.createdAt, updatedAt:remote.updatedAt};
+        pending = {mutationId:uid(), expectedRevision:remote.revision, generation, document:documentOf(current)};
+        conflict = false; error = '';
+        // Never overwrite the old outbox until this new explicit intent is durable.
+        await persist(); await save();
+      } catch (cause) { conflict = true; error = noteErrorCode(cause); }
+      finally { notify(); }
+    })().finally(() => { resolutionFlight = null; });
+    return resolutionFlight;
+  }
+  async function flushLocal() {
+    if(abandoned)return;
+    clearTimeout(timer); if (generation > committedGeneration || pending) await persist();
+    await localQueue;
+    if (durableGeneration < generation || localError) throw new Error(localError || 'notes_local_unavailable');
+    if(disposed){unregister?.();unregister=null;}
+  }
+  async function flush(allowSuspended=false) {
+    if(abandoned)return;
+    await flushLocal(); await save(allowSuspended); await localQueue;
+    if (durableGeneration < generation || localError) throw new Error(localError || 'notes_local_unavailable');
+  }
+  const suspend = () => { suspended = true; localProtection = localProtection || 'pending'; clearTimeout(timer); notify(); };
+  const sourcePort = { suspend, flush:()=>flush(true), flushLocal, snapshot: privateSnapshot,
+    isDisposed:()=>disposed||abandoned,
+    hasUnsavedChanges:()=>durableGeneration<generation||Boolean(localError),
+    onGate(value) {
+      if (value) { localProtection = value; suspend(); if(value==='pending')void flushLocal().catch(() => {}); }
+      else { localProtection = null; suspended = false; if (!disposed && !conflict && (generation > committedGeneration || pending)) schedule(); notify(); }
+    },
+    releaseRecovered(expectedGeneration) {
+      if (expectedGeneration !== generation) throw new Error('notes_local_draft_changed');
+      abandoned = true; suspended = true; localProtection = 'sealed';durableGeneration=generation;localError=''; clearTimeout(timer); unregister?.(); unregister = null; notify();
+    },
+  };
+  if (store.native?.register) unregister = store.native.register(current.noteId, sourcePort);
   if (draft) { void persist().catch(() => {}); if (!conflict) schedule(); }
   return {
     state,
     edit(patch) {
+      if (disposed || abandoned || suspended) return;
       current = { ...current, ...clone(patch) }; generation++; error = ''; void persist().catch(() => {}); schedule(); notify();
     },
-    retry,
-    async flush() {
-      clearTimeout(timer); if (generation > committedGeneration || pending) await persist();
-      await localQueue; await save(); await localQueue;
-      if (durableGeneration < generation || localError) throw new Error(localError || 'notes_local_unavailable');
-    },
+    retry, keepLocal,
+    flush:()=>flush(), flushLocal,
     hasUnsavedChanges() { return durableGeneration < generation; },
     async discardBranch() {
       clearTimeout(timer); await localQueue.catch(() => {}); if (sending) await sending;
@@ -177,6 +186,12 @@ export function createNoteSession({ api, accountId, store, note, draft, cache, o
       if (source) await store.remove(source.noteId, source.branchId, source.savedAt);
       source = null; abandoned = true;
     },
-    dispose() { clearTimeout(timer); disposed = true; if (!abandoned && (generation > committedGeneration || pending)) void persist().catch(() => {}); },
+    dispose() {
+      clearTimeout(timer); disposed = true;
+      const drained = !abandoned && (generation > committedGeneration || pending) ? persist() : localQueue;
+      // A failed local commit retains this private registry snapshot for explicit
+      // encrypted recovery; it never reappears through the ordinary loader.
+      void drained.then(() => { unregister?.(); unregister = null; }, () => {});
+    },
   };
 }

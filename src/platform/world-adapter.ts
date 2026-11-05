@@ -10,6 +10,8 @@ import { parseConnectionIntent, type ConnectionIntent } from './connection-inten
 import { takeConnectionNavigation } from './connection-navigation.mjs';
 import { createNativeVoiceDescriptor } from './native-voice-descriptor.mjs';
 import { createNotificationsController, type NotificationsController } from './notifications-client.mjs';
+import { createPlatformLiveClient } from './platform-live-client.mjs';
+import {bindCanvasPageReturn,readWorkspaceReturn,type CanvasPageReturnHandoff,type WorkspaceReturn} from '../world/workspace-return.mjs';
 import type { ConnectIntent, ConnectTab } from '../../modules/connect/ui/index.mjs';
 const startupReadOperations = new Set(['world.profile.get', 'world.community.list', 'world.field.get', 'world.directory.resolve',
   'apps.directory.resolve', 'apps.directory.search', 'apps.saved.list', 'apps.list', 'apps.discussion.inbox']);
@@ -20,15 +22,16 @@ import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle
 interface HumanLifecycle extends CallIdentityLifecycle {
   snapshot(): { state: string; microphone: WorldHumanCallState['microphone'];
     capacity: { occupied: number; limit: number };
-    scope: { accountId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number;
+    scope: { accountId: string; deviceId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number;
       expectedCallId?: string; expectedEpoch?: number } | null; code: string | null };
   join(target: { roomId: string; mode: 'one-to-one' | 'group'; expectedCallId?: string; expectedEpoch?: number }): Promise<{ ok: boolean; code?: string }>;
   enableMicrophone(): Promise<{ ok: boolean; code?: string }>;
   mute(): unknown;
 }
 
-export async function startWorld(root: HTMLElement, dependencies: { callLifecycle?: CallIdentityLifecycle } = {}): Promise<void> {
+export async function startWorld(root: HTMLElement, dependencies: { callLifecycle?: CallIdentityLifecycle; canvasPageReturn?: CanvasPageReturnHandoff } = {}): Promise<void> {
   const callObservers = new Set<() => void>();
+  const emptyCallParticipants = Object.freeze([]);
   const notifyCall = () => { for (const listener of [...callObservers]) { try { void Promise.resolve(listener()).catch(() => {}); } catch {} } };
   let ownedLifecycle: HumanLifecycle | undefined;
   let orbCaptureOwner: symbol | null = null;
@@ -45,17 +48,18 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   const unobserveCall = callPorts?.subscribe(notifyCall);
   let detachIdentity: (() => void) | undefined;
   const detachCall = () => { detachIdentity?.(); unobserveCall?.(); callObservers.clear(); };
-  const pageLifetime = new AbortController(), entryInput = window.location.href;
+  const pageLifetime = new AbortController(), entryInput = window.location.href, entryReturnState = window.history?.state?.sotyReturn;
   let world: WorldAppHandle, activeAccount: string | null = null, activeDevice: string | null = null;
   let mountGeneration = 0, currentCallView: WorldHumanCallPort | undefined;
   let identityEvents = 0, pageClosed = false, unobserveAccount: (() => void) | undefined, destroyActions: (() => void) | undefined;
   let restoreOwnedRoute: (() => void) | undefined, worldMounted = false, entryScopeChanged = false;
   let notifications: NotificationsController | undefined;
+  let platformLive:ReturnType<typeof createPlatformLiveClient>|undefined;
   const closePage = () => {
     if (pageClosed) return;
     pageClosed = true; pageLifetime.abort(); mountGeneration++;
     window.removeEventListener('pagehide', pagehide);
-    for (const cleanup of [unobserveAccount, destroyActions, () => notifications?.dispose(), () => world?.destroy(), detachCall, () => lifecycle.dispose()]) {
+    for (const cleanup of [unobserveAccount, destroyActions, () => platformLive?.dispose(), () => notifications?.dispose(), () => world?.destroy(), detachCall, () => lifecycle.dispose()]) {
       try { cleanup?.(); } catch { /* Retire the remaining owners too. */ }
     }
   };
@@ -64,6 +68,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   try {
   detachIdentity = bindCallIdentity({ lifecycle, client: accountClient, observeAccount, pageEvents: window });
   const entry = await ensureConnectionAccount(root, { client: accountClient, origin: window.location.origin,
+    instantPersonal:true,
     isCurrent: () => root.isConnected && !pageLifetime.signal.aborted, signal: pageLifetime.signal,
     observeAccount: listener => observeAccount(() => listener()), initialInput: entryInput,
     onIntent: (intent, handoff) => {
@@ -90,20 +95,26 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   if (!entry.intent && hostEntry.rejectedTyped && window.location.href === entryInput)
     throw Object.assign(Error('The connection link contains unsupported parameters'), { code: 'connection_route_invalid' });
   const offeredConnection = entry.intent ?? hostEntry.connection;
-  let ownedConnection = offeredConnection && ['profile', 'community', 'application'].includes(offeredConnection.kind) ? offeredConnection : null;
+  let ownedConnection = offeredConnection && ['profile', 'community', 'application', 'contact', 'device'].includes(offeredConnection.kind) ? offeredConnection : null;
   let ownedRoute: string | null = null;
   // A typed cold continuation owns its destination. A normal deep link owns
   // only the original URL; Back/Forward to another route is a newer intent.
   if (ownedConnection && !entry.intent && window.location.href !== entryInput) ownedConnection = null;
+  const entryDestination:WorkspaceReturn|null=ownedConnection?.kind==='application'
+    ?dependencies.canvasPageReturn
+      ?bindCanvasPageReturn(dependencies.canvasPageReturn,{accountId:entry.state.accountId,deviceId:entry.state.deviceId,launchRoute:'#'+ownedConnection.launch.route})
+      :entryReturnState?readWorkspaceReturn(entryReturnState,entry.state.accountId):null
+    :null;
+  const ownedHistoryState={soty:true,...(entryDestination?{sotyReturn:entryDestination}:{})};
   if (ownedConnection || entry.intent && hostEntry.rejectedTyped && window.location.href === entryInput) {
     const source = new URL(window.location.href);
     if (source.origin !== window.location.origin || source.pathname !== '/') throw Error('connection_entry_changed');
     const neutral = new URL('/', window.location.origin); neutral.hash = 'mine'; ownedRoute = neutral.href;
-    window.history.replaceState({ soty: true }, '', ownedRoute);
+    window.history.replaceState(ownedHistoryState, '', ownedRoute);
     restoreOwnedRoute = () => {
       if (!worldMounted && !entryScopeChanged && !pageClosed && root.isConnected && !pageLifetime.signal.aborted
         && activeAccount === entry.state.accountId && activeDevice === entry.state.deviceId && window.location.href === ownedRoute)
-        window.history.replaceState({ soty: true }, '', entryInput);
+        window.history.replaceState(ownedHistoryState, '', entryInput);
     };
   }
   // Subscribe before optional IO. This observer has no replay; a durable read
@@ -114,6 +125,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     const nextAccount = state.current?.revoked ? null : state.accountId, nextDevice = nextAccount ? state.deviceId : null;
     if (nextAccount === activeAccount && nextDevice === activeDevice) { void notifications?.refresh(); return; }
     notifications?.dispose({ accountChanged: true }); notifications = undefined;
+    platformLive?.dispose();platformLive=undefined;
     entryScopeChanged = true; activeAccount = nextAccount; activeDevice = nextDevice;
     if (world) { try { actions.resetAccount(); world.destroy(); world = mount(activeAccount); } catch (error) { closePage(); throw error; } }
   });
@@ -162,12 +174,17 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     let editProfileRequested = false;
     const messageRequest: { contact: ContactMessageTarget | null } = { contact: null };
     const current = () => !pageLifetime.signal.aborted && world === mountedWorld && activeAccount === accountAtOpen && mountGeneration === generationAtOpen && window.location.href === routeAtOpen;
-    const [{ openConnectPanel }, { default: QRCode }] = await Promise.all([
-      import('../../modules/connect/ui/index.mjs'), import('qrcode'), import('../../modules/connect/ui/style.css'),
+    const [{ openConnectPanel }, { default: QRCode }, { mountMaterialGlass }] = await Promise.all([
+      import('../../modules/connect/ui/index.mjs'), import('qrcode'), import('../world/shell-glass'), import('../../modules/connect/ui/style.css'),
     ]);
     const state = await accountClient.getLocalState();
     if (!current() || state.accountId !== accountAtOpen) return;
+    const prepareProfileChange=mountedWorld?.prepareAccountChange?.bind(mountedWorld);
     const panel = openConnectPanel({ client: accountClient, label: state.label || 'Мой профиль', productName: 'Соты',
+      ...(prepareProfileChange?{beforeProfileChange:async({fromAccountId}:{fromAccountId:string|null;toAccountId:string|null})=>{
+        if(!current()||fromAccountId!==accountAtOpen)return false;
+        const allowed=await prepareProfileChange();return allowed===true&&current();
+      }}:{}),
       qr: url => QRCode.toDataURL(url, { width: 256, margin: 2, color: { dark: '#252923', light: '#ffffff' } }),
       ...(initialIntent ? { initialIntent } : {}), initialTab, bootstrapOnOpen: false,
       onEditProfile: () => { editProfileRequested = true; },
@@ -185,10 +202,11 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     const aborted = () => panel.close(); pageLifetime.signal.addEventListener('abort', aborted, { once: true });
     const routeChanged = () => { if (!current()) panel.close(); };
     window.addEventListener('hashchange', routeChanged); window.addEventListener('popstate', routeChanged);
-    const dialog = document.querySelector<HTMLDialogElement>('dialog.connect-panel');
+    const dialog = panel.element;
+    const glass = dialog?.ownerDocument?.defaultView?.HTMLCanvasElement ? mountMaterialGlass(dialog, { renderPolicy: 'auto' }) : null;
     try { if (dialog) await new Promise<void>(resolve => dialog.addEventListener('close', () => resolve(), { once: true }));
       else panel.close(); }
-    finally { stopObserving(); pageLifetime.signal.removeEventListener('abort', aborted);
+    finally { glass?.dispose(); stopObserving(); pageLifetime.signal.removeEventListener('abort', aborted);
       window.removeEventListener('hashchange', routeChanged); window.removeEventListener('popstate', routeChanged); }
     if (!current()) return;
     await refresh();
@@ -264,14 +282,19 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
         : '';
       const snapshot = (): WorldHumanCallState => {
         const local = owner.snapshot(), connection = ports.snapshot();
-        if (!current()) return { state: 'ended', microphone: 'off', connection: 'closed', peers: 0,
+        if (!current()) return { state: 'ended', microphone: 'off', connection: 'closed', peers: 0, participants: emptyCallParticipants,
           playbackBlocked: false, roomId: null, mode: null, code: 'ACTIVE_PROFILE_CHANGED', turnConfigured: false };
         const scope = local.scope;
+        const participants = connection.participants ?? emptyCallParticipants, self = participants.find(peer => peer.isSelf);
+        const currentParticipants = scope?.accountId === accountId && scope.deviceId === activeDevice
+          && self?.accountId === scope.accountId && self.deviceId === scope.deviceId
+          && (local.state === 'joining' || local.state === 'listening') ? participants : emptyCallParticipants;
         const targetLabel = scope && presentation && presentation.accountId === accountId && presentation.mountGeneration === generation
           && presentation.roomId === scope.roomId && presentation.mode === scope.mode && scope.accountId === accountId
           && presentation.scopeGeneration === scope.generation
           && (local.state === 'joining' || local.state === 'listening') ? presentation.label : null;
         return { state: local.state, microphone: local.microphone, ...connection,
+          participants: currentParticipants,
           roomId: scope?.roomId ?? null, mode: scope?.mode ?? null, code: local.code, targetLabel,
           incomingCall: current() ? incomingInvitation : null };
       };
@@ -363,9 +386,9 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     // cannot adopt a new account merely because the shared selection changed.
     const traceStartedAt = Date.now(), requestTimings: { operation: string; startedAt: number; completedAt: number; ok: boolean }[] = [];
     if (root.dataset) root.dataset.startupRequestTimings = '[]';
-    const api = { request: <T>(method: string, args?: Record<string, unknown>): Promise<T> => {
+    const api = { request: <T>(method: string, args?: Record<string, unknown>,requestOptions?:{signal?:AbortSignal}): Promise<T> => {
       if (!accountId) return Promise.reject(Object.assign(new Error('No local account is selected.'), { code: 'NO_LOCAL_PROFILE' }));
-      const startedAt = Date.now(), result = accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId });
+      const startedAt = Date.now(), result = accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId,...(requestOptions?.signal?{signal:requestOptions.signal}:{}) });
       if (!startupReadOperations.has(method) || startedAt - traceStartedAt > 30000) return result;
       const trace = (ok: boolean) => {
         try {
@@ -382,6 +405,9 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       onOpen: (target, context) => mounted.openNotification(target, context) }) : undefined;
     notifications = ownNotifications;
     mounted = mountWorldApp(root, { ...options, api, ...(humanCalls ? { humanCalls } : {}), ...(ownNotifications ? { notifications: ownNotifications } : {}),
+      ...(entryDestination&&ownedConnection?.kind==='application'&&generation===1&&!entryScopeChanged&&current()?{initialWorkspaceReturn:{destination:entryDestination,
+        launchRoute:'#'+ownedConnection.launch.route,isCurrent:()=>current()&&!entryScopeChanged&&!pageClosed&&root.isConnected&&!pageLifetime.signal.aborted
+          &&activeDevice===entry.state.deviceId&&window.location.href===ownedRoute}}:{}),
       syncContactName: async displayName => {
         if (!accountId || !current()) throw Object.assign(new Error('The displayed profile changed.'), { code: 'ACTIVE_PROFILE_CHANGED' });
         await accountClient.rename(displayName, accountId);
@@ -389,6 +415,10 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       },
       requestContact: async (profile: WorldIdentity) => { await api.request('contacts.requestAccount', { accountId: profile.profileId }); },
     });
+    if(accountId)platformLive=createPlatformLiveClient({api,accountId,isCurrent:current,watch:()=>mounted.liveWatch?.()||[],
+      onInvalidate:event=>mounted.invalidateLive?.(event)||mounted.refresh(),
+      onAccessLost:error=>{if(mounted.loseAccess)mounted.loseAccess(error);else mounted.destroy();},
+      onStatus:status=>{if(current())root.dataset.liveConnection=status;}});
     void ownNotifications?.refresh();
     return mounted;
   };
@@ -401,7 +431,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (!entryCurrent() || window.location.href !== ownedRoute) return;
     await entryWorld.refresh();
     if (!entryCurrent() || window.location.href !== ownedRoute) return;
-    await entryWorld.followConnection(ownedConnection);
+    if (ownedConnection.kind === 'contact' || ownedConnection.kind === 'device') await openAccount('people', ownedConnection);
+    else await entryWorld.followConnection(ownedConnection);
   } else if (entry.intent) {
     if (!entryCurrent()) return;
     if (entry.intent.kind === 'contact' || entry.intent.kind === 'device') await openAccount('people', entry.intent);
@@ -409,9 +440,6 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       if (!entryCurrent()) throw Error('connection_entry_changed');
       window.location.assign(takeConnectionNavigation(entry.intent!, window.location.origin, entry.handoff));
     });
-  } else {
-    const initial = parseConnectionIntent(entryInput, window.location.origin);
-    if ((initial?.kind === 'contact' || initial?.kind === 'device') && entryCurrent()) await openConnections(entryInput);
   }
   const actionUrl = new URL(window.location.href);
   if (actionUrl.searchParams.get('action') === 'connect-device') {

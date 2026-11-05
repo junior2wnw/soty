@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import vm from 'node:vm';
+import nodeVm from 'node:vm';
+import {watchDeviceEnrollment} from '../ui/device-enrollment.mjs';
+import {mountCredentialLogin,mountCredentialSettings} from '../ui/credential-forms.mjs';
+const vm={runInNewContext(code,context,...rest){Object.assign(context,{watchDeviceEnrollment,mountCredentialLogin,mountCredentialSettings,AbortController});return nodeVm.runInNewContext(code,context,...rest);}};
 
 // Exercise the actual panel's conditional render and Save callback. This port
 // reflects markup attributes; it does not claim native browser input coverage.
@@ -44,7 +47,7 @@ async function until(predicate) {
   while (!predicate()) { assert.ok(Date.now() < deadline, 'panel rendered its current view'); await new Promise(resolve => setImmediate(resolve)); }
 }
 const source = (await readFile(new URL('../ui/index.mjs', import.meta.url), 'utf8'))
-  .replace(/^import \{ mountPlatformInvitations \} from '\.\/platform-invitations.mjs';\r?\n/u, '')
+  .replace(/^import \{.*\} from '\.\/(?:platform-invitations|device-enrollment|credential-forms)\.mjs';\r?\n/gmu, '')
   .replace(/^export /gmu, '');
 
 test('fallback profile editor renders the 80-unit boundary and saves all 80 units through its real callback', { timeout: 5000 }, async () => {

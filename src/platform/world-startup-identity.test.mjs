@@ -6,6 +6,7 @@ import ts from 'typescript';
 import * as intents from './connection-intent.mjs';
 import * as navigation from './connection-navigation.mjs';
 import * as voiceDescriptors from './native-voice-descriptor.mjs';
+import {createPlatformLiveTestPort} from './test-support/platform-live-port.mjs';
 
 // Exercise the actual adapter. These controlled SDK/fetch/lifecycle ports prove
 // continuation ordering, not a signed-service, browser, storage or media call.
@@ -17,7 +18,7 @@ async function until(predicate) { const deadline = Date.now() + 5000; while (!pr
 const state = (accountId = 'account-A', deviceId = 'device-A') => ({ accountId, deviceId, label: 'Fixture', current: { accountId, deviceId, revoked: false } });
 function fixture(t, config = {}) {
   let selected = state(), reads = 0, fetches = 0, actionsDestroyed = 0, detached = 0, disposed = 0, bootstraps = 0;
-  const entry = deferred(), observers = new Set(), events = new Map(), mounts = [], requests = [], follows = [], navigationCalls = [], notifications = [];
+  const entry = deferred(), observers = new Set(), events = new Map(), mounts = [], requests = [], follows = [], navigationCalls = [], notifications = [],liveClients=[], accountPanels = [];
   const root = { isConnected: true }, window = { location: { href: config.href ?? 'https://shell.example/', origin: 'https://shell.example', assign(value) { navigationCalls.push(value); } },
     addEventListener(name, fn) { const set = events.get(name) ?? new Set(); set.add(fn); events.set(name, set); }, removeEventListener(name, fn) { events.get(name)?.delete(fn); } };
   window.history = { replaceState(_state, _title, value) { window.location.href = new URL(value, window.location.href).href; } };
@@ -33,20 +34,22 @@ function fixture(t, config = {}) {
     '../core/connect-client': { accountClient: client, observeAccount(fn) { observers.add(fn); return () => observers.delete(fn); } },
     './connection-hub': { ensureConnectionAccount() { return entry.promise; }, openConnectionHub() { throw Error('warm hub not used'); } },
     './connection-intent.mjs': intents, './connection-navigation.mjs': navigation, './native-voice-descriptor.mjs': voiceDescriptors,
+    './platform-live-client.mjs':createPlatformLiveTestPort(liveClients),
     './call-identity': { bindCallIdentity() { return () => { detached++; }; } },
     './local-apps': { createAppActions: () => ({ connectDevice() {}, agentCreate() {}, destroy() { actionsDestroyed++; }, resetAccount() {} }) },
     '../world/app': { mountWorldApp(_root, options) {
-      const mount = { options, destroyed: 0, href: window.location.href }; mounts.push(mount);
+      const mount = { options, destroyed: 0, href: window.location.href,lost:[] }; mounts.push(mount);
       void options.api.request('fixture.actor');
       return { async refresh() { if (config.refresh) await config.refresh(mounts.length); }, destroy() { mount.destroyed++; },
+        loseAccess(error){mount.lost.push(error);},
         async followConnection(intent, navigate) { follows.push(intent); if (navigate) await navigate(); } };
     } },
-    './assistant': {}, '../sync': {}, '../../modules/connect/ui/index.mjs': {}, qrcode: {},
+    './assistant': {}, '../sync': {}, '../../modules/connect/ui/index.mjs': { openConnectPanel(options) { accountPanels.push(options); return { close() {} }; } }, qrcode: { default: {} },
   };
   const module = { exports: {} };
-  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ports[name] ?? {}, window, URL, AbortSignal, AbortController,
+  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ports[name] ?? {}, window, URL, AbortSignal, AbortController, document: { querySelector: () => null },
     fetch: () => { fetches++; return config.capabilities ? config.capabilities() : Promise.resolve({ ok: true, async json() { return { nativeVoice: null }; } }); } });
-  const result = { root, window, client, mounts, requests, follows, navigationCalls, observers, events, notifications,
+  const result = { root, window, client, mounts, requests, follows, navigationCalls, observers, events, notifications,liveClients, accountPanels,
     get reads() { return reads; }, get fetches() { return fetches; }, get disposed() { return disposed; }, get detached() { return detached; },
     get actionsDestroyed() { return actionsDestroyed; }, get bootstraps() { return bootstraps; },
     change(next) { selected = next; for (const fn of [...observers]) fn(next); },
@@ -62,6 +65,12 @@ test('startup subscribes before optional capabilities and mounts the current acc
   try { assert.equal(f.observers.size, 1); assert.equal(f.fetches, 1); f.change(state('account-B', 'device-B')); }
   finally { durable.resolve(state()); cap.resolve({ ok: false }); await running; }
   assert.equal(f.mounts.length, 1); assert.equal(f.requests[0].context.expectedAccountId, 'account-B'); assert.equal(f.bootstraps, 0);
+});
+
+test('live device revocation synchronously retires the matching UI without requesting an unreliable refresh',async t=>{
+  const f=fixture(t);await f.start();assert.equal(f.liveClients.length,1);const before=f.requests.length,error={code:'device_revoked'};
+  f.liveClients[0].options.onAccessLost(error);assert.equal(f.mounts[0].lost[0],error);assert.equal(f.requests.length,before);
+  f.change(state('account-B','device-B'));assert.equal(f.liveClients[0].disposals,1);assert.equal(f.liveClients.length,2);
 });
 
 test('startup discards a durable snapshot crossed by a later committed identity event', async t => {
@@ -151,6 +160,26 @@ test('normal application URL is neutral at mount and its actual one-use carrier 
   assert.equal(f.mounts[0].href, 'https://shell.example/#mine'); assert.equal(f.follows.length, 1);
   assert.equal(f.follows[0].kind, 'application'); assert.equal(f.follows[0].launch.takeInvitation(), 'b'.repeat(64));
   assert.equal(f.follows[0].launch.takeInvitation(), null); assert.deepEqual(f.navigationCalls, []);
+});
+
+test('a device QR URL settles the neutral shell and opens the single approval directly without a connection hub', async t => {
+  const requestId = 'enroll_' + 'x'.repeat(32), ready = deferred();
+  const f = fixture(t, { href: `https://shell.example/?connect=device&request=${requestId}`, refresh: () => ready.promise });
+  const running = f.start(); await until(() => f.mounts.length === 1);
+  assert.equal(f.mounts[0].href, 'https://shell.example/#mine'); assert.equal(f.accountPanels.length, 0);
+  ready.resolve(); await running;
+  assert.equal(f.accountPanels.length, 1); assert.equal(f.accountPanels[0].initialIntent.kind, 'device');
+  assert.equal(f.accountPanels[0].initialIntent.id, requestId); assert.deepEqual(f.follows, []);
+});
+
+test('account changes and a newer route cancel a delayed QR approval instead of opening it in another context', async t => {
+  for (const change of ['account', 'away-and-back', 'route']) {
+    const ready = deferred(), f = fixture(t, { href: `https://shell.example/?connect=device&request=${'r'.repeat(24)}`, refresh: () => ready.promise });
+    const running = f.start(); await until(() => f.mounts.length === 1);
+    if (change === 'route') f.window.history.replaceState({}, '', '#messages');
+    else { f.change(state('account-B', 'device-B')); if (change === 'away-and-back') f.change(state()); }
+    ready.resolve(); await running; assert.equal(f.accountPanels.length, 0);
+  }
 });
 test('cold application continuation owns the URL before mount and preserves the original typed carrier', async t => {
   const input = appLink(), intent = intents.parseConnectionIntent(input, 'https://shell.example'), f = fixture(t, { href: input });

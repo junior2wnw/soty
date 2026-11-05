@@ -18,16 +18,27 @@ export function createConnectHandler(service, { path = '/api/connect/rpc', maxBy
     const origin = req.headers.origin;
     if (typeof origin !== 'string' || origin === 'null') { reply(403, error('origin_required')); return true; }
     try {
-      const tooLarge = () => {
-        res.setHeader('Connection', 'close');
+      const tooLarge = async(reader=req.iterator({destroyOnReturn:false})) => {
+        // The peer may request Connection: close. Finish draining before
+        // ending the rejection so unread TCP bytes cannot reset its JSON.
+        // The body is discarded, never buffered or passed to the service.
+        let timer,drained=false;
+        try{
+          // Keep consuming the same iterator. resume() cannot drain a stream
+          // while its async iterator still owns the readable listener.
+          const drain=(async()=>{while(!(await reader.next()).done){}return true;})();
+          drain.catch(()=>{});
+          drained=await Promise.race([drain,new Promise(resolve=>{timer=setTimeout(()=>resolve(false),5000);timer.unref?.();})]);
+        }catch{/* An aborted peer cannot receive a response. */}
+        finally{clearTimeout(timer);}
+        if(!drained&&!req.destroyed){res.setHeader('Connection','close');res.once('finish',()=>req.destroy());}
         reply(413, error('request_too_large'));
-        req.resume();
       };
-      if (Number(req.headers['content-length']) > maxBytes) { tooLarge(); return true; }
-      const chunks = []; let length = 0;
-      for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+      if (Number(req.headers['content-length']) > maxBytes) { await tooLarge(); return true; }
+      const chunks = [],reader=req.iterator({destroyOnReturn:false}); let length = 0;
+      for await (const chunk of reader) {
         length += chunk.length;
-        if (length > maxBytes) { tooLarge(); return true; }
+        if (length > maxBytes) { await tooLarge(reader); return true; }
         chunks.push(chunk);
       }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -36,7 +47,11 @@ export function createConnectHandler(service, { path = '/api/connect/rpc', maxBy
       }
       // req.ip is Express's explicitly configured trusted-proxy result; the neutral
       // adapter uses the socket peer. Never accept a peer identifier from RPC JSON.
-      const result = await service.handle({ op: body.op, args: body.args || {}, proof: body.proof, origin, peer: req.ip || req.socket?.remoteAddress });
+      const connection = new AbortController(), disconnected = () => { if (!res.writableEnded) connection.abort(); };
+      res.once('close', disconnected);
+      let result;
+      try { result = await service.handle({ op: body.op, args: body.args || {}, proof: body.proof, origin, peer: req.ip || req.socket?.remoteAddress }, { signal: connection.signal }); }
+      finally { res.removeListener('close', disconnected); }
       // A bounded authority/storage fence may be busy without accepting the
       // operation. Preserve the typed RPC error and expose temporary service
       // unavailability, rather than classifying contention as malformed input.

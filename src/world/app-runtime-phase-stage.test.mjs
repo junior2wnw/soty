@@ -9,6 +9,7 @@ import{createAppRuntimeDisplay}from'./app-runtime-display.mjs';
 import{createRelayIdentityBridge}from'./app-relay-identity-bridge.mjs';
 import{captureSourcePin,matchesScopedCaptureContext}from'./app-project-capture.mjs';
 import{createBootDisplayClient}from'../../modules/apps/server/runtime-display-client.mjs';
+import{createGlassWidgetHost}from'../../vendor/optical-glass/src/widget-context.js';
 
 // Execute the production manual buttons, launch/watch/reset/route functions and
 // diagnostic dialog, with only DOM, network and unrelated stage sinks stubbed.
@@ -28,8 +29,10 @@ const compiled=ts.transpileModule(`
 exports.harness=(host,options,state)=>{
  const view=host.view,runtime=host.runtime,controller=new AbortController(),message=host.message;
  let disposed=false,runtimeStarted=false,runtimePending=false,displayEpoch=0,releaseRuntimeDisplay=null,runtimeDisplay=null,entryRecoveryEpoch=0,entryRecoveryPending=false,lastRuntimeLaunchAt=0,frameGeneration=0,externalAvailability='unknown';
+ let liveAuthorityEpoch=0,liveAuthorityDenied=false;
+ let widgetContext=null,widgetMode='interactive',hostRenewal=null;const screen={dataset:{}};
  let diagnosticOpen=false,closeDiagnostic=null,renderDiagnostic=null,routeGeneration=0,intent={},presentationVersion=0;
- const current=()=>state.current,matches=()=>true,app={appId:'app-synthetic',name:'Synthetic'},panel=host.panel;
+ const presented=()=>state.current,current=()=>state.current,matches=()=>true,app={appId:'app-synthetic',name:'Synthetic'},panel=host.panel;
  const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},external={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
  const stopAssist=()=>{state.calls.stopAssist++;},captureEntry=()=>{state.calls.captureEntry++;},ensureDiscussion=()=>{},showPanel=()=>{},applyPresentation=async()=>{},discussion=null;
  const closeMore=()=>{};
@@ -39,7 +42,7 @@ exports.harness=(host,options,state)=>{
  ${voiceCode}
  ${declaration('messageOwner').replace(/^const /u,'let ')}
  ${fn('showMessage')}
- const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},canOpenExternal:async()=>true,runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,latestBinding:()=>null,scopedCapture:()=>state.binding??null};
+ const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},canOpenExternal:async()=>true,runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),runtimeOrigin(){return this.entry().origin;},hostSession:()=>null,binding:()=>null,latestBinding:()=>null,scopedCapture:()=>state.binding??null};
  let relayPeer=null;
  const relayIdentity=createRelayIdentityBridge({view,isCurrent:current,
    getFrame:()=>runtime.querySelector('iframe')===relayPeer?.frame?relayPeer.frame:null,
@@ -87,7 +90,7 @@ function fixture(presentation){
  const host={view,runtime,ownerDocument:doc,message:new Node('message',state),panel:Object.assign(new Node('panel',state),{hidden:true}),button,el,createDialog};
  let observedMessage=host.message.textContent;
  Object.defineProperty(host.message,'textContent',{get:()=>observedMessage,set:text=>{observedMessage=text;state.messages.push(text);}});
- const context=vm.createContext({exports:{},AbortController,URL,createAppRuntimePhaseTrace,createAppRuntimeDisplay,createRelayIdentityBridge,captureSourcePin,matchesScopedCaptureContext,isScopedRuntimeProfile});new vm.Script(compiled).runInContext(context);
+ const context=vm.createContext({exports:{},AbortController,URL,createAppRuntimePhaseTrace,createAppRuntimeDisplay,createRelayIdentityBridge,createGlassWidgetHost,captureSourcePin,matchesScopedCaptureContext,isScopedRuntimeProfile});new vm.Script(compiled).runInContext(context);
  const h=context.exports.harness(host,{...(presentation?{presentation}:{}),onModalChange(){},api:{request:async(op,args)=>{state.reads.push({op,args});return state.context;}}},state);
  const tick=ms=>{const target=now+ms;while(true){const t=[...tasks].sort((a,b)=>a[1].at-b[1].at)[0];if(!t||t[1].at>target)break;tasks.delete(t[0]);now=t[1].at;t[1].fn();}now=target;};
  return{h,state,tasks,tick,view,host};
@@ -97,7 +100,10 @@ test('actual manual buttons record one ordinary launch; initial/automatic/pendin
  for(const action of ['refresh','retry']){const f=fixture();f.h.api.arm();f.h[action]();await flush();assert.equal(f.state.calls.launch,1);assert.equal(f.h.api.snapshot().events[0].phase,'root_launch');assert.deepEqual(f.state.verified,[false,true]);}
  for(const action of ['initial','automatic']){const f=fixture();f.h.api.arm();await f.h[action]();assert.equal(f.state.calls.launch,1);assert.equal(f.h.api.snapshot(),null);assert.equal(f.h.api.state(),'armed');}
  const pending=fixture();pending.h.api.arm();pending.h.pending(true);pending.h.refresh();await flush();assert.equal(pending.state.calls.launch,0);assert.deepEqual(pending.state.verified,[]);assert.equal(pending.h.api.state(),'armed');pending.h.pending(false);pending.h.refresh();await flush();assert.equal(pending.state.calls.launch,1);
- const widget=fixture('widget');widget.h.api.arm();widget.h.refresh();await flush();assert.equal(widget.state.calls.launch,1);assert.equal(widget.h.api.snapshot(),null);assert.equal(widget.state.probes.length,0);
+ const widget=fixture('widget');widget.h.api.arm();widget.h.refresh();await flush();assert.equal(widget.state.calls.launch,1);assert.equal(widget.h.api.snapshot(),null);
+ // Widgets still send no diagnostic watch. The sole new message belongs to
+ // the explicit presentation contract, not runtime tracing or Source rights.
+ assert.deepEqual(widget.state.probes.map(p=>p.data.schema),['glass-ui.widget-context.v1']);assert.equal(widget.state.probes[0].data.mode,'interactive');
  const failed=fixture();failed.state.failure=new Error('synthetic launch refusal');failed.h.refresh();await flush();assert.deepEqual(failed.state.verified,[false]);assert.equal(failed.state.calls.launch,1);assert.equal(failed.h.frame(),null);
 });
 

@@ -8,6 +8,9 @@ import * as contract from '../../modules/field/contract.mjs';
 import * as camera from './unified-field-camera.mjs';
 import * as layout from './unified-field-layout.mjs';
 import { createFieldHistory } from './unified-field-state.mjs';
+import * as liveProjection from './unified-field-live.mjs';
+import {validateFieldPresentation} from './unified-field-presentation.mjs';
+import {coverageTestSource,installCoverageTestPorts} from './unified-field-coverage-test-ports.mjs';
 
 // Execute current production empty/load/persistence functions. Deferred ports
 // exercise the generation fence; no server request or display authority is real.
@@ -22,7 +25,7 @@ const functions = ['merge', 'currentEntity', 'updateMineFilter', 'updateMineEmpt
 const firstResolve = production.body.statements.find(node => ts.isVariableStatement(node)
   && node.declarationList.declarations.some(value => value.name.getText(parsed) === 'firstResolve'))
   .declarationList.declarations.find(value => value.name.getText(parsed) === 'firstResolve').initializer.getText(parsed);
-const compiled = ts.transpileModule(functions.join('\n') + '\nObject.assign(exports, { loadMine, updateMineFilter, updateMineEmpty, applyPersistence });', {
+const compiled = ts.transpileModule(coverageTestSource(production.body.statements,parsed,printer)+'\n'+functions.join('\n') + '\nObject.assign(exports, { loadMine, updateMineFilter, updateMineEmpty, applyPersistence });', {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 const ref = { kind: 'app', id: 'app-' + 'a'.repeat(32) }, item = { entity: ref, title: 'HIVE', source: 'owner' };
@@ -35,6 +38,7 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
   let liveGeneration = 1, disposed = false, currentDocument = document();
   const state = { updates: [], empties: [], pages: 0, runs: [], mounts: 0, listCloses: [] };
   const environment = { exports: {}, mode: 'mine', queries: { mine: query }, filter: 'all',
+    liveApps:[],liveProjection:{update:()=>({contexts:[],shortcuts:[]})},refreshLiveApps:async()=>{},
     mineBusy: false, queuedMine: null, mineGeneration: 0, mineResolvedGeneration: -1, mineConfirmedGeneration: -1, mineKnownRefs: new Set(), mineFilterAdmitted: false,
     initialMineTask: null, initialMineRefs: '',
     emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, metadataRevision: 0,
@@ -42,7 +46,7 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
     current: () => !disposed && liveGeneration === 1,
     element: { dataset: { ready: 'loading' } }, loading: { hidden: false },
     empty: { hidden: true, replaceChildren(...nodes) { state.emptyChildren = nodes; state.empties.push(nodes[0]?.textContent); } },
-    selected: null, summary: null, firstResolve: false, wide: { matches: false }, BUILTINS: [], available: [], availableCursor: null,
+    selected: null, previewCommunity: null, summary: null, firstResolve: false, wide: { matches: false }, BUILTINS: [], available: [], availableCursor: null,
     fieldEntityKey, matches: (value, text, kind = 'all') => (kind === 'all' || value.entity.kind === kind) && value.title.toLowerCase().includes(text.trim().toLowerCase()),
     el: (_, __, text) => ({ textContent: text }), button: (text, _, __, onClick) => ({ textContent: text, onClick }),
     directory: { resolve, async loadMine() { state.pages++; return load(); } },
@@ -58,7 +62,7 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
     update(value) { if (value.document) currentDocument = value.document; state.updates.push(value); environment.exports.updateMineEmpty(currentDocument); },
     fitOverview() { throw new Error('Camera must stay intact'); }, focusContext() { throw new Error('Camera must stay intact'); },
   };
-  environment.engine = engine; vm.createContext(environment); new vm.Script(compiled).runInContext(environment);
+  environment.engine = engine;installCoverageTestPorts(environment); vm.createContext(environment); new vm.Script(compiled).runInContext(environment);
   if (viewState) { environment.options = { viewState }; environment.firstResolve = new vm.Script(firstResolve).runInContext(environment); }
   return { environment, state, api: environment.exports,
     accountAba() { liveGeneration = 2; liveGeneration = 3; }, dispose() { disposed = true; },
@@ -78,12 +82,12 @@ const engineReturn = statements.find(ts.isReturnStatement).expression;
 const engineUpdate = engineReturn.properties.find(node => ts.isMethodDeclaration(node) && node.name.getText(engineParsed) === 'update');
 const stateClosure = [enginePrint(engineParsed.statements.find(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(item => item.name.getText(engineParsed) === 'same'))),
   enginePrint(named(engineParsed.statements, 'thinEntities')), 'function stateHarness(options) {', enginePrint(declaration('accountId')), ...variables.map(enginePrint),
-  ...['summary', 'emit', 'announce', 'remember', 'setCamera', 'fitOverview', 'focusContext', 'rebuild', 'cancel', 'finishGesture'].map(name => enginePrint(named(statements, name))),
+  ...['summary', 'emit', 'announce', 'remember', 'setCamera', 'fitOverview', 'focusContext', 'rebuild', 'cancel', 'finishGesture','resetPointers'].map(name => enginePrint(named(statements, name))),
   `const api = { ${enginePrint(engineUpdate)} };`, 'rebuild(); return { ...api, state: summary, snapshot: () => structuredClone(fieldDocument), getLayout: () => layout, fitOverview, setCamera, focusContext, hasUnsavedChanges: () => false };',
   '}', 'exports.stateHarness = stateHarness;'].join('\n');
 const engineCompiled = ts.transpileModule(stateClosure, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 function withField(h, viewState = { mineContext: 'studio', mineFit: 'context' }, width = 393, height = 450) {
-  const port = vm.createContext({ exports: {}, ...contract, ...camera, ...layout, createFieldHistory, structuredClone, performance, clearTimeout,
+  const port = vm.createContext({ exports: {}, ...contract,validateFieldDocument:contract.validateAnyFieldDocument,validateFieldEntity:contract.validateAnyFieldEntity,validateFieldPresentation, ...camera, ...layout,...liveProjection,createFieldHistory, structuredClone, performance, clearTimeout,
     viewport: { clientWidth: width, clientHeight: height, hasPointerCapture: () => false }, plane: { contains: () => false }, document: { activeElement: null }, HTMLElement: class {},
     live: {}, render() {}, schedule() {}, flushPointerSample() {} });
   new vm.Script(engineCompiled).runInContext(port);

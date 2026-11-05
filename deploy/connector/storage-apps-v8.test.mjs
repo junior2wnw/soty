@@ -17,7 +17,7 @@ async function store(t, version = 8) {
 }
 test('standalone probe recognizes exact Apps8 and reader7 image is refused; compatible fallback8 reads old and new formats', async t => {
   const { root } = await store(t), format = await readStorageFormat(root);
-  assert.deepEqual(format, currentObservation({ ok: true, schema: 'soty.storage-format.v3', rooms: 'empty', apps: 8, notes: 'empty', capabilities: 'empty' }));
+  assert.deepEqual(format, currentObservation({ ok: true, schema: 'soty.storage-format.v3', rooms: 'empty', apps: 8, appsFrameContinuity:2, notes: 'empty', capabilities: 'empty' }));
   assert.equal(assertStorageCompatible(image(currentStorageReaders), format).apps, 8);
   const old = JSON.parse(currentStorageReaders); old.readers.apps = old.readers.apps.filter(value => value !== 8);
   assert.throws(() => assertStorageCompatible(image(JSON.stringify(old)), format), { code: 'storage_reader_incompatible' });

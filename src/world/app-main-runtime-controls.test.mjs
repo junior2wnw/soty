@@ -18,7 +18,7 @@ const main=declarations.find(n=>n.name.getText(stageAst)==='mainRuntimeControls'
 const widget=declarations.find(n=>n.name.getText(stageAst)==='widgetRuntimeControls');
 const mainProps=main.initializer.whenFalse.arguments[0].properties,widgetProps=widget.initializer.whenTrue.arguments[0].properties;
 const callback=(props,name)=>props.find(n=>n.name?.getText(stageAst)===name).initializer.getText(stageAst);
-const portsCode=compile(`exports.create=(state,runtime)=>{let displayEpoch=1,runtimePending=false;const current=()=>state.current,launcher={scopedCapture:()=>state.binding};return {
+const portsCode=compile(`exports.create=(state,runtime)=>{let displayEpoch=1,frameGeneration=1,runtimePending=false;const presented=()=>state.current,current=()=>state.current,launcher={scopedCapture:()=>state.binding};return {
  capture:${callback(mainProps,'capture')},matchesCapture:${callback(mainProps,'matchesCapture')},canAct:${callback(mainProps,'canAct')},epoch(){displayEpoch++},pending(v){runtimePending=v}};};`);
 // Reuse the already established deterministic platform port unchanged, while
 // running actual production createDialog and the actual main Stage fences.

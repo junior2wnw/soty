@@ -17,7 +17,7 @@ Start with fresh read-only evidence, before choosing a release or recovery path:
    sole supported local volume at `/data`; a different topology needs separate
    qualification and must not be made to match by editing evidence.
 2. Use the pinned maintained probe/source to obtain fresh full
-   `soty.storage-format.v7` JSON, including World and all nine stores. An old
+   `soty.storage-format.v10` JSON, including every declared independent store. An old
    observation, parser support or exit0 without that result is not current DATA.
 3. Inspect `io.soty.storage.readers` on **both exact immutable images**, original
    and candidate. Match every observed format and qualify the real images on an
@@ -155,6 +155,78 @@ blob alone is not a portable recovery key. Preserve an independently qualified
 recovery route under Root's existing secret policy before deleting any original
 volume or retained archive. No extra key export or escrow is created here.
 
+### The same custody path into the maintained release controller
+
+`send` continues to invoke only the GPG helper's `--plan` interface. It is not
+a way to invoke the connector CLI. For an approved latest-data promotion use
+the additive `send-connector` command. `prepare` remains the normal keyless
+connector CLI operation. Pass canonical CLI arguments after the literal `--`:
+
+```text
+python deploy/connect/windows-backup-key.py send-connector --blob <private-gpg-DPAPI-blob> --ssh <absolute-ssh.exe> --host <known-alias> --node <absolute-qualified-node24> --node-sha256 <binary-SHA256> --cli <published-source>/deploy/connector/cli.mjs --cli-sha256 <exact-staged-CLI-file-SHA256> --timeout 7200 -- promote --original-id <original64> --original-image sha256:<original64> --candidate-image sha256:<candidate64> --storage-probe-image sha256:<probe64> --revision <commit40> --transaction <fresh32> --journal <private-journal> --reviewed-receipt <private-review> --rollback-mode latest-data --backup-plan <private-backup-plan> --health-origin http://127.0.0.1:<bound-port>
+```
+
+Include the existing universal-plan/custody/witness/shell-origin flags when the
+reviewed release needs them. The transport permits only promotion with
+latest-data and a backup plan; fixture/recovery/arbitrary actions, unknown flags,
+foreign health endpoints and a non-default Docker socket are refused. Values
+are shell-quoted as literal argv; the existing connector CLI still validates
+the complete invocation and its reviewed receipts. No new lifecycle operator
+or per-phase wrapper is involved.
+
+Before unwrapping the blob, this lane verifies the full Node and CLI file hashes,
+requires Node24, canonical non-symlink files and owner-controlled path chains
+without group/world writes, and imports the actual CLI closure. The published
+source/dependencies must remain immutable under that coordinated owner gate.
+Use its actual staged file bytes for the CLI hash, not a Git object ID or a
+Windows checkout's possibly different line endings. New Node invocations use a
+clean PATH/LANG environment. The key is sent once through SSH stdin and read by
+the CLI's existing backup-plan port; `backupStopped` still runs only after the
+controller's confirmed original STOP. Temporary mutable key/stdin buffers are
+cleared best effort; no promise is made about every runtime/OS copy.
+
+The sender emits only a closed committed/ID/provenance projection and the
+validated two-artifact GPG receipt. Private configuration/journal fields are
+not echoed. A failed or timed-out send is not proof that promotion did nothing.
+Inspect the same journal, transaction and exact Docker identities; never retry
+the mutation automatically.
+
+### Separate recovery custody for universal-policy witnesses
+
+The policy witness needs a different AES256 key. Its active private host file is
+exactly `{keyId,key}`, with a 1–64-character public key ID and a canonical 43-character
+base64url encoding of 32 random bytes. It is not the GPG 64-character passphrase,
+an account/Native credential, the legacy RSA signing key or a derived prefix of
+any of them. No identity/global trust rotation is performed.
+
+Use the same maintained Windows helper, with a **different** permanent private
+blob. The distinct DPAPI header and encrypted purpose/schema prevent consuming
+a GPG blob as policy custody or the reverse:
+
+```text
+python deploy/connect/windows-backup-key.py init-policy --blob <new-private-policy-DPAPI-blob> --key-id <public-release-key-id>
+python deploy/connect/windows-backup-key.py check-policy --blob <same-policy-DPAPI-blob>
+python deploy/connect/windows-backup-key.py provision-policy --blob <same-policy-DPAPI-blob> --ssh <absolute-ssh.exe> --host <known-alias> --node <absolute-qualified-node24> --node-sha256 <binary-SHA256> --module <published-source>/deploy/connector/universal-policy.mjs --module-sha256 <exact-staged-module-SHA256> --target <owned 0700-operator-directory>/policy-custody.json
+```
+
+Initialization is explicit and exclusive; it never overwrites a blob and never
+creates plaintext local key files. Provisioning first checks Node/module pins,
+the real module exports, canonical ownership and the absent target under an
+owned 0700 parent. Only then does it unwrap in memory and send the closed JSON
+through anonymous stdin. The existing `writeUniversalWitnessExclusive` performs
+exclusive 0600 publication, followed by ordinary `readUniversalLocalFile` private
+validation and exact readback. This active host 0600 secret is the intentional
+operational custody file; its recovery copy remains DPAPI-encrypted on Windows.
+No key/hash of plaintext/packet is printed. The receipt contains only success,
+the public key ID and readback status. Unknown write outcomes require exact
+target/receipt reconciliation, not another provisioning attempt.
+
+The same key and key ID reconstruct existing sealed witnesses; changing them is
+a separate custody rotation. The DPAPI blob remains tied to its Windows profile
+and is not by itself portable disaster recovery. Actual Windows DPAPI, remote
+owner/import, synthetic GPG encrypt/decrypt and isolated restore qualification
+are separate gates from the portable mocked contract tests.
+
 ## Explicit plans and offline backup
 
 Stage only reviewed Source and keep the host plan as a regular non-symlink file
@@ -288,7 +360,7 @@ reader, compare safe row/ACL/ID fingerprints, check SQLite integrity and literal
 schemas. Execute an offline migration only when fresh actual formats require
 that separately reviewed change; run it on an isolated copy first. Back up the
 complete stopped original again if the source checkpoint changed. Obtain a
-fresh full v7 observation and the exact image's reader match before START. Confirm
+   fresh full v10 observation and the exact image's reader match before START. Confirm
 actual call → persistence → reopen and browser behavior through Root's canary.
 
 For a compatible code-only failure use the maintained latest-data recovery

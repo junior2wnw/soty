@@ -1,4 +1,4 @@
-const el = (tag, text) => { const node = document.createElement(tag); if (text) node.textContent = text; return node; };
+const el = (tag, text, role) => { const node = document.createElement(tag); if (text) node.textContent = text; if (role) { node.setAttribute('data-glass-role', role); node.setAttribute('data-glass-safe-area', 'off'); } return node; };
 const friendly = error => ({ platform_invite_quota_exhausted: 'Все приглашения использованы.', platform_admin_required: 'Настройку меняет только администратор.', platform_policy_conflict: 'Настройка изменилась. Обновите список.', platform_invite_already_redeemed: 'По этому приглашению уже вошли.' }[error?.code] || 'Не удалось подтвердить действие. Повторите с тем же запросом.');
 export function mountPlatformInvitations(host, { client, accountId, qr }) {
   let disposed = false, busy = false, sequence = 0;
@@ -9,7 +9,7 @@ export function mountPlatformInvitations(host, { client, accountId, qr }) {
   const call = (op, args = {}) => client.extension(op, args, { expectedAccountId: accountId });
   const note = el('p'); note.setAttribute('role', 'status');
   function button(title, action) {
-    const button = el('button', title); button.type = 'button';
+    const button = el('button', title, 'control'); button.type = 'button';
     button.addEventListener('click', async () => {
       if (busy || !await current()) return;
       busy = true; const buttons = [...host.querySelectorAll('button')];
@@ -20,7 +20,7 @@ export function mountPlatformInvitations(host, { client, accountId, qr }) {
   }
   async function showLink(target, token) {
     const url = `${location.origin}/#soty-invite=${token}`;
-    const input = el('input'); input.readOnly = true; input.value = url; input.setAttribute('aria-label', 'Приглашение в Соты'); target.append(input);
+    const input = el('input', undefined, 'field'); input.readOnly = true; input.value = url; input.setAttribute('aria-label', 'Приглашение в Соты'); target.append(input);
     target.append(button('Скопировать приглашение', async () => { await navigator.clipboard.writeText(url); note.textContent = 'Приглашение скопировано.'; }));
     if (qr) { const image = el('img'); image.alt = 'QR приглашения в Соты'; image.width = 224; image.height = 224;
       const src = await qr(url); if (!await current() || !target.isConnected) return; image.src = src; target.prepend(image); }
@@ -56,11 +56,11 @@ export function mountPlatformInvitations(host, { client, accountId, qr }) {
         }
         host.append(row);
       }
-      const details = el('details'), summary = el('summary', 'Вход в Соты'); details.append(summary);
+      const details = el('details'), summary = el('summary', 'Вход в Соты', 'control'); details.append(summary);
       details.append(el('p', policy.inviteOnly ? 'Вход новых участников по приглашению включён.' : 'Вход по приглашению выключен. Новые участники могут войти свободно.'));
       if (policy.manageAllowed) {
         const label = el('label', 'Только по приглашению'); const toggle = el('input'); toggle.type = 'checkbox'; toggle.checked = policy.inviteOnly; toggle.setAttribute('aria-label', 'Только по приглашению'); label.append(toggle);
-        const quotaLabel = el('label', 'Приглашений на человека'); const quota = el('input'); quota.type = 'number'; quota.min = '0'; quota.max = '100'; quota.value = String(policy.defaultQuota); quota.setAttribute('aria-label', 'Приглашений на человека'); quotaLabel.append(quota);
+        const quotaLabel = el('label', 'Приглашений на человека'); const quota = el('input', undefined, 'field'); quota.type = 'number'; quota.min = '0'; quota.max = '100'; quota.value = String(policy.defaultQuota); quota.setAttribute('aria-label', 'Приглашений на человека'); quotaLabel.append(quota);
         details.append(label, quotaLabel, button('Сохранить режим входа', async () => {
           const data = load(); const intent = { expectedRevision: policy.revision, inviteOnly: toggle.checked, defaultQuota: Number(quota.value) };
           if (!data.policyPending || JSON.stringify(data.policyPending.intent) !== JSON.stringify(intent)) data.policyPending = { requestId: crypto.randomUUID(), intent };

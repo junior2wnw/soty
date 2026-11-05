@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {currentObservation} from './test-support/current-storage-observation.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp,mkdir,readFile,writeFile,rm,symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -19,8 +20,9 @@ import { storageReaders,storageReaderLabel,currentStorageReaders,checkedStorageF
 const id=char=>char.repeat(64), imageId='sha256:'+id('a'), containerId=id('b');
 const OLD6='{"version":6,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6,7,8,9,10,11],"notes":[1,2],"capabilities":[1,2,3],"appRegistration":[1],"feedback":[1],"humanIdentity":[1,2,3],"connect":[3,4]}}';
 const image=(label=currentStorageReaders)=>({Id:imageId,Config:{Labels:{[storageReaderLabel]:label}}});
-const empty7=(extra={})=>({ok:true,schema:'soty.storage-format.v7',rooms:'empty',apps:'empty',notes:'empty',capabilities:'empty',
-  appRegistration:'empty',feedback:'empty',humanIdentity:'empty',connect:'empty',world:'empty',...extra});
+// Historical World vectors below stay exact. The current probe additionally
+// proves absence/presence of the independently versioned v8 stores.
+const empty7=(extra={})=>currentObservation(extra);
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 async function folder(t) {
   const root=await mkdtemp(join(tmpdir(),'soty-storage-world7-')),closed=[];
@@ -158,8 +160,8 @@ test('World7 preSTART refuses old observations, current World3/5, and admits exp
   const empty=await folder(t),oldObservation=startFixture(empty.root,currentStorageReaders,async()=>legacy(6).format);
   await assert.rejects(oldObservation.start(),{code:'storage_probe_invalid'});assert.equal(oldObservation.events.includes('START'),false);
   for(const version of [3,5]){const f=await worldStore(t,{version}),gate=startFixture(f.root);await assert.rejects(gate.start(),{code:'storage_reader_incompatible'});assert.equal(gate.events.includes('START'),false);}
-  const emptyGate=startFixture(empty.root,OLD6);assert.equal((await emptyGate.start()).schema,'soty.storage-start.v7');assert.equal(emptyGate.events.filter(v=>v==='START').length,1);
-  const f=await worldStore(t),good=startFixture(f.root);const receipt=await good.start();assert.equal(receipt.world,6);assert.equal(receipt.schema,'soty.storage-start.v7');
+  const emptyGate=startFixture(empty.root,OLD6);assert.equal((await emptyGate.start()).schema,'soty.storage-start.v10');assert.equal(emptyGate.events.filter(v=>v==='START').length,1);
+  const f=await worldStore(t),good=startFixture(f.root);const receipt=await good.start();assert.equal(receipt.world,6);assert.equal(receipt.schema,'soty.storage-start.v10');
 });
 
 test('offline snapshot retains World WAL and never hides a committed reserved4 marker as empty or old main6',async t=>{

@@ -101,7 +101,7 @@ test('historical populated Notes v1 survives default reopen and explicit v2 migr
   };
   f.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE'); f.close(f.db);
   const baseline = f.open(); assert.equal(baseline.schemaVersion, 1); assert.equal(baseline.registryId, null);
-  assert.deepEqual(baseline.supportedSchemaVersions, [1, 2]);
+  assert.deepEqual(baseline.supportedSchemaVersions, [1, 2, 3]);
   const inspection = f.raw(); assert.deepEqual(snapshot(inspection), before);
   assertNativeClosed(baseline, inspection);
   assert.equal(inspection.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get().busy, 0);
@@ -153,7 +153,9 @@ test('native create proof outlives ordinary receipt trimming, edits, trash and p
 test('future, partial and missing-identity Notes layouts refuse before WAL transition and never repair', async t => {
   for (const kind of ['future', 'guard', 'registry', 'unknown']) {
     const f = await fixture(t); migrateNotes(f.db, 'soty', { allowNativeMigration: true });
-    if (kind === 'future') f.db.exec("UPDATE notes_meta SET value='soty.notes.sqlite.v3' WHERE key='lineage'; PRAGMA user_version=3");
+    // Format3 is now the explicitly migrated Vault-erasure layout. Keep this
+    // control genuinely unknown; the strict refusal and byte proof are intact.
+    if (kind === 'future') f.db.exec("UPDATE notes_meta SET value='soty.notes.sqlite.v4' WHERE key='lineage'; PRAGMA user_version=4");
     if (kind === 'guard') f.db.exec('DROP TRIGGER note_native_create_no_replace');
     if (kind === 'unknown') f.db.exec('CREATE TABLE sqliteExtra(value TEXT)');
     if (kind === 'registry') {

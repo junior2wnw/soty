@@ -50,6 +50,9 @@ async function start(): Promise<void> {
     await import('./main');
     return;
   }
+  if(/^#space\/page_[a-f0-9]{32}(?:\?view=public)?$/u.test(url.hash)){
+    const {startCanvasPageEntry}=await import('./platform/canvas-page-entry');await startCanvasPageEntry(root);return;
+  }
   const loading = document.createElement('div');
   loading.className = 'soty-start';
   loading.setAttribute('role', 'status');

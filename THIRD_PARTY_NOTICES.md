@@ -26,3 +26,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## uPlot 1.6.32
+
+Source: <https://github.com/leeoniya/uPlot/tree/1.6.32>  
+License: MIT. The pristine license is retained at `vendor/uplot/LICENSE`; the complete accompanying runtime notice is in `modules/monitoring/README.md`, served at `/agents/monitoring.md`.

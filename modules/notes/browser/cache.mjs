@@ -1,15 +1,18 @@
 // Only acknowledged, own-account snapshots belong here. Durable drafts/outbox use
 // another database and are never candidates for cache eviction.
+import {createNativeDraftStore,readNativeSourceGate} from './native-local.mjs';
 export const NOTE_CACHE_LIMITS = Object.freeze({ scopeCount: 20, scopeBytes: 2 * 1024 * 1024, count: 60, bytes: 6 * 1024 * 1024, entryBytes: 320 * 1024 });
 const copy = value => structuredClone(value);
 const codeOf = error => String(error?.code || error?.error?.code || error?.message || '').toLowerCase();
 const failure = () => new Error('notes_cache_unavailable');
 const noteKey = (scope, noteId) => JSON.stringify([scope, noteId]);
+const sealedKey = (scope, noteId) => JSON.stringify(['sealed', scope, noteId]);
 const byteSize = value => new TextEncoder().encode(JSON.stringify(value)).length;
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{7,95}$/u.test(value);
 
 export function noteCacheErrorPolicy(error) {
   const code = codeOf(error);
+  if (['notes_note_sealed', 'notes_native_protection_pending'].includes(code)) return 'protection';
   if (['notes_note_deleted', 'notes_note_not_found'].includes(code)) return 'missing';
   if (['notes_account_changed', 'authentication_required', 'device_revoked', 'account_revoked', 'active_profile_changed', 'no_local_profile',
     'account_mismatch', 'bootstrap_required', 'access_denied', 'forbidden', 'unauthorized', 'invalid_signature'].includes(code)
@@ -83,7 +86,7 @@ export function createIndexedNoteCacheStorage(factory = globalThis.indexedDB) {
       tx.oncomplete = () => resolve(result); tx.onabort = tx.onerror = () => reject(cause || failure());
     });
   }
-  return {
+  const driver = {
     capture: () => transaction('readwrite', (_records, meta, done, guard) => {
       const request = meta.get('epoch'); request.onsuccess = guard(() => {
         const epoch = request.result || crypto.randomUUID(); if (!request.result) meta.put(epoch, 'epoch'); done(epoch);
@@ -107,10 +110,13 @@ export function createIndexedNoteCacheStorage(factory = globalThis.indexedDB) {
     put: (record, token, limits) => transaction('readwrite', (records, meta, done, guard) => {
       const epoch = meta.get('epoch'); epoch.onsuccess = guard(() => {
         if (!token || epoch.result !== token) { done(false); return; }
+        const protectedRecord = meta.get(sealedKey(record.scope, record.note.noteId)); protectedRecord.onsuccess = guard(() => {
+        if (protectedRecord.result) { done(false); return; }
         const request = records.getAll(undefined, NOTE_CACHE_LIMITS.count + 1); request.onsuccess = guard(() => {
           const decision = planNoteCacheWrite(request.result, record, limits);
           if (decision.accepted) { for (const key of decision.remove) records.delete(key); records.put(record); }
           done(decision.accepted);
+        });
         });
       });
     }),
@@ -126,6 +132,35 @@ export function createIndexedNoteCacheStorage(factory = globalThis.indexedDB) {
       }
       done();
     }),
+  };
+  const allowed = async (scope, noteId) => {
+    if (await readNativeSourceGate(scope, 'soty.notes', noteId, factory)) return false;
+    return transaction('readonly', (_records, meta, done, guard) => { const request = meta.get(sealedKey(scope, noteId)); request.onsuccess = guard(() => done(!request.result)); });
+  };
+  return { ...driver, allowed,
+    async read(scope, noteId, token, now) {
+      if (!await allowed(scope, noteId)) return null;
+      const result = await driver.read(scope, noteId, token, now);
+      return await allowed(scope, noteId) ? result : null;
+    },
+    async list(scope, token) {
+      const rows = await driver.list(scope, token), result = [];
+      for (const row of rows) if (await allowed(scope, row.note.noteId)) result.push(row);
+      return result;
+    },
+    async put(record, token, limits) {
+      if (!await allowed(record.scope, record.note.noteId)) return false;
+      const result = await driver.put(record, token, limits);
+      return await allowed(record.scope, record.note.noteId) ? result : false;
+    },
+    async seal(scope, noteId) {
+      const [origin, projectId, accountId] = JSON.parse(scope);
+      // A sealed Source denial also fences older drafts, without deleting them.
+      const drafts = createNativeDraftStore(accountId, projectId, { origin, indexedDB: factory });
+      drafts.native.suspend(noteId);
+      await drafts.native.mark({ providerId: 'soty.notes', ref: noteId, operationId: 'sealed_' + crypto.randomUUID() });
+      await transaction('readwrite', (records, meta, done) => { meta.put(true, sealedKey(scope, noteId)); meta.put(crypto.randomUUID(), 'epoch'); records.delete(noteKey(scope, noteId)); done(); });
+    },
   };
 }
 
@@ -145,6 +180,7 @@ export function createNoteCache(accountId, projectId = 'default', { origin = glo
       catch { return false; }
       return !blocked && (!token || epoch === token);
     },
+    async canRead(noteId) { return !blocked && (storage.allowed ? await storage.allowed(scope, noteId) : true); },
     async remember(note, token, verifiedAt = clock()) {
       if (blocked || !token) return false;
       const clean = validatedNote(note);
@@ -158,13 +194,15 @@ export function createNoteCache(accountId, projectId = 'default', { origin = glo
       return records.map(projection).filter(Boolean).sort((a, b) => Number(b.note.pinned) - Number(a.note.pinned) || b.note.updatedAt - a.note.updatedAt || a.note.noteId.localeCompare(b.note.noteId));
     },
     async remove(noteId) { try { await storage.invalidate(scope, noteId); } catch (error) { blocked = true; throw error; } },
+    async seal(noteId) { if (!storage.seal) throw new Error('notes_cache_protection_unsupported'); await storage.seal(scope, noteId); },
     async clear() { blocked = true; await storage.invalidate(scope); },
   };
 }
 
 export async function invalidateNoteCache(cache, error, noteId) {
   const policy = noteCacheErrorPolicy(error);
-  try { if (policy === 'authorization') await cache.clear(); else if (policy === 'missing' && noteId) await cache.remove(noteId); }
+  try { if (policy === 'authorization') await cache.clear(); else if (policy === 'missing' && noteId) await cache.remove(noteId);
+    else if (policy === 'protection' && noteId) { if (codeOf(error) === 'notes_note_sealed' && cache.seal) await cache.seal(noteId); else await cache.remove(noteId); } }
   catch { /* A failed cache cleanup never changes the authoritative server outcome. */ }
   return policy;
 }
@@ -185,6 +223,7 @@ export async function readNoteWithCache({ api, accountId, noteId, cache, allowSt
     // Once a token was captured, losing the final fence cannot prove freshness.
     const current = await cache.isCurrent(token).catch(() => !token);
     if (!current) throw new Error('notes_cache_invalidated');
+    if (cache.canRead && !await cache.canRead(noteId)) throw new Error('notes_native_protection_pending');
     if (!active()) throw new Error('notes_account_changed');
     return { note, source: 'server', verifiedAt, cached };
   } catch (error) {

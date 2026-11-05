@@ -45,7 +45,7 @@
   width: max-content; min-height: 52px; padding: 3px; border: 1px solid var(--sw-line); border-radius: 30px; background: var(--of-paper);
 }
 .sw-app[data-experience=one-field]>.of-field-navigation[hidden],
-.sw-app[data-experience=one-field]:has(.of-app-surface)>.of-field-navigation { display: none; }
+.sw-app[data-experience=one-field]:has(>.sw-main:not([data-presented=false])>.of-app-surface)>.of-field-navigation { display: none; }
 .of-field-mode.sw-button {
   display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 74px; min-height: 44px;
   margin: 0; padding: 8px 14px; border: 0; border-radius: 24px; background: transparent; color: var(--sw-muted); font-size: 14px;
@@ -163,7 +163,7 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
   animation: of-surface-enter 260ms cubic-bezier(.2,.8,.2,1);
 }
 .sw-app[data-experience=one-field] .of-app-surface>.sa-toolbar { min-height: 64px; padding: 10px 24px; border: 0; background: var(--sw-surface); }
-.of-app-surface .of-app-close { order: 10; }
+.of-app-surface .of-app-close { order: -2; flex: none; min-height: 44px; }
 .of-app-surface .sa-title { order: -1; }
 .of-app-surface .sa-title h2 { font-size: 16px; font-weight: 450; }
 .of-app-surface .sa-title p:empty { display: none; }
@@ -190,7 +190,7 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
   /* A chat already has its own search and actions. Keep the two global entry
      points clear of those controls instead of laying a second toolbar over it. */
   .sw-app[data-experience=one-field]:has(.sw-inbox)>.sw-topbar,
-  .sw-app[data-experience=one-field][data-agent-orb=ready]:has(.sw-inbox)>.sw-topbar { top: 16px; width: 52px; }
+  .sw-app[data-experience=one-field][data-agent-orb=ready]:has(.sw-inbox)>.sw-topbar { top: 16px; width: max-content; }
   .sw-app[data-experience=one-field]:has(.sw-inbox)>.sw-topbar>.sw-icon-button { display: none; }
   .sw-app[data-experience=one-field]:has(.sw-inbox)>.of-connect-button { top: 16px; }
   .sw-app[data-experience=one-field] .sw-inbox .sw-chat-header { padding-inline-end: 164px; }
@@ -233,7 +233,7 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
   .sw-app[data-experience=one-field] .uf-preview { bottom: 88px; max-height: calc(100% - 104px); }
   .sw-app[data-experience=one-field] .of-app-surface { width: 100%; max-width: none; height: 100%; min-height: 0; border: 0; border-radius: 0; box-shadow: none; }
   .sw-app[data-experience=one-field]>.sw-main:has(>.of-app-surface) { padding-top: 0; }
-  .sw-app[data-experience=one-field]:has(.of-app-surface)>.of-connect-button { inset: 6px 12px auto auto; }
+  .sw-app[data-experience=one-field]:has(>.sw-main:not([data-presented=false])>.of-app-surface)>.of-connect-button { inset: 6px 12px auto auto; }
   .sw-app[data-experience=one-field] .of-app-surface>.sa-toolbar { min-height: 56px; padding: 6px 68px 6px 12px; }
   body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
     inset: auto 0 0; width: 100%; max-width: none; max-height: calc(var(--soty-visible-height,100dvh) - 24px);
@@ -243,6 +243,16 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
   .of-sheet-handle { position: relative; display: block; width: 100%; min-width: 44px; height: 44px; min-height: 44px; margin: -10px auto 0; padding: 0; border: 0; background: transparent; touch-action: none; }
   .of-sheet-handle::before { content: ''; position: absolute; width: 42px; height: 5px; top: 14px; left: 50%; transform: translateX(-50%); border-radius: 5px; background: var(--sw-control-border); }
   .of-menu-grid>.sw-button { min-height: 88px; font-size: 13px; }
+  /* Inbox creation keeps its full label and 44px target beside the separate
+     QR slot. An open conversation retains its existing compact chat chrome. */
+  .sw-app[data-experience=one-field]:has(>.sw-main>.sw-inbox:not(.has-room))>.sw-topbar {
+    display:flex;width:max-content;padding:3px;
+    inset:calc(max(16px,env(safe-area-inset-top,0px)) - 4px) calc(max(16px,env(safe-area-inset-right,0px)) + 44px + 8px) auto auto;
+  }
+  .sw-app[data-experience=one-field]:has(>.sw-main>.sw-inbox:not(.has-room))>.sw-topbar>.sw-icon-button { display:none; }
+  .sw-app[data-experience=one-field]:has(>.sw-main>.sw-inbox:not(.has-room))>.of-connect-button {
+    inset:max(16px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) auto auto;
+  }
 }
 /* Compact only while the field search owns the main row; closing it restores
    the unchanged switch/dock. Desktop width also reserves the existing toolbar. */
@@ -299,7 +309,7 @@ html[data-soty-keyboard=true] .sw-app[data-experience=one-field]>.sw-main>.uf-sc
   width: var(--of-compact-search-width,min(524px,calc(100% - 275px))); --of-search-bottom-inset: 16px;
 }
 @media (max-width:720px) and (max-height:480px) {
-  .sw-app[data-experience=one-field]:not([data-human-call-incoming=true]):not([data-human-call-active=true]):has(>.sw-main>.of-app-surface:not(:fullscreen):not(.is-window-expanded)) { grid-template-rows: auto auto minmax(0,1fr); grid-template-areas: none; }
+  .sw-app[data-experience=one-field]:not([data-human-call-incoming=true]):not([data-human-call-active=true]):has(>.sw-main:not([data-presented=false])>.of-app-surface:not(:fullscreen):not(.is-window-expanded)) { grid-template-rows: auto auto minmax(0,1fr); grid-template-areas: none; }
   .sw-app[data-experience=one-field]:not([data-human-call-incoming=true]):not([data-human-call-active=true])>.sw-main:has(>.of-app-surface:not(:fullscreen):not(.is-window-expanded)) { padding-bottom: 0; }
 }
 @media (prefers-reduced-motion:reduce) {
@@ -405,3 +415,14 @@ html[data-soty-keyboard=true] .sw-app[data-experience=one-field]>.sw-main>.uf-sc
   .sw-app[data-experience=one-field]:not([data-human-call-incoming=true]):not([data-human-call-active=true])>.sw-main:has(>.of-app-surface:not(:fullscreen):not(.is-window-expanded)) { padding-bottom: calc(80px + env(safe-area-inset-bottom,0px)); }
   .sw-app[data-experience=one-field] .sa-stage.of-app-surface>.sa-toolbar { display: grid; min-height: 104px; grid-template-columns: minmax(0,1fr) 44px 44px 44px; grid-template-rows: 44px 48px; padding: 5px 68px 6px 12px; }
 }
+
+/* Live main windows share the canvas grid cell. Their hosts and frames never
+ * move on Back; inert and visibility separate presentation from ownership. */
+.sw-app[data-experience=one-field]>.sw-main.of-app-runtime {
+  z-index: 4; align-items: center; justify-content: center; overflow: visible;
+  visibility: hidden; pointer-events: none;
+}
+.sw-app[data-experience=one-field]>.sw-main.of-app-runtime[data-presented=true] { visibility: visible; }
+.sw-app[data-experience=one-field]>.of-app-runtime>.of-app-surface { pointer-events: auto; }
+.sw-app[data-experience=one-field]>.of-app-runtime[data-presented=false]>.of-app-surface { pointer-events: none; }
+.sw-app[data-experience=one-field]>.of-app-runtime-background { pointer-events: none; }

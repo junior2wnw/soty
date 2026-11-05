@@ -71,7 +71,7 @@ async function fixture(t,{deny=false}={}) {
 }
 
 test('HTTP document load with its script not run is explicitly unobserved, not an acknowledged Boot',async t=>{
-  const f=await fixture(t);assert.match(f.markup,/Проверяем ваш доступ/u);
+  const f=await fixture(t);assert.match(f.markup,/<h1 id="status-title">Открываем приложение<\/h1>/u);
   f.begin();f.frame.emit('load');f.tick(12000);
   const events=f.snapshot().events.map(x=>x.phase);
   assert.ok(events.includes('root_load'));assert.equal(events.at(-1),'root_boot_unobserved');

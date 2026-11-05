@@ -27,6 +27,8 @@ export function notesErrorText(error: unknown): string {
     notes_revision_conflict: 'Есть более свежая версия записки.',
     notes_note_deleted: 'Записка удалена на другом устройстве. Ваш текст остался в черновике.',
     notes_note_not_found: 'Записка недоступна. Локальный черновик можно сохранить как новую.',
+    notes_note_sealed: 'Записка теперь открывается по паролю на полотне.',
+    notes_native_protection_pending: 'Перенос записки не завершён на этом устройстве.',
     notes_note_too_large: 'Записка слишком большая. Разделите её на несколько.',
     notes_storage_quota: 'Хранилище записок заполнено. Освободите место в корзине.',
     notes_count_quota: 'Достигнут лимит записок. Освободите место в корзине.',
@@ -67,6 +69,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   let pin: HTMLButtonElement | null = null; let lastCleanRevision = -1; let listRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   let listMode: 'server' | 'cache' | 'unavailable' = 'server';
   let openedSnapshot: CachedNoteRead | undefined; let recoveredSource: { branchId: string; savedAt: number } | null = null;
+  const sourceWatches=new Map<string,()=>void>(),quarantinedSources=new Set<string>();
   let purgeDialog: ReturnType<typeof createDialog> | null = null;
   let noteActionsDialog: ReturnType<typeof createDialog> | null = null;
   const request = <T>(method: string, args: Record<string, unknown> = {}) => options.api.request<T>(method, { expectedAccountId: options.accountId, ...args });
@@ -89,7 +92,21 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     return date.toDateString() === now.toDateString() ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
   }
   function displayTitle(note: NoteMetadata) { return note.title.trim() || note.preview.trim().slice(0, 50) || 'Без названия'; }
+  function watchLocalSources(){
+    if(!store.native?.subscribe)return;
+    const activeId=session?.state().note.noteId,wanted=new Set([...rows.map(value=>value.noteId),...drafts.map(value=>value.note.noteId),...quarantinedSources,...(activeId?[activeId]:[])]);
+    for(const[id,dispose]of sourceWatches)if(!wanted.has(id)){dispose();sourceWatches.delete(id);}
+    for(const noteId of wanted)if(!sourceWatches.has(noteId))sourceWatches.set(noteId,store.native.subscribe(noteId,state=>{
+      if(disposed)return;
+      if(!state){quarantinedSources.delete(noteId);void loadList();void loadDrafts();return;}
+      quarantinedSources.add(noteId);rows=rows.filter(value=>value.noteId!==noteId);drafts=drafts.filter(value=>value.note.noteId!==noteId);
+      if(openedSnapshot?.note.noteId===noteId)openedSnapshot=undefined;
+      if(session?.state().note.noteId===noteId)updateStatus(session.state());
+      renderRows();renderDrafts();
+    }));
+  }
   function renderRows() {
+    watchLocalSources();
     const activeId = session?.state().note.noteId; list.replaceChildren();
     if (!rows.length) {
       const empty = el('div', 'sn-list-empty');
@@ -117,9 +134,10 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     if (!append) message.textContent = 'Открываем записки…';
     try {
       const result = await request<NotesList>('notes.list', { bucket, query: search.value.trim(), limit: 30, ...(cursor ? { cursor } : {}) });
+      const visible:NoteMetadata[]=[];for(const note of result.notes)if(!cache.canRead||await cache.canRead(note.noteId))visible.push(note);
       if (disposed || seq !== listRequest) return;
       listMode = 'server';
-      rows = append ? [...rows, ...result.notes.filter(note => !rows.some(old => old.noteId === note.noteId))] : result.notes;
+      rows = append ? [...rows, ...visible.filter(note => !rows.some(old => old.noteId === note.noteId))] : visible;
       nextCursor = result.nextCursor; loadMore.hidden = !nextCursor; message.replaceChildren(); updateFilters(result.usage.counts); renderRows();
       if (initialOpening) {
         initialOpening = false;
@@ -155,6 +173,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     catch { /* Editing reports local storage errors explicitly. Server catalog stays available. */ }
   }
   function renderDrafts() {
+    watchLocalSources();
     draftList.replaceChildren();
     const activeBranch = session?.state().branchId;
     const recoverable = drafts.filter(draft => draft.branchId !== activeBranch
@@ -213,7 +232,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   }
   async function openDraft(draft: Draft) {
     const seq = ++openRequest;
-    try { await releaseSession(); if (disposed || seq !== openRequest) return; installSession(draft.note, draft); root.classList.add('sn-editing'); }
+    try { await releaseSession();if(cache.canRead&&!await cache.canRead(draft.note.noteId))throw new Error('notes_native_protection_pending'); if (disposed || seq !== openRequest) return; installSession(draft.note, draft); root.classList.add('sn-editing'); }
     catch (error) { message.textContent = notesErrorText(error); }
   }
   function installSession(note: Note, draft?: Draft, snapshot?: CachedNoteRead) {
@@ -225,6 +244,18 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   }
   function updateStatus(state: SessionState) {
     if (disposed || !status || !statusText) return;
+    if(state.localProtection){
+      openedSnapshot=undefined;
+      noteActionsDialog?.close({restoreFocus:false});noteActionsDialog=null;
+      rows=rows.map(value=>value.noteId===state.note.noteId?{...value,title:'Записка под паролем',preview:''}:value);
+      drafts=drafts.filter(value=>value.note.noteId!==state.note.noteId);renderRows();renderDrafts();
+      for(const viewport of editor.querySelectorAll('.sn-editor-viewport'))resizeObserver.unobserve(viewport);
+      editor.replaceChildren(el('p','sn-alert',state.dirty
+        ?'Прежний черновик скрыт. Откройте объект на полотне и введите пароль, чтобы завершить перенос на этом устройстве.'
+        :'Записка открывается по паролю на полотне.'));
+      editor.dataset.localProtection=state.localProtection;return;
+    }
+    if(editor.dataset.localProtection){delete editor.dataset.localProtection;renderEditor();void loadList();void loadDrafts();}
     if (state.confirmedAt) openedSnapshot = undefined;
     const stale = openedSnapshot?.source === 'cache';
     const cacheUnavailable = state.cacheError || (openedSnapshot?.source === 'server' && !openedSnapshot.cached);
@@ -362,7 +393,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
       if (!active()) return; previous.dispose(); session = null; installSession(result.note, undefined, result); void loadList();
     } catch (error) {
       if (!active()) return;
-      if (['authorization', 'missing'].includes(noteCacheErrorPolicy(error))) {
+      if (['authorization', 'missing', 'protection'].includes(noteCacheErrorPolicy(error))) {
         previous.dispose(); session = null; rows = rows.filter(note => note.noteId !== noteId); renderRows(); showUnavailable(error);
       } else if (alert) { alert.textContent = notesErrorText(error); alert.hidden = false; }
     }
@@ -420,6 +451,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     focus: () => (root.classList.contains('sn-editing') ? editor.querySelector<HTMLTextAreaElement>('.sn-note-title') : search)?.focus(),
     dispose() {
       disposed = true; listRequest++; openRequest++; clearTimeout(searchTimer); clearTimeout(listRefreshTimer); session?.dispose();
+      for(const dispose of sourceWatches.values())dispose();sourceWatches.clear();quarantinedSources.clear();
       purgeDialog?.close(); purgeDialog = null; noteActionsDialog?.close(); noteActionsDialog = null; openedSnapshot = undefined; recoveredSource = null; rows = []; drafts = [];
       editor.replaceChildren(); list.replaceChildren(); draftList.replaceChildren();
       resizeObserver.disconnect();

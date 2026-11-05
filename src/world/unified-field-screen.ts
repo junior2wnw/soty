@@ -1,13 +1,17 @@
 import './unified-field.css';
-import { createFieldDocument, fieldEntityKey, type FieldDocument, type FieldEntityRef } from '../../modules/field/contract.mjs';
+import { createFieldDocument, fieldEntityKey, type AnyFieldDocument as FieldDocument, type AnyFieldEntityRef as FieldEntityRef } from '../../modules/field/contract.mjs';
 import { createUnifiedField, type FieldDirectoryEntity, type UnifiedField, type UnifiedFieldMode, type UnifiedFieldSummary, type UnifiedFieldViewState } from './unified-field';
 import { compactFieldContext, nextFieldSlot } from './unified-field-state.mjs';
 import { createPersonalFieldDocument, ensureFieldEntityPlacement } from './app-field-placement.mjs';
 import { layoutUnifiedField, fieldBounds, rectPoints } from './unified-field-layout.mjs';
 import { fitFieldCamera } from './unified-field-camera.mjs';
 import { createFieldSearchPlacement } from './unified-field-search.mjs';
+import { createLiveAppScene } from './live-app-scene.mjs';
+import { deriveCanonicalAppCoverage } from './canonical-app-coverage.mjs';
+import { mountFieldGlass,type FieldGlassHandle } from './field-glass';
+import {createCanvasFieldContent,type CanvasProjection,type CanvasAppMount} from './canvas-field-content';
 import { unplacedOwnApps, type OwnAppOverview } from './own-apps-overview.mjs';
-import { createFieldDirectory, type DirectoryApi, type DirectoryApp, type DirectoryEntity, type DirectoryRecord } from './field-directory';
+import { createFieldDirectory, type DirectoryApi, type DirectoryApp, type DirectoryEntity, type DirectoryRecord, type DirectoryObjectMetadata } from './field-directory';
 import { createFieldPersistence, type FieldPersistenceState } from './field-persistence';
 import { resolveFieldAppArt } from './field-art.mjs';
 import { avatar, button, el, iconButton, labeledField, nounCount, textInput } from './dom';
@@ -15,10 +19,17 @@ import { createDialog, errorText, isDialogFocusTarget, type WorldDialog } from '
 import { icon } from './icons';
 import type { WorldCommunity } from './types';
 import type { RecentAction } from './product';
+import {mountCanvasObjectSettings,mountCanvasHiddenObjects} from './canvas-object-settings';
+import {createCanvasObjectSecurityActions} from './canvas-object-security-actions.mjs';
+import type {FieldNode} from './unified-field-layout.mjs';
+import type {CommunityFieldObjectView} from './community-field-object';
 
 export type FieldFilter = 'all' | 'app' | 'person' | 'community' | 'device';
 export interface UnifiedFieldScreenOptions {
   api: DirectoryApi; accountId: string; isCurrent(): boolean;
+  mountCanvasApp?:CanvasAppMount;
+  mountCommunity?:(node:FieldNode,read:()=>WorldCommunity|null,isCurrent:()=>boolean)=>CommunityFieldObjectView;
+  onCommunityFocus?:(communityId:string|null)=>void;
   persistence?: ReturnType<typeof createFieldPersistence>;
   mode?: UnifiedFieldMode; query?: string; filter?: FieldFilter;
   filtersByMode?: { mine: FieldFilter; search: FieldFilter };
@@ -32,6 +43,7 @@ export interface UnifiedFieldScreenOptions {
   onOpenSaved?: () => void;
   onCreateMenu?: () => void;
   onOpenMore?: () => void;
+  readIdentity?: () => {displayName:string;avatarUrl?:string;avatarColor?:string;avatarRevision?:number|null}|null;
   onSearchVisibilityChange?(): void;
   getRecentWork?: () => readonly RecentAction[];
   onOpenRecent?: (route: string) => void;
@@ -46,19 +58,29 @@ export interface UnifiedFieldScreen {
   setMode(mode: UnifiedFieldMode, query?: string, filter?: FieldFilter): void;
   attachHeaderSearch(header: HTMLElement): void;
   addEntity(ref: FieldEntityRef): Promise<void>;
+  addObject(objectId:string,size?:{width:number;height:number}):Promise<{shortcutId:string;status:'saved'|'pending';localDurable:boolean}>;
+  watchEntities(): FieldEntityRef[];
+  renewHostSessions(reason:'reset'):Promise<void>;
   focusSearch(): void; closeSearch(): void; focusContext(contextId: string): void; openAdd(): void; refresh(options?: { preserveView?: boolean }): Promise<void>; refreshOwnApps(): Promise<void>;
   openView(): void; openList(query?: string): void; arrange(): void;
-  hasUnsavedChanges(): boolean; flush(): Promise<void>; reconnect(): void; dispose(): void;
+  openHiddenObjects():void;
+  openObjectSettings(objectId:string):Promise<void>;
+  openCommunity(communityId:string,pane?:'voice'|'chat'):Promise<WorldCommunity|null>;
+  closeCommunity():void;
+  setInboxSummary(value:{messages:number;requests:number;invitations?:number;incomplete:boolean}):void;
+  hasUnsavedChanges(): boolean; hasUnconfirmedWork():boolean; readRuntimeEpoch():number; flush(): Promise<void>; preparePublication():Promise<void>; reconnect(): void; dispose(): void;
 }
 
 const BUILTINS: DirectoryEntity[] = [
   { entity: { kind: 'builtin', id: 'notes' }, title: 'Записки', symbol: 'note', coverKey: 'notes', source: 'builtin' },
   { entity: { kind: 'builtin', id: 'chess' }, title: 'Шахматы', symbol: 'chess', coverKey: 'chess', source: 'builtin' },
+  { entity: { kind: 'builtin', id: 'internet' }, title: 'Транзит · Интернет', description: 'TRANSIT: личный профиль sing-box', symbol: 'world', source: 'builtin' },
   { entity: { kind: 'builtin', id: 'assistant' }, title: 'Помощник', symbol: 'assistant', coverKey: 'assistant', source: 'builtin' },
 ];
 const labels: Record<FieldFilter, string> = { all: 'Всё', app: 'Приложения', person: 'Люди', community: 'Комнаты', device: 'Устройства' };
-const kindLabel = (kind: FieldEntityRef['kind']): string => ({ app: 'Приложение', builtin: 'Возможность Сот', person: 'Человек', community: 'Комната', device: 'Моё устройство' })[kind];
+const kindLabel = (kind: FieldEntityRef['kind']): string => ({ app: 'Приложение', builtin: 'Возможность Сот', person: 'Человек', community: 'Комната', device: 'Моё устройство',object:'Объект' })[kind];
 const matches = (item: DirectoryEntity, query: string, filter: FieldFilter): boolean =>
+  item.hidden!==true&&
   (filter === 'all' || item.entity.kind === filter || filter === 'app' && item.entity.kind === 'builtin') &&
   `${item.title} ${item.description ?? ''}`.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'));
 
@@ -70,10 +92,22 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const current = (): boolean => !disposed && options.isCurrent();
   const abort = new AbortController(), signal = abort.signal;
   const directory = createFieldDirectory({ api: options.api, accountId: options.accountId, isCurrent: current });
+  const canvasContent=createCanvasFieldContent({api:options.api,accountId:options.accountId,isCurrent:current,...(options.mountCanvasApp?{mountApp:options.mountCanvasApp}:{}),onObjectChanged:async()=>{if(current())await loadMine();},projection:id=>{const record=directory.getRecord({kind:'object',id});return record&&'objectId'in record?record as CanvasProjection:null;}});
+  function readCommunity(id:string):WorldCommunity|null{if(!current())return null;const record=directory.getRecord({kind:'community',id});return record&&'communityId'in record?record as WorldCommunity:null;}
+  const objectKey=(node:FieldNode):string|null=>mode==='mine'&&options.mountCommunity&&node.entity.entity.kind==='community'&&readCommunity(node.entity.entity.id)?`community:${node.entity.entity.id}`:canvasContent.objectKey(node);
+  const createObject=(node:FieldNode)=>mode==='mine'&&options.mountCommunity&&node.entity.entity.kind==='community'&&readCommunity(node.entity.entity.id)
+    ?options.mountCommunity(node,()=>readCommunity(node.entity.entity.id),current):canvasContent.createObject(node);
   const persistence = options.persistence ?? createFieldPersistence({ api: options.api, accountId: options.accountId, isCurrent: current, localFirst: true });
   const element = el('section', 'uf-screen'); element.setAttribute('aria-label', 'Мои соты');
+  element.dataset.shell='canvas';
   element.dataset.ready = 'loading';
   element.dataset.startupScreenAt = String(Date.now());
+  const canvasDock=el('nav','uf-canvas-dock');canvasDock.setAttribute('aria-label','Ваше пространство');
+  const profileControl=iconButton('Меню Сот','person',()=>options.onOpenMore?.());profileControl.classList.add('uf-canvas-profile');profileControl.setAttribute('aria-haspopup','dialog');
+  let canvasIdentityKey='';
+  const searchControl=button('Найти в Сотах','search','uf-canvas-search',()=>showSearch());searchControl.dataset.fieldSearch='';
+  const addControl=iconButton('Добавить на полотно','plus',()=>options.onCreateMenu?.());addControl.classList.add('uf-canvas-add');addControl.setAttribute('aria-haspopup','dialog');
+  canvasDock.append(profileControl,searchControl,addControl);
   const head = el('div', 'uf-screen-head'), title = el('h1', 'uf-screen-title', 'Мои соты');
   const sides = el('div', 'uf-screen-switch'); sides.setAttribute('role', 'group'); sides.setAttribute('aria-label', 'Сторона поля');
   const mineButton = button('Моё', undefined, '', () => changeMode('mine'));
@@ -134,6 +168,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const overview = button('Показать всё', 'expand', 'uf-overview-button', () => { closePreview(false); engine?.fitOverview(); });
   const spaces = iconButton('Управлять пространствами', 'settings', () => manageContexts());
   const viewTools = iconButton('Вид поля', 'sliders', () => openViewTools()); viewTools.classList.add('uf-view-tools');
+  const scaleControl=button('100%','expand','uf-canvas-scale',()=>openViewTools());scaleControl.setAttribute('aria-haspopup','dialog');scaleControl.setAttribute('aria-label','Масштаб и вид полотна: 100%');
   toolbar.append(zoom, contextSelector, overview, spaces, viewTools);
   const panControls = el('div', 'uf-pan-controls'); panControls.hidden = true;
   panControls.setAttribute('role', 'group'); panControls.setAttribute('aria-label', 'Перемещение поля');
@@ -155,15 +190,19 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const searchLimitCopy = el('span', '', 'Показаны первые 256 результатов. Уточните поиск.'); searchLimitCopy.setAttribute('role', 'status');
   searchLimit.append(searchLimitCopy, button('Уточнить поиск', 'search', 'sw-button-quiet', () => searchInput.focus()));
   const undo = button('Отменить', 'back', 'uf-undo', () => run(engine?.undo())); undo.hidden = true;
-  const fieldChrome = el('div', 'uf-field-chrome'); fieldChrome.append(workspaceTools, ownAppsOverview);
-  host.append(loading, empty, feedback, toolbar, panControls, arrangeHint, more, undo); element.append(head, fieldChrome, localSearch, filters, searchLimit, host);
+  const fieldChrome = el('div', 'uf-field-chrome'); fieldChrome.append(workspaceTools); localSearch.append(ownAppsOverview);
+  host.append(loading, empty, feedback, toolbar, panControls, arrangeHint, more, undo); element.append(head, canvasDock, scaleControl,fieldChrome, localSearch, filters, searchLimit, host);
   const dialogs = new Set<WorldDialog>();
   const metadata = new Map<string, DirectoryEntity>(BUILTINS.map(item => [fieldEntityKey(item.entity), item]));
   let engine: UnifiedField | null = null, summary: UnifiedFieldSummary | null = null, state: FieldPersistenceState | null = null;
+  let fieldGlass:FieldGlassHandle|null=null;
   let searchItems: DirectoryEntity[] = [], available: DirectoryEntity[] = [], searchCursor: string | null = null;
   let ownedApps: unknown[] = [], ownedAppsState: 'loading' | 'ready' | 'offline' = 'loading', ownAppsSignature = '';
   let ownAppsReadSequence = 0, ownAppsAppliedRead = 0;
   let availableCursor: string | null = null;
+  const liveProjection=createLiveAppScene();
+  let appProjectionGeneration=0,appCoverageSceneSignature=JSON.stringify({contexts:[],shortcuts:[]});
+  let liveApps:DirectoryEntity[]=[],liveCursor:string|null=null,liveRead=0,livePages=1;
   const searchPlacement = createFieldSearchPlacement();
   let activeSearchScene = createFieldDocument();
   let searchResponseScope = '';
@@ -176,6 +215,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let mineBusy = false, queuedMine: ((admitted: boolean) => void) | null = null;
   let initialMineTask: Promise<void> | null = null, initialMineRefs = '';
   let preview: HTMLElement | null = null, selected: { item: DirectoryEntity; shortcutId?: string } | null = null;
+  let previewCommunity:CommunityFieldObjectView|null=null,communityOpenSequence=0,focusedCommunityId:string|null=null;
   let previewOpener: HTMLElement | null = null;
   let searchOpener: HTMLElement | null = null;
   let listDialog: WorldDialog | null = null, renderOpenList: (() => void) | null = null;
@@ -196,7 +236,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }); dialogs.add(instance); return instance;
   }
   function fieldControl(): HTMLElement | null {
-    return [header?.querySelector<HTMLElement>('[data-field-search]'), element.closest('.sw-app')?.querySelector<HTMLElement>('.sw-mobile-nav .of-menu-button'), element.querySelector<HTMLElement>('.uf-node.is-selected')]
+    return [searchControl,header?.querySelector<HTMLElement>('[data-field-search]'), element.closest('.sw-app')?.querySelector<HTMLElement>('.sw-mobile-nav .of-menu-button'), element.querySelector<HTMLElement>('.uf-node.is-selected')]
       .find(node => isDialogFocusTarget(node ?? null)) ?? null;
   }
   function focusFieldControl(): void { fieldControl()?.focus({ preventScroll: true }); }
@@ -258,6 +298,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     contexts.addEventListener('change', () => { closePreview(false); contexts.value ? engine?.focusContext(contexts.value) : engine?.fitOverview(); instance.close(); });
     instance.body.append(labeledField('Показать', types), labeledField('Перейти к', contexts), row,
       button('Показать всё', 'expand', 'sw-button-wide', () => { closePreview(false); engine?.fitOverview(); instance.close(); }));
+    if(mode==='mine'&&liveCursor&&livePages<4)instance.body.append(button('Ещё приложения на полотне','plus','sw-button-wide',()=>{run(refreshLiveApps(true));instance.close();}));
     const panToggle = button(panControls.hidden ? 'Кнопки перемещения' : 'Скрыть кнопки перемещения', 'arrow', 'sw-button-wide', () => {
       const show = panControls.hidden; instance.close({ restoreFocus: false }); panControls.hidden = !show;
       (show ? panControls.querySelector<HTMLButtonElement>('button') : viewTools)?.focus({ preventScroll: true });
@@ -283,10 +324,50 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     for (const key of metadata.keys()) if (!keep.has(key)) metadata.delete(key);
   }
   function allMetadata(): DirectoryEntity[] {
-    if (mode === 'search') return [...new Map([...BUILTINS, ...searchItems].map(item => [fieldEntityKey(item.entity), item])).values()];
+    if (mode === 'search') {const active=previewCommunity&&selected?metadata.get(fieldEntityKey(selected.item.entity)):null;return [...new Map([...BUILTINS, ...searchItems,...(active?[active]:[])].map(item => [fieldEntityKey(item.entity), item])).values()];}
     const needed = new Set([...BUILTINS, ...searchItems].map(item => fieldEntityKey(item.entity)));
+    if(previewCommunity&&selected?.item.entity.kind==='community')needed.add(fieldEntityKey(selected.item.entity));
     for (const shortcut of (engine?.snapshot() ?? state?.document)?.shortcuts ?? []) needed.add(fieldEntityKey(shortcut.entity));
+    for(const item of liveApps)needed.add(fieldEntityKey(item.entity));
     return [...metadata.values()].filter(item => needed.has(fieldEntityKey(item.entity)));
+  }
+  function readAppCoverage(document:FieldDocument){
+    const objects=document.shortcuts.filter(shortcut=>shortcut.entity.kind==='object');
+    const coverage=deriveCanonicalAppCoverage({document,representations:new Map(objects.map(shortcut=>[shortcut.entity.id,metadata.get(fieldEntityKey(shortcut.entity))?.ownerRepresents]))});
+    const pending=appProjectionGeneration?new Set(objects.map(shortcut=>shortcut.entity.id)).size:0;
+    element.dataset.appCoverage=pending?'loading':coverage.status;element.dataset.appCoveragePending=String(pending);
+    element.dataset.appCoverageUnknown=String(coverage.unknownObjectIds.length);
+    return coverage;
+  }
+  function liveAppScene(document:FieldDocument){
+    const coverage=readAppCoverage(document);
+    return liveProjection.update(document,liveApps,{representedAppIds: coverage.appIds});
+  }
+  function refreshAppCoverage(metadataChanged=false):void{
+    if(!engine||!current())return;
+    const scene=liveAppScene(engine.snapshot()),signature=JSON.stringify(scene);
+    if(metadataChanged||signature!==appCoverageSceneSignature){appCoverageSceneSignature=signature;engine.update({...(metadataChanged?{entities:allMetadata()}:{}),liveScene:scene});}
+  }
+  async function refreshLiveApps(_append=false):Promise<void>{
+    if(!engine||!current())return;
+    const read=++liveRead,items:DirectoryEntity[]=[];
+    // Availability is not a personal placement. The owner's existing registry
+    // remains visible without depending on the order of public discovery pages.
+    const registry=await options.api.request<{apps:unknown[]}>('apps.list',{expectedAccountId:options.accountId});
+    if(!current()||read!==liveRead||!engine)return;
+    if(!Array.isArray(registry.apps))throw Object.assign(new Error('Не удалось обновить ваши приложения.'),{code:'live_directory_unavailable'});
+    const owned=unplacedOwnApps(registry.apps,options.accountId,[]),ids=new Set(owned.map(app=>app.id));
+    for(let offset=0;offset<owned.length;offset+=60){
+      const page=await directory.resolve(owned.slice(offset,offset+60).map(app=>({kind:'app' as const,id:app.id})));
+      if(!current()||read!==liveRead||!engine)return;
+      if(page.errors.length)throw Object.assign(new Error('Не удалось обновить доступные приложения.'),{code:'live_directory_unavailable'});
+      items.push(...page.items.filter(item=>item.entity.kind==='app'&&item.source==='owner'&&ids.has(item.entity.id)));
+    }
+    livePages=1;liveApps=[...new Map(items.map(item=>[fieldEntityKey(item.entity),item])).values()];
+    liveCursor=null;merge(liveApps);
+    refreshAppCoverage(true);
+    if(!current()||read!==liveRead||!engine)return;
+    element.dataset.liveApps=String(liveApps.length);element.dataset.liveMore=String(!!liveCursor);
   }
   function overviewApps(): OwnAppOverview[] {
     return ownedAppsState === 'ready' && engine ? unplacedOwnApps(ownedApps, options.accountId, engine.snapshot().shortcuts) : [];
@@ -312,7 +393,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     target.dataset.appId = app.id; return target;
   }
   function renderOwnApps(): void {
-    const visible = current() && !!engine && mode === 'mine' && element.dataset.search !== 'open' && !summary?.arranging && !queries.mine.trim() && ['all', 'app'].includes(filter);
+    const visible = current() && !!engine && mode === 'mine' && element.dataset.search === 'open' && !summary?.arranging && !queries.mine.trim() && ['all', 'app'].includes(filter);
     const apps = visible ? overviewApps() : [];
     const signature = JSON.stringify([visible, ownedAppsState, apps]);
     if (signature === ownAppsSignature) return;
@@ -382,8 +463,20 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (search.parentElement !== localSearch) localSearch.prepend(search);
     if (listButton.parentElement !== localSearch) localSearch.append(listButton);
   }
+  let inboxSummary={messages:0,requests:0,invitations:0,incomplete:false};
+  function updateIdentity():void{
+    const identity=options.readIdentity?.();if(!identity)return;
+    const key=JSON.stringify([identity.displayName,identity.avatarUrl,identity.avatarColor,identity.avatarRevision,inboxSummary]);if(canvasIdentityKey===key)return;
+    canvasIdentityKey=key;const face=avatar(identity.displayName,identity.avatarUrl,identity.avatarColor,options.accountId,identity.avatarRevision);
+    if(/^#[a-f0-9]{6}$/iu.test(identity.avatarColor??''))face.style.backgroundColor=identity.avatarColor!;
+    profileControl.replaceChildren(face);profileControl.title=identity.displayName;
+    const total=inboxSummary.messages+inboxSummary.requests+inboxSummary.invitations;
+    profileControl.setAttribute('aria-label',`Меню, ${identity.displayName}${total?`. Новых сообщений: ${inboxSummary.messages}; запросов в контакты: ${inboxSummary.requests}${inboxSummary.invitations?`; приглашений в комнаты: ${inboxSummary.invitations}`:''}`:''}`);
+    if(total){const badge=el('span','uf-profile-unread',total>99?'99+':String(total)+(inboxSummary.incomplete?'+':''));badge.setAttribute('aria-hidden','true');profileControl.append(badge);}
+  }
   function updateChrome(): void {
     const focused = document.activeElement;
+    updateIdentity();
     element.dataset.mode = mode; element.dataset.filter = filter; title.textContent = mode === 'mine' ? 'Мои соты' : 'Найти своё';
     workspaceTools.hidden = mode !== 'mine';
     if (mode !== 'search') searchLimit.hidden = true;
@@ -393,7 +486,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     mineButton.setAttribute('aria-pressed', String(mode === 'mine')); searchButton.setAttribute('aria-pressed', String(mode === 'search'));
     searchInput.value = queries[mode]; searchInput.placeholder = mode === 'mine' ? 'Найти в моих сотах' : 'Приложения, люди, комнаты';
     searchInput.setAttribute('aria-label', searchInput.placeholder); clear.hidden = !searchInput.value;
-    arrange.hidden = mode !== 'mine'; spaces.hidden = mode !== 'mine';
+    arrange.hidden = true; spaces.hidden = mode !== 'mine';
     contextSelector.setAttribute('aria-label', mode === 'mine' ? 'Мои пространства' : 'Раздел поиска');
     contextSelector.title = mode === 'mine' ? 'Перейти к пространству на поле' : 'Перейти к разделу результатов';
     for (const kind of ['all', 'app', 'community', 'person', 'device'] as FieldFilter[]) {
@@ -452,7 +545,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       initialEntities = allMetadata();
       mineFilterAdmitted = true;
     }
-    engine.update({ ...(initialEntities ? { entities: initialEntities } : {}), filter: queries.mine, visibleKinds: filter === 'all' ? ['app', 'builtin', 'person', 'community', 'device'] : filter === 'app' ? ['app', 'builtin'] : [filter] });
+    engine.update({ ...(initialEntities ? { entities: initialEntities } : {}), filter: queries.mine, visibleKinds: filter === 'all' ? ['app', 'builtin', 'person', 'community', 'device','object'] : filter === 'app' ? ['app', 'builtin'] : [filter] });
     updateMineEmpty(summary?.document ?? engine.snapshot());
   }
   function updateMineEmpty(doc: FieldDocument): void {
@@ -475,26 +568,27 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (!empty.hidden && (ownedAppsState !== 'ready' || element.dataset.mineState === 'error' || doc.shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))))) {
       empty.replaceChildren(el('h2', '', 'Доступ пока не подтверждён'), button('Повторить', 'refresh', 'sw-button-quiet', () => run(loadMine()))); return;
     }
-    if (!empty.hidden) empty.replaceChildren(el('h2', '', queries.mine ? 'Ничего не найдено' : filter !== 'all' ? 'В этом разделе пока пусто' : 'Здесь будет ваше пространство'), el('p', '', queries.mine ? 'Попробуйте другое название.' : 'Добавьте приложение, человека или комнату.'), button(queries.mine ? 'Очистить поиск' : filter !== 'all' ? 'Показать всё' : 'Добавить на поле', queries.mine ? 'close' : filter !== 'all' ? 'layers' : 'plus', 'sw-button-primary', () => {
+    if (!empty.hidden) empty.replaceChildren(el('h2', '', queries.mine ? 'Ничего не найдено' : filter !== 'all' ? 'Здесь пока пусто' : 'Здесь начинается ваше пространство'), el('p', '', queries.mine ? 'Попробуйте другое название.' : 'Оставьте мысль, добавьте фото или приложение.'), button(queries.mine ? 'Очистить поиск' : filter !== 'all' ? 'Показать всё' : 'Добавить', queries.mine ? 'close' : filter !== 'all' ? 'layers' : 'plus', 'sw-button-primary', () => {
       if (queries.mine) { searchInput.value = ''; inputChanged(); searchInput.focus(); }
       else if (filter !== 'all') { filter = 'all'; filtersByMode.mine = 'all'; updateChrome(); inputChanged(true); }
-      else openAdd();
+      else if(options.onCreateMenu)options.onCreateMenu();else openAdd();
     }));
   }
   function updateSummary(next: UnifiedFieldSummary): void {
     const documentChanged = next.document !== summary?.document;
     if (summary && (next.document !== summary.document || next.focusContextId !== summary.focusContextId || next.arranging !== summary.arranging)) closeList(false);
-    if (next.mode === 'mine' && next.focusContextId !== summary?.focusContextId && current()) options.onContextChange?.(next.focusContextId);
+    if (next.mode === 'mine' && next.focusContextId !== summary?.focusContextId && current()&&(!next.focusContextId||next.document.contexts.some(context=>context.contextId===next.focusContextId))) options.onContextChange?.(next.focusContextId);
     if (mode === 'mine' && selected?.shortcutId) {
       const inspected = next.document.shortcuts.find(shortcut => shortcut.shortcutId === selected?.shortcutId);
       if (!inspected || next.focusContextId && inspected.contextId !== next.focusContextId) closePreview(false);
     }
     summary = next; arrange.setAttribute('aria-pressed', String(next.arranging)); arrange.querySelector('span')!.textContent = next.arranging ? 'Готово' : 'Расставить';
-    if (documentChanged) publishKnownApps(next.document);
+    if (documentChanged) { publishKnownApps(next.document); refreshAppCoverage(); }
     element.dataset.arranging = String(next.arranging);
     element.dataset.focusContext = next.focusContextId;
     arrangeHint.hidden = !next.arranging;
     const zoomValue = `${Math.round(next.camera.scale * 100)}%`; if (percent.value !== zoomValue) percent.value = zoomValue;
+    const scaleText=scaleControl.querySelector('span');if(scaleText)scaleText.textContent=zoomValue;scaleControl.setAttribute('aria-label',`Масштаб и вид полотна: ${zoomValue}`);
     if (viewPercent?.isConnected && viewPercent.value !== zoomValue) viewPercent.value = zoomValue;
     undo.hidden = !next.canUndo || mode !== 'mine';
     const contexts = mode === 'mine' ? next.document.contexts : searchScene().contexts;
@@ -537,7 +631,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       const previousRefs = new Set(engine.snapshot().shortcuts.map(shortcut => fieldEntityKey(shortcut.entity)));
       const newRefs = next.document.shortcuts.some(shortcut => !previousRefs.has(fieldEntityKey(shortcut.entity)));
       if (newRefs) { mineResolvedGeneration = -1; empty.hidden = true; }
-      engine.update({ document: next.document, revision: next.projectedRevision, persistence: 'saved' }); updateMineFilter();
+      engine.update({ document: next.document, revision: next.projectedRevision, persistence: 'saved',liveScene:liveAppScene(next.document) }); updateMineFilter();
       // A layout received from another window/device contains references, not
       // names or access. Resolve new identities through the existing directory.
       if (newRefs) run(element.dataset.ready === 'loading' ? loadInitialMine() : loadMine());
@@ -589,7 +683,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       if (progress && !combined.length) return;
       resultSize = combined.length;
       const next = combined.slice(0, 256), changed = searchResponseScope !== scope || JSON.stringify(next) !== JSON.stringify(searchItems);
-      if (selected && (searchResponseScope !== scope || !progress && !append && !combined.some(item => fieldEntityKey(item.entity) === fieldEntityKey(selected!.item.entity)))) closePreview(false);
+      if (selected && (searchResponseScope !== scope || !previewCommunity && !progress && !append && !combined.some(item => fieldEntityKey(item.entity) === fieldEntityKey(selected!.item.entity)))) closePreview(false);
       searchItems = next; merge(items, true); searchResponseScope = scope; pruneMetadata();
       if (changed) {
         const scene = searchPlacement.update(scope, searchItems, allMetadata()); activeSearchScene = scene;
@@ -641,6 +735,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   async function loadMine(): Promise<void> {
     if (!engine || !current()) return; closeList(false); const generation = ++mineGeneration;
+    appProjectionGeneration=engine.snapshot().shortcuts.some(shortcut=>shortcut.entity.kind==='object')?generation:0;
+    element.dataset.appCoverageErrors='0';
+    readAppCoverage(engine.snapshot());
     mineConfirmedGeneration = -1; empty.hidden = true; element.dataset.mineState = 'loading'; renderMineSearchResults();
     if (mineBusy) {
       queuedMine?.(false);
@@ -662,22 +759,27 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     mineConfirmedGeneration = -1;
     empty.hidden = true; element.dataset.mineState = 'loading';
     mineKnownRefs = new Set(BUILTINS.map(item => fieldEntityKey(item.entity)));
-    const refs = [...new Map(engine.snapshot().shortcuts.map(shortcut => [fieldEntityKey(shortcut.entity), shortcut.entity])).values()];
+    const refs = [...new Map([...engine.snapshot().shortcuts.map(shortcut=>shortcut.entity),...(previewCommunity&&selected?.item.entity.kind==='community'?[selected.item.entity]:[])].map(ref=>[fieldEntityKey(ref),ref])).values()];
     const resolved = { items: [] as DirectoryEntity[], unavailable: [] as FieldEntityRef[], errors: [] as { source: string; code: string }[] };
-    const accept = (batch: typeof resolved): void => {
+    const accept = (batch: typeof resolved&{objectMetadata?:DirectoryObjectMetadata[]}): void => {
       if (!live()) return;
+      const objectMetadata=new Map((batch.objectMetadata??[]).map(value=>[value.objectId,value.ownerRepresents]));
+      if(batch.errors.some(error=>error.source==='objects'))element.dataset.appCoverageErrors=String(Number(element.dataset.appCoverageErrors??0)+batch.errors.filter(error=>error.source==='objects').length);
       for (const ref of batch.unavailable) {
         const key = fieldEntityKey(ref); resolvedUnavailableRefs.add(key);
-        metadata.set(key, { entity: ref, title: batch.errors.length ? 'Ждёт подключения' : 'Недоступно', symbol: 'lock', source: 'owner' });
+        const represents=ref.kind==='object'?objectMetadata.get(ref.id):undefined;
+        metadata.set(key, { entity: ref, title: batch.errors.length ? 'Ждёт подключения' : 'Недоступно', symbol: 'lock', source: 'owner',...(represents===undefined?{}:{ownerRepresents:represents}) });
         if (!batch.errors.length) mineKnownRefs.add(key);
       }
       merge(batch.items); for (const item of batch.items) mineKnownRefs.add(fieldEntityKey(item.entity));
       resolved.items.push(...batch.items); resolved.unavailable.push(...batch.unavailable); resolved.errors.push(...batch.errors);
       mineConfirmedGeneration = generation;
       engine!.update({ entities: allMetadata() }); updateMineFilter(); loading.hidden = true;
+      refreshAppCoverage();
       publishKnownApps();
       if (batch.items.some(item => item.entity.kind === 'app')) element.dataset.startupAppsAt ??= String(Date.now());
       if (selected && batch.unavailable.some(ref => fieldEntityKey(ref) === fieldEntityKey(selected!.item.entity))) closePreview(false);
+      else if(previewCommunity&&selected){const latest=currentEntity(selected.item.entity);if(latest)openPreview(latest,selected.shortcutId);}
     };
     try {
       // Independent sources publish confirmed batches without moving the user's saved shortcuts.
@@ -686,6 +788,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         refs.filter(ref => ref.kind === 'person' || ref.kind === 'community'),
         refs.filter(ref => ref.kind === 'app'),
         refs.filter(ref => ref.kind === 'device'),
+        refs.filter(ref => ref.kind === 'object'),
       ].map(async sourceRefs => {
         try {
           for (let offset = 0; offset < sourceRefs.length; offset += 60) {
@@ -695,6 +798,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
             accept(batch);
           }
         } catch (error) { accepting = false; if (!failed) { failed = true; firstError = error; } throw error; }
+        finally { if(sourceRefs.some(ref=>ref.kind==='object')&&appProjectionGeneration===generation){appProjectionGeneration=0;if(live())refreshAppCoverage();} }
       }));
       if (failed) throw firstError;
       if (!live()) return;
@@ -732,11 +836,14 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       accepting = false;
       if (current() && generation === mineGeneration) {
         loading.hidden = true; if (mineResolvedGeneration !== generation) element.dataset.mineState = 'error';
+        if(appProjectionGeneration===generation)appProjectionGeneration=0;
+        refreshAppCoverage();
         await loadOwnedApps(generation);
       }
     }
   }
-  function closePreview(restore = true): void {
+  function closePreview(restore = true,notify = true): void {
+    const hadCommunity=!!previewCommunity;previewCommunity?.dispose();previewCommunity=null;
     preview?.remove(); preview = null;
     delete element.dataset.preview;
     if (restore) {
@@ -746,13 +853,28 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }
     previewOpener = null;
     selected = null;
+    if(hadCommunity&&notify)options.onCommunityFocus?.(null);
+  }
+  function communityPreviewNode(item:DirectoryEntity):FieldNode{
+    // Local sizing only: this transient view never enters persistence or history.
+    return layoutUnifiedField({contexts:[{contextId:'preview',title:'Просмотр',x:0,y:0}],shortcuts:[{shortcutId:'community-preview',entity:item.entity,contextId:'preview',placement:{kind:'free',x:0,y:0,width:480,height:420}}]},[item]).nodes[0]!;
   }
   function openPreview(item: DirectoryEntity, shortcutId?: string): void {
+    if(item.entity.kind==='community'&&previewCommunity&&selected?.item.entity.id===item.entity.id){selected={item,...(shortcutId?{shortcutId}:{})};previewCommunity.update(communityPreviewNode(item));return;}
     const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const opener = active && preview?.contains(active) ? previewOpener : active && (element.contains(active) || active === searchInput) ? active : previewOpener;
-    closePreview(false); previewOpener = opener; selected = { item, ...(shortcutId ? { shortcutId } : {}) };
+    closePreview(false,false); previewOpener = opener; selected = { item, ...(shortcutId ? { shortcutId } : {}) };
     const panel = el('aside', 'uf-preview'); panel.setAttribute('aria-label', `Об объекте: ${item.title}`);
     panel.tabIndex = -1; const close = iconButton('Закрыть карточку', 'close', () => closePreview()); close.classList.add('uf-preview-close');
+    if(item.entity.kind==='community'&&options.mountCommunity&&readCommunity(item.entity.id)){
+      const node=communityPreviewNode(item),view=options.mountCommunity(node,()=>readCommunity(item.entity.id),()=>current()&&preview===panel);
+      const placed=engine?.snapshot().shortcuts.find(shortcut=>fieldEntityKey(shortcut.entity)===fieldEntityKey(item.entity));
+      const pin=iconButton(placed?'Действия с сотой':'На моё поле',placed?'sliders':'plus',()=>placed?openPlacementActions(item,placed.shortcutId):addToContext(item));pin.classList.add('uf-preview-pin');
+      const noticeHost=el('div','uf-preview-notice');noticeHost.dataset.noticeHost='';noticeHost.dataset.noticeOwner=item.entity.id;noticeHost.dataset.glassIgnore='';
+      panel.dataset.community='true';panel.append(noticeHost,close,pin,view.element);element.append(panel);preview=panel;previewCommunity=view;element.dataset.preview='open';
+      view.update(node);view.setVisible(true);view.setPresentation?.('interactive');options.onCommunityFocus?.(item.entity.id);
+      panel.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.stopPropagation();closePreview();}},{signal});panel.focus({preventScroll:true});return;
+    }
     const copy = el('div', 'uf-preview-content'); copy.append(el('small', 'uf-eyebrow', kindLabel(item.entity.kind)), el('h2', '', item.title));
     if (mode === 'mine' && shortcutId) {
       const doc = engine?.snapshot(), placement = doc?.shortcuts.find(shortcut => shortcut.shortcutId === shortcutId);
@@ -797,17 +919,39 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       open.disabled = !ownProfile && !record && ['person', 'device', 'community'].includes(item.entity.kind); actions.append(open);
     }
     if (item.entity.kind === 'app' && record && 'canManage' in record && record.canManage && options.onAppSettings) actions.append(button('Настройки приложения', 'settings', 'sw-button-quiet', () => options.onAppSettings!(record as DirectoryApp)));
-    const alreadyPlaced = engine?.snapshot().shortcuts.some(shortcut => fieldEntityKey(shortcut.entity) === fieldEntityKey(item.entity));
-    actions.append(button(alreadyPlaced ? 'Добавить в другое пространство' : 'На моё поле', 'plus', 'sw-button-quiet', () => addToContext(item)));
-    if (mode === 'mine' && shortcutId) actions.append(button('Переместить', 'sliders', 'sw-button-quiet', () => { closePreview(); engine?.setArrange(true); engine?.beginMove(shortcutId); }), button('Убрать с поля', 'close', 'sw-button-quiet', () => { closePreview(); run(engine?.removeShortcut(shortcutId).then(() => updateMineFilter())); }));
+    for(const action of placementCommands(item,shortcutId))actions.append(button(action.label,action.symbol,'sw-button-quiet',action.run));
     copy.append(actions); panel.append(close, copy); element.append(panel); element.dataset.preview = 'open'; preview = panel;
     panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closePreview(); } }, { signal });
     panel.focus({ preventScroll: true });
   }
-  function inspect(entity: FieldDirectoryEntity, shortcutId: string): void {
+  function placementCommands(item:DirectoryEntity,shortcutId?:string):{label:string;symbol:string;run:()=>void}[]{
+    const alreadyPlaced=engine?.snapshot().shortcuts.some(shortcut=>fieldEntityKey(shortcut.entity)===fieldEntityKey(item.entity));
+    const commands=[{label:alreadyPlaced?'Добавить в другое пространство':'На моё поле',symbol:'plus',run:()=>{if(current())addToContext(item);}}];
+    const placementCurrent=()=>current()&&mode==='mine'&&!!shortcutId&&engine?.snapshot().shortcuts.some(shortcut=>shortcut.shortcutId===shortcutId&&fieldEntityKey(shortcut.entity)===fieldEntityKey(item.entity));
+    if(placementCurrent())commands.push({label:'Переместить',symbol:'sliders',run:()=>{if(placementCurrent()){closePreview();engine?.closeObject();engine?.beginMove(shortcutId!);}}},{label:'Убрать с поля',symbol:'close',run:()=>{if(placementCurrent()){closePreview();run(engine?.removeShortcut(shortcutId!).then(()=>updateMineFilter()));}}});
+    return commands;
+  }
+  function openPlacementActions(item:DirectoryEntity,shortcutId:string):WorldDialog{
+    const instance=dialog(item.title),actions=el('div','sw-stack');
+    for(const action of placementCommands(item,shortcutId))actions.append(button(action.label,action.symbol,'sw-button-wide',()=>{instance.close();action.run();}));
+    instance.body.append(actions);return instance;
+  }
+  function inspect(entity: FieldDirectoryEntity, shortcutId: string): WorldDialog|void {
     if (!current()) return;
     const item = currentEntity(entity.entity); if (!item) return;
     closePreview(false);
+    if(item.entity.kind==='object'){
+      const personal=mode==='mine'&&engine?.snapshot().shortcuts.some(value=>value.shortcutId===shortcutId);
+      let handle:ReturnType<typeof mountCanvasObjectSettings>|undefined;const instance=dialog(item.title,()=>handle?.dispose());
+      handle=mountCanvasObjectSettings(instance,{api:options.api,accountId:options.accountId,objectId:item.entity.id,title:item.title,projection:directory.getRecord(item.entity) as CanvasProjection|null,isCurrent:current,
+        onChanged:()=>loadMine(),onOpen:()=>{const target=element.querySelector<HTMLElement>(`[data-shortcut-id="${CSS.escape(shortcutId)}"] textarea`);if(target)target.focus();else options.onOpen(item,directory.getRecord(item.entity));},
+        security:createCanvasObjectSecurityActions({api:options.api,accountId:options.accountId,objectId:item.entity.id,isCurrent:current,vault:canvasContent.vault,nativeTransition:canvasContent.nativeTransition}),
+        vault:canvasContent.vault,
+        beforeChange:async()=>{await engine?.flush();await canvasContent.flush();if(engine?.hasUnsavedChanges()||canvasContent.hasUnsavedChanges())throw Object.assign(new Error('canvas_unsaved_work'),{code:'canvas_unsaved_work'});},
+        ...(personal?{onMove:()=>engine?.beginMove(shortcutId),onRemovePlacement:()=>run(engine?.removeShortcut(shortcutId).then(()=>updateMineFilter()))}:{}),
+      });return instance;
+    }
+    if(item.entity.kind==='community'&&options.mountCommunity)return openPlacementActions(item,shortcutId);
     const capturedEngine = engine, capturedMode = mode, entityKey = fieldEntityKey(item.entity);
     const placement = capturedMode === 'mine' ? (): void => {
       if (!current() || !capturedEngine || engine !== capturedEngine || mode !== capturedMode
@@ -958,7 +1102,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const doc = engine?.snapshot(); if (!doc) return;
     const instance = dialog('Добавить на моё поле'), select = el('select', 'sw-select');
     for (const context of doc.contexts) { const option = el('option', '', context.title); option.value = context.contextId; select.append(option); }
-    if (summary?.focusContextId) select.value = summary.focusContextId;
+    const focusedContext=summary?.focusContextId;
+    if (focusedContext&&doc.contexts.some(context=>context.contextId===focusedContext)) select.value = focusedContext;
     const submit = button('Добавить', 'plus', 'sw-button-primary');
     submit.disabled = !doc.contexts.length;
     submit.addEventListener('click', () => { submit.disabled = true; const contextId = select.value;
@@ -970,7 +1115,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         const state = persistence.getState();
         if (state.state === 'conflict') { submit.disabled = false; options.onMessage('Поле изменилось. Проверьте расстановку.', true); return; }
         if (persistence.hasUnsavedChanges() || !state.localDurable) { submit.disabled = false; options.onMessage('Расстановка ещё не сохранена', true); return; }
-        instance.close(); changeMode('mine'); engine?.focusContext(contextId);
+        instance.close();closePreview(false);changeMode('mine');const placed=engine?.snapshot().shortcuts.find(shortcut=>shortcut.contextId===contextId&&fieldEntityKey(shortcut.entity)===fieldEntityKey(item.entity));if(placed)engine?.revealShortcut(placed.shortcutId);
         options.onMessage(state.pendingCount ? 'Уже добавлено на устройстве · ждём подключения' : 'Уже на вашем поле'); return;
       }
       changeMode('mine'); merge([item]); engine?.update({ entities: [...allMetadata(), item] });
@@ -978,7 +1123,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         if (!current()) return; updateMineFilter();
         if (receipt?.status === 'conflict') { options.onMessage('Поле изменилось. Проверьте расстановку.', true); return; }
         if (receipt?.status === 'volatile' && !receipt.localDurable) { options.onMessage('Расстановка ещё не сохранена', true); return; }
-        instance.close(); engine?.focusContext(contextId);
+        instance.close();closePreview(false);const placed=engine?.snapshot().shortcuts.find(shortcut=>shortcut.contextId===contextId&&fieldEntityKey(shortcut.entity)===fieldEntityKey(item.entity));if(placed)engine?.revealShortcut(placed.shortcutId);
         options.onMessage(receipt?.status === 'volatile' ? 'Добавлено на устройстве · ждём подключения' : 'Добавлено на поле');
       }).finally(() => { submit.disabled = false; })); });
     instance.body.append(el('p', '', item.title), labeledField('Пространство', select), submit);
@@ -1073,16 +1218,21 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }).catch(error => { if (current() && engine === field) report(error); });
   }
   function mountEngine(loaded: FieldPersistenceState): void {
+    fieldGlass?.dispose();fieldGlass=null;
     state = loaded;
     mineFilterAdmitted = false;
     if (loaded.document.contexts.length) firstResolve = false;
     for (const shortcut of loaded.document.shortcuts) if (!metadata.has(fieldEntityKey(shortcut.entity))) metadata.set(fieldEntityKey(shortcut.entity), { entity: shortcut.entity, title: 'Загрузка…', symbol: 'lock', source: 'owner' });
     const field = createUnifiedField({ accountId: options.accountId, document: loaded.document, revision: loaded.projectedRevision,
-      mode, entities: allMetadata(), readableMobileFocus: true, dimNonMatches: true, ...(options.viewState ? { viewState: options.viewState } : {}), commit: (doc, context) => persistence.commit(doc, context),
+      createObject,objectKey,canContinueObjectFocus:(node,previousKey,nextKey)=>canvasContent.canContinueObjectFocus(node,previousKey,nextKey),
+      mode, entities: allMetadata(), readableMobileFocus: true, readableObjectFocus:true, dimNonMatches: true, ...(options.viewState ? { viewState: options.viewState } : {}), commit: (doc, context) => persistence.commit(doc, context),
       onViewStateChange: view => { if (current()) options.onViewStateChange?.(view); },
+      onObjectFocusChange:entity=>{focusedCommunityId=entity?.entity.kind==='community'?entity.entity.id:null;if(current())options.onCommunityFocus?.(focusedCommunityId);},
       onActivate: activate, onInspect: inspect, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? currentEntity(entity.entity) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
       resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }, { screenWidth: window.innerWidth }),
-    }); engine = field; host.prepend(field.element); if (mode === 'search') field.update({ searchDocument: searchScene() }); updateChrome(); updateStatus();
+    }); engine = field; host.prepend(field.element);appCoverageSceneSignature=JSON.stringify({contexts:[],shortcuts:[]});refreshAppCoverage();
+    fieldGlass=mountFieldGlass(field.element,{onStatus:status=>{if(current()&&engine===field){element.dataset.glassMode=status.mode;element.dataset.glassSurfaces=String(status.surfaces);}}});
+    if (mode === 'search') field.update({ searchDocument: searchScene() }); updateChrome(); updateStatus();
     element.dataset.startupLayoutAt ??= String(Date.now());
     revealReadyMine(field);
     // Cached references can start fresh signed metadata reads while the remote layout is loading.
@@ -1097,33 +1247,54 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (!cachedField) mountEngine(loaded); else cachedField.update({ document: loaded.document, revision: loaded.projectedRevision });
     await engine!.ready; if (!current()) return;
     if (loaded.revision === 0 && loaded.document.contexts.length === 0 && loaded.localDurable && loaded.state !== 'conflict') {
-      const initial = createPersonalFieldDocument();
+      const initial = createPersonalFieldDocument({includeBuiltins:false});
       // Only this account's accepted pinned refs are eligible for the one-time migration.
       const refs = [...new Set(options.pinnedApps ?? [])].slice(0, 100).filter(id => /^[A-Za-z0-9_-]{3,160}$/u.test(id)).map(id => ({ kind: 'app' as const, id }));
-      if (refs.length) { const resolved = await directory.resolve(refs); if (!current()) return; merge(resolved.items); for (const item of resolved.items) initial.shortcuts.push({ shortcutId: crypto.randomUUID(), entity: item.entity, contextId: 'personal', slot: nextFieldSlot(initial, 'personal', item.entity.kind) }); }
+      if (refs.length) { const resolved = await directory.resolve(refs); if (!current()) return; merge(resolved.items); for (const item of resolved.items)if(item.entity.kind==='app')initial.shortcuts.push({ shortcutId: crypto.randomUUID(), entity: {kind:'app',id:item.entity.id}, contextId: 'personal', slot: nextFieldSlot(initial, 'personal', item.entity.kind) }); }
       const receipt = await persistence.commit(initial, { expectedRevision: 0, requestId: crypto.randomUUID() }); if (!current()) return;
       engine!.update({ document: receipt.document, revision: receipt.revision, entities: allMetadata() });
     }
     if (mode === 'mine') revealReadyMine(engine!);
-    const mineTask = loadInitialMine();
+    const mineTask = Promise.all([loadInitialMine(),refreshLiveApps().catch(error=>{if(current())options.onMessage(errorText(error),true);})]);
     if (mode === 'search') await Promise.all([mineTask, searchDirectory()]); else await mineTask;
     if (!current()) return;
     if (current()) { element.dataset.ready = 'ready'; loading.hidden = true; }
   })().catch(error => { if (current()) { element.dataset.ready = 'error'; loading.hidden = true; } report(error); });
   updateChrome();
+  function showSearch():void {
+    const active=document.activeElement;
+    if(active instanceof HTMLElement&&!search.contains(active))searchOpener=active;
+    element.dataset.search='open';searchInput.focus();renderMineSearchResults();renderOwnApps();options.onSearchVisibilityChange?.();
+  }
   return {
     element, ready,
+    async openCommunity(communityId,pane='voice'){
+      const ticket=++communityOpenSequence;await ready;if(!current()||ticket!==communityOpenSequence)return null;
+      const ref={kind:'community' as const,id:communityId},resolved=await directory.resolve([ref]);if(!current()||ticket!==communityOpenSequence)return null;
+      merge(resolved.items);const item=resolved.items.find(value=>fieldEntityKey(value.entity)===fieldEntityKey(ref));
+      if(!item||!readCommunity(communityId))throw Object.assign(new Error('community_unavailable'),{code:'community_unavailable'});
+      engine?.update({entities:allMetadata()});const shortcut=engine?.snapshot().shortcuts.find(value=>value.entity.kind==='community'&&value.entity.id===communityId);
+      const focused=mode==='mine'&&shortcut?engine?.focusObject(shortcut.shortcutId):null;
+      if(focused&&'showChat'in focused){closePreview(false,false);const room=focused as CommunityFieldObjectView;if(pane==='chat')room.showChat();else room.showVoice();}
+      else{openPreview(item,shortcut?.shortcutId);if(pane==='chat')previewCommunity?.showChat();else previewCommunity?.showVoice();}
+      return readCommunity(communityId);
+    },
+    closeCommunity(){communityOpenSequence++;if(previewCommunity)closePreview();if(focusedCommunityId)engine?.closeObject();},
+    watchEntities(){return [...new Map([...(engine?.snapshot().shortcuts.map(shortcut=>shortcut.entity)||[]),...liveApps.map(item=>item.entity),...(previewCommunity&&selected?.item.entity.kind==='community'?[selected.item.entity]:[])].map(ref=>[fieldEntityKey(ref),ref])).values()];},
     setMode(next, query, nextFilter) { if (!current()) return; closeList(false); if (query !== undefined) queries[next] = query; if (nextFilter) filtersByMode[next] = nextFilter; if (mode !== next) changeMode(next); else { filter = filtersByMode[mode]; updateChrome(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); } },
     attachHeaderSearch(next) { header = next; placeSearch(); },
-    focusSearch() {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && !search.contains(active)) searchOpener = active;
-      element.dataset.search = 'open'; searchInput.focus();
-      renderMineSearchResults(); renderOwnApps();
-      options.onSearchVisibilityChange?.();
-    },
+    focusSearch:showSearch,
     closeSearch: () => closeSearch.click(),
     openView: openViewTools, openList, arrange() { engine?.setArrange(!summary?.arranging); },
+    setInboxSummary(value){if(!current())return;inboxSummary={messages:Number.isSafeInteger(value.messages)?Math.max(0,value.messages):0,requests:Number.isSafeInteger(value.requests)?Math.max(0,value.requests):0,invitations:Number.isSafeInteger(value.invitations)?Math.max(0,value.invitations!):0,incomplete:value.incomplete===true};updateIdentity();},
+    openHiddenObjects(){let handle:ReturnType<typeof mountCanvasHiddenObjects>|undefined;const instance=dialog('Скрытые объекты',()=>handle?.dispose());handle=mountCanvasHiddenObjects(instance,{api:options.api,accountId:options.accountId,isCurrent:current,onChanged:()=>loadMine()});},
+    async openObjectSettings(objectId){
+      await ready;if(!current())return;
+      const shortcut=engine?.snapshot().shortcuts.find(item=>item.entity.kind==='object'&&item.entity.id===objectId),item=currentEntity({kind:'object',id:objectId});
+      if(!shortcut||!item)throw Object.assign(new Error('canvas_access_denied'),{code:'canvas_access_denied'});
+      const settings=inspect(item,shortcut.shortcutId);if(!settings)return;
+      await new Promise<void>(resolve=>settings.element.addEventListener('close',()=>resolve(),{once:true}));
+    },
     async addEntity(ref) {
       await ready; if (!current()) return;
       // A caller supplies an identity, never display metadata or authority.
@@ -1132,11 +1303,45 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       if (!item) { options.onMessage(result.errors.length ? 'Не удалось проверить доступ. Повторите добавление.' : 'Сота недоступна для добавления.', true); return; }
       merge([item]); engine?.update({ entities: allMetadata() }); addToContext(item);
     },
+    async addObject(objectId,size={width:320,height:240}){
+      await ready;if(!current()||!engine)throw Object.assign(new Error('field_account_changed'),{code:'field_account_changed'});
+      const field=engine,ref:FieldEntityRef={kind:'object',id:objectId};
+      const result=await directory.resolve([ref]);if(!current()||engine!==field)throw Object.assign(new Error('field_account_changed'),{code:'field_account_changed'});
+      const item=result.items.find(value=>fieldEntityKey(value.entity)===fieldEntityKey(ref));if(!item)throw Object.assign(new Error('canvas_object_unavailable'),{code:'canvas_object_unavailable'});
+      merge([item]);mineKnownRefs.add(fieldEntityKey(ref));queries.mine='';filtersByMode.mine='all';if(mode!=='mine')changeMode('mine');filter='all';searchInput.value='';updateChrome();updateMineFilter();options.onRoute('mine','','all');field.update({entities:allMetadata()});
+      let doc=field.snapshot(),existing=doc.shortcuts.find(value=>fieldEntityKey(value.entity)===fieldEntityKey(ref));
+      if(!existing){
+        if(!doc.contexts.length){const context=await field.addContext('Личное',{x:0,y:0});if(context?.status==='conflict')throw Object.assign(new Error('field_revision_conflict'),{code:'field_revision_conflict'});doc=field.snapshot();}
+        const context=doc.contexts.find(value=>value.contextId===summary?.focusContextId)??doc.contexts[0];if(!context)throw Object.assign(new Error('field_context_missing'),{code:'field_context_missing'});
+        const width=Math.max(96,Math.min(1600,size.width)),height=Math.max(96,Math.min(1600,size.height)),camera=field.getCamera();
+        const nodes=layoutUnifiedField(doc,allMetadata()).nodes;
+        let point={x:camera.x-context.x,y:camera.y-context.y};
+        for(let index=0;index<49;index++){
+          const ring=Math.ceil((Math.sqrt(index+1)-1)/2),side=Math.max(1,2*ring),offset=index-(2*ring-1)**2;
+          const dx=ring===0?0:offset<side?-ring+offset:offset<side*2?ring:offset<side*3?ring-(offset-side*2):-ring;
+          const dy=ring===0?0:offset<side?-ring:offset<side*2?-ring+(offset-side):offset<side*3?ring:ring-(offset-side*3);
+          const candidate={x:Math.max(-999000,Math.min(999000,camera.x-context.x+dx*(width+28))),y:Math.max(-999000,Math.min(999000,camera.y-context.y+dy*(height+28)))};
+          point=candidate;const x=context.x+point.x,y=context.y+point.y;
+          if(nodes.every(node=>x+width/2+16<=node.bounds.left||x-width/2-16>=node.bounds.right||y+height/2+16<=node.bounds.top||y-height/2-16>=node.bounds.bottom))break;
+        }
+        const receipt=await field.addFreeShortcut(ref,context.contextId,{kind:'free',...point,width,height});
+        if(!current()||engine!==field)throw Object.assign(new Error('field_account_changed'),{code:'field_account_changed'});
+        if(receipt?.status==='conflict')throw Object.assign(new Error('field_revision_conflict'),{code:'field_revision_conflict'});
+        doc=field.snapshot();existing=doc.shortcuts.find(value=>fieldEntityKey(value.entity)===fieldEntityKey(ref));
+      }
+      if(!existing)throw Object.assign(new Error('canvas_placement_unconfirmed'),{code:'canvas_placement_unconfirmed'});
+      field.update({entities:allMetadata(),selectedShortcutId:existing.shortcutId});
+      refreshAppCoverage();
+      if(!current()||engine!==field)throw Object.assign(new Error('field_account_changed'),{code:'field_account_changed'});
+      field.revealShortcut(existing.shortcutId);
+      const saved=persistence.getState();return{shortcutId:existing.shortcutId,status:saved.state==='saved'?'saved':'pending',localDurable:saved.localDurable};
+    },
     focusContext(contextId) { if (current()) engine?.focusContext(contextId); }, openAdd,
     async refresh(refreshOptions) {
       await ready; if (!current()) return;
-      const mineTask = loadMine();
+      const mineTask = Promise.all([loadMine(),refreshLiveApps()]);
       if (mode === 'search') await Promise.all([mineTask, searchDirectory(false, refreshOptions?.preserveView === true)]); else await mineTask;
+      if(current())updateIdentity();
     },
     async refreshOwnApps() {
       await ready; if (!current()) return;
@@ -1164,9 +1369,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         }
       }
     },
-    hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
-    async flush() { await engine?.flush(); await persistence.flush(); },
+    async renewHostSessions(reason){if(current())await canvasContent.renewHostSessions(reason);},
+    hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges() || canvasContent.hasUnsavedChanges(),
+    hasUnconfirmedWork:()=>canvasContent.hasUnconfirmedWork(),readRuntimeEpoch:()=>canvasContent.readRuntimeEpoch(),
+    async flush() { await engine?.flush(); await canvasContent.flush();await persistence.flush(); },
+    async preparePublication(){await engine?.flush();await canvasContent.flush();await persistence.flush();const saved=persistence.getState();if(!current()||!saved||saved.state!=='saved'||saved.pendingCount||!saved.localDurable||persistence.hasUnsavedChanges()||engine?.hasUnsavedChanges()||canvasContent.hasUnsavedChanges())throw Object.assign(new Error('canvas_publication_not_ready'),{code:'canvas_publication_not_ready'});},
     reconnect() { run(persistence.retry().then(applyPersistence)); if (mode === 'search') run(searchDirectory()); else run(loadMine()); },
-    dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; queuedMine?.(false); queuedMine = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); engine?.destroy(); engine = null; unobservePersistence(); if (!options.persistence) persistence.dispose(); directory.dispose(); listDialog = null; search.remove(); listButton.remove(); element.remove(); },
+    dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; queuedMine?.(false); queuedMine = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); fieldGlass?.dispose();fieldGlass=null;engine?.destroy(); engine = null;canvasContent.dispose(); unobservePersistence(); if (!options.persistence) persistence.dispose(); directory.dispose(); listDialog = null; search.remove(); listButton.remove(); element.remove(); },
   };
 }

@@ -1,0 +1,19 @@
+html,body{height:100%;margin:0}
+body{box-sizing:border-box;padding:2px;background:transparent}
+.glass-ui.counter{width:100%;block-size:auto;min-block-size:100%;--glass-ui-accent:#5145b8;--counter-caption:24px;--counter-gap:4px;--counter-line:1.45}
+.counter-content{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:var(--counter-gap);text-align:center}
+.counter h1{flex:none;margin:0;font-size:var(--counter-caption);line-height:var(--counter-line);font-weight:550;color:var(--glass-ui-muted)}
+.counter .glass-ui__widget-glance{margin:0}
+.counter output{display:block;font-size:clamp(8px,min(54vh,calc(100cqi / (max(1,var(--counter-digits,1)) * .7))),116px);font-weight:650;line-height:var(--counter-line);letter-spacing:-.055em;font-variant-numeric:tabular-nums;color:var(--glass-ui-ink)}
+/* Glance fits the remaining metric region; working mode keeps native body scrolling. */
+.glass-ui.counter[data-glass-widget-mode=glance]{block-size:100%;min-block-size:0;container-type:size;--counter-caption:clamp(12px,15cqb,24px)}
+.counter[data-glass-widget-mode=glance] .counter-content{align-items:stretch}
+.counter[data-glass-widget-mode=glance] .glass-ui__widget-glance{flex:1 1 0;min-block-size:0;container-type:size;place-items:center}
+.counter[data-glass-widget-mode=glance] output{font-size:clamp(8px,min(calc((100cqb - 2px) / var(--counter-line)),calc(100cqi / (max(1,var(--counter-digits,1)) * .7))),116px)}
+.counter [role=status]{flex:none;min-width:0;margin:0;font-size:14px;line-height:1.25;color:var(--glass-ui-muted);overflow-wrap:anywhere}
+.counter[data-glass-widget-mode=glance] [role=status][data-state=ready]{display:none}
+.counter[data-glass-widget-mode=glance] [role=status][data-state=error]{font-size:clamp(12px,min(24px,10cqi,calc((100cqb - var(--counter-caption) * var(--counter-line) - var(--counter-gap)) / var(--counter-line))),24px);line-height:var(--counter-line);color:var(--glass-ui-ink)}
+.counter[data-glass-widget-mode=glance] [role=status][data-state=error]+.glass-ui__widget-glance{display:none}
+.counter button{width:48px;font:inherit;font-size:30px;line-height:1}
+.counter[aria-busy=true] output{opacity:.65}
+@media(prefers-reduced-motion:no-preference){.counter output{transition:opacity .18s}}

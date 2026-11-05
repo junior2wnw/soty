@@ -14,6 +14,8 @@ import { GLM_MODEL } from '../../personal-agent/provider/validation.mjs';
 // gestures are synthetic; selection itself uses the actual existing query HTTP.
 // No model request leaves this local fixture.
 test('one Root: two workspace apps/two children, current selection, Native revision COMMIT and original receipt', { timeout: 120000 }, async t => {
+  const nativeWallNow = Date.now.bind(Date); let fixtureNow = nativeWallNow();
+  t.mock.method(Date, 'now', () => fixtureNow = Math.max(fixtureNow, nativeWallNow()));
   let entries, realm, phase = 'context', serial = 0, onModel = null, invocationId, providerFailure, lastToolEvidence, receiptMode;
   const credentials = new Map(), requests = [], receipts = new Map(), refs = new Set(), keyRef = {}, tenant = 'synthetic_workspace';
   const nativeInput = { operation: 'items.create', title: 'Current child item' };

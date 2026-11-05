@@ -7,8 +7,10 @@ import * as contract from '../../modules/field/contract.mjs';
 import * as camera from './unified-field-camera.mjs';
 import * as layout from './unified-field-layout.mjs';
 import { createFieldHistory } from './unified-field-state.mjs';
+import * as liveProjection from './unified-field-live.mjs';
+import {validateFieldPresentation} from './unified-field-presentation.mjs';
 
-const source = readFileSync(new URL('./unified-field.ts', import.meta.url), 'utf8');
+const source = readFileSync(process.env.SOTY_REVIEW_FIELD_SOURCE||new URL('./unified-field.ts', import.meta.url), 'utf8');
 const parsed = ts.createSourceFile('unified-field.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const printer = ts.createPrinter();
 const print = node => printer.printNode(ts.EmitHint.Unspecified, node, parsed);
@@ -42,13 +44,13 @@ const closureSource = [
   'function createStateHarness(options) {',
   print(declaration('accountId')),
   ...variables.map(print),
-  ...['summary', 'emit', 'announce', 'remember', 'setCamera', 'fitOverview', 'focusContext', 'rebuild', 'cancel', 'finishGesture', 'resetPointers']
+  ...['summary', 'emit', 'announce', 'remember', 'setCamera', 'fitOverview', 'focusContext', 'rebuild', 'matchesMineFilter','cancel', 'finishGesture', 'resetPointers']
     .map(name => print(namedFunction(statements, name))),
   print(declaration('lastWidth')),
   `const onResize = ${print(resize.arguments[0])};`,
   `const api = { ${print(update)} };`,
   'rebuild();',
-  'return { ...api, state: summary, fitOverview, focusContext,',
+  'return { ...api, state: summary, fitOverview, focusContext,setCamera,getLayout:()=>layout,',
   'resize(width, height) { viewport.clientWidth = width; viewport.clientHeight = height; onResize(); },',
   'get initialized() { return { ...initialized }; } };',
   '}',
@@ -60,7 +62,7 @@ const compiled = ts.transpileModule(closureSource, {
 
 function harness(options, width = 1280, height = 800) {
   const viewport = { clientWidth: width, clientHeight: height, hasPointerCapture: () => false };
-  const context = vm.createContext({ exports: {}, ...contract, ...camera, ...layout, createFieldHistory,
+  const context = vm.createContext({ exports: {}, ...contract, ...camera, ...layout,...liveProjection,createFieldHistory,validateFieldPresentation,validateFieldDocument:contract.validateAnyFieldDocument,validateFieldEntity:contract.validateAnyFieldEntity,
     structuredClone, performance, clearTimeout,
     viewport, plane: { contains: () => false }, document: { activeElement: null }, HTMLElement: class {},
     live: {}, render() {}, schedule() {}, flushPointerSample() {},
@@ -163,4 +165,44 @@ test('a removed space falls back safely and cannot leave a phantom selection', (
   assert.equal(viewState.mineContext, '');
   assert.equal(viewState.mineFit, 'overview');
   assert.equal(engine.state().document.contexts.length, 1);
+});
+
+test('live availability updates actual layout but never the durable snapshot, personal geometry, camera or selection',()=>{
+  const viewState={mine:{x:812,y:-90,scale:.63},mineContext:'personal',mineFit:'context',mineSelection:'hive-placement'};
+  const engine=harness(options(viewState,'mine')),before=engine.state(),oldNode=engine.getLayout().nodes.find(n=>n.shortcutId==='hive-placement');
+  const live={contexts:[{contextId:'live',title:'Доступно сейчас',x:2200,y:0}],shortcuts:[{shortcutId:'live-other',contextId:'live',entity:{kind:'app',id:'other'},slot:[0,0]}]};
+  engine.update({liveScene:live,entities:[...entities,{entity:{kind:'app',id:'other'},title:'Новая аппка'}]});
+  assert.equal(engine.getLayout().nodes.some(n=>n.shortcutId==='live-other'),true);
+  assert.deepEqual(engine.state().document,before.document);assert.deepEqual(engine.state().camera,before.camera);
+  assert.equal(engine.state().selectedShortcutId,before.selectedShortcutId);
+  assert.deepEqual(engine.getLayout().nodes.find(n=>n.shortcutId==='hive-placement'),oldNode);
+  engine.update({liveScene:{contexts:[],shortcuts:[]}});assert.equal(engine.getLayout().nodes.some(n=>n.shortcutId==='live-other'),false);
+  assert.deepEqual(engine.state().document,before.document);assert.deepEqual(engine.state().camera,before.camera);
+});
+
+test('metadata changes do not refit a previously chosen context or overview camera',()=>{
+  for(const mineFit of ['context','overview']){
+    const viewState={mine:{x:812,y:-90,scale:.63},mineContext:mineFit==='context'?'personal':'',mineFit};
+    const engine=harness(options(viewState,'mine')),before=engine.state().camera;
+    const remote=documentFixture();remote.contexts[1].x=9000;
+    engine.update({document:remote,revision:2,acceptRemote:true});
+    assert.deepEqual(engine.state().camera,before,'a directory/layout patch is not a camera command');
+  }
+});
+
+test('an explicit compact query finds a different space while later passive metadata preserves its view',()=>{
+  for(const dimNonMatches of [false,true]){
+    const viewState={mine:{x:900,y:0,scale:.7},mineContext:'personal',mineFit:'context'};
+    const engine=harness({...options(viewState,'mine'),dimNonMatches},393,650);
+    engine.update({filter:'Заметки'});assert.equal(engine.state().focusContextId,'studio');
+    const focused=engine.state().camera;
+    engine.update({entities:entities.map(item=>({...item,description:'Passive metadata update'})),filter:'Заметки'});
+    assert.deepEqual(engine.state().camera,focused);assert.equal(engine.state().focusContextId,'studio');
+  }
+});
+
+test('live identity collisions fail closed without changing the previous visible scene',()=>{
+  const engine=harness(options({mine:{x:0,y:0,scale:1}},'mine')),before=engine.getLayout();
+  assert.throws(()=>engine.update({liveScene:{contexts:[{contextId:'personal',title:'Collision',x:0,y:0}],shortcuts:[]}}),/field_live_identity_collision/);
+  assert.deepEqual(engine.getLayout(),before);
 });

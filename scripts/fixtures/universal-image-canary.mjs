@@ -5,6 +5,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import {storageReaders} from '../../deploy/connector/storage-guard.mjs';
 
 export const CANARY_BASE = '/home/ai2/codex-soty-universal-20261007-9f8dcd71';
 export const CANARY_REVISION = '4a9a7d7f88a93402ac955169527896b1e665bb53';
@@ -88,7 +89,8 @@ export function checkedImage(image, { id, legacy, revision = CANARY_REVISION }) 
   require(image?.Id === id && imageId(id) && image.Config?.Labels?.['org.opencontainers.image.revision'] === revision
     && image.Config.Labels['io.soty.universal.legacy'] === String(legacy), 'canary_image_pin_mismatch');
   let declaration;try{declaration=JSON.parse(image.Config.Labels['io.soty.storage.readers']);}catch{throw Object.assign(new Error('canary_reader_metadata_invalid'),{code:'canary_reader_metadata_invalid'});}
-  require(declaration?.version===5&&declaration.readers&&Array.isArray(declaration.readers.humanIdentity),'canary_reader_metadata_invalid');const readers=declaration.readers;
+  require(declaration?.version===8,'canary_reader_metadata_invalid');
+  let readers;try{readers=storageReaders(image);}catch{throw Object.assign(new Error('canary_reader_metadata_invalid'),{code:'canary_reader_metadata_invalid'});}
   require(readers.humanIdentity?.includes(1) && readers.humanIdentity?.includes(2), 'canary_human_reader2_required');
   require(readers.apps?.includes(7), 'canary_apps_reader7_required');
   return id;

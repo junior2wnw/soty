@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createFieldDocument, validateFieldDocument } from '../../field/contract.mjs';
+import { createFieldDocument, validateAnyFieldDocument, FIELD_SCHEMA_V2 } from '../../field/contract.mjs';
 import { assert, exact, identifier, integer, WorldError } from './validation.mjs';
 
 export const FIELD_OPERATIONS = Object.freeze(['world.field.get', 'world.field.put']);
@@ -33,7 +33,7 @@ const fieldDefinitions = Object.freeze({
 });
 const normalizedSql = sql => sql.replace(/\s+/gu, '').replace(/;$/u, '').toLowerCase();
 
-/** Additive extension epoch. World schema3 readers preserve these extra objects. */
+/** Epoch1 is preserved; explicit v2 writes require readers supporting epoch2. */
 export function migrateField(db) {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -44,7 +44,7 @@ export function migrateField(db) {
       for (const sql of Object.values(fieldDefinitions)) db.exec(sql);
       db.prepare("INSERT INTO world_meta VALUES ('field_schema_version','1')").run();
     } else {
-      assert(version === '1', 'field_schema_unsupported');
+      assert(['1','2'].includes(version), 'field_schema_unsupported');
       assert(objects.length === Object.keys(fieldDefinitions).length, 'field_storage_schema_mismatch');
       for (const [name, sql] of Object.entries(fieldDefinitions)) {
         const actual = objects.find(item => item.name === name);
@@ -52,7 +52,10 @@ export function migrateField(db) {
       }
     }
     // Existing records are validated without rewriting or resetting anything.
-    for (const row of db.prepare('SELECT * FROM world_field_documents').iterate()) readDocument(row);
+    for (const row of db.prepare('SELECT * FROM world_field_documents').iterate()) {
+      const current=readDocument(row);
+      assert(version==='2'||current.document.schema!==FIELD_SCHEMA_V2,'field_storage_metadata_mismatch');
+    }
     assert(!db.prepare(`SELECT 1 FROM world_field_receipts r LEFT JOIN world_field_documents d ON d.account_id=r.account_id
       WHERE d.account_id IS NULL OR r.accepted_revision>d.revision LIMIT 1`).get(), 'field_storage_corrupt');
     db.exec('COMMIT');
@@ -65,13 +68,18 @@ function readDocument(row) {
     return { revision: 0, document, contentHash: documentHash(document), updatedAt: 0 };
   }
   let document;
-  try { document = validateFieldDocument(JSON.parse(row.document_json)); }
+  try { document = validateAnyFieldDocument(JSON.parse(row.document_json)); }
   catch { throw new WorldError('field_storage_corrupt'); }
   assert(Number.isSafeInteger(row.revision) && row.revision >= 1 && Number.isSafeInteger(row.updated_at) && row.updated_at >= 0
     && JSON.stringify(document) === row.document_json && documentHash(document) === row.content_hash, 'field_storage_corrupt');
   return { revision: row.revision, document, contentHash: row.content_hash, updatedAt: row.updated_at };
 }
 function receipt(row) { return { revision: row.accepted_revision, contentHash: row.content_hash, committedAt: row.committed_at }; }
+
+/** Host-only canonical read; callers must apply publication and entity ACLs before returning anything. */
+export function readCanvasFieldSource(m, ownerId) {
+  return readDocument(m.get('SELECT * FROM world_field_documents WHERE account_id=?', identifier(ownerId)));
+}
 
 /** Called within World's already authenticated transaction; references confer no authority. */
 export function fieldOperation(m, op, args, actor, now) {
@@ -82,7 +90,7 @@ export function fieldOperation(m, op, args, actor, now) {
   if (op === 'world.field.get') return current();
   assert(Object.hasOwn(args, 'expectedRevision') && Object.hasOwn(args, 'requestId') && Object.hasOwn(args, 'document'), 'invalid_arguments');
   const expectedRevision = integer(args.expectedRevision), requestKey = hash(identifier(args.requestId));
-  const document = validateFieldDocument(args.document), contentHash = documentHash(document);
+  const document = validateAnyFieldDocument(args.document), contentHash = documentHash(document);
   assert(args.contentHash === undefined || args.contentHash === contentHash, 'field_content_hash_mismatch');
   const intentHash = hash(JSON.stringify(['soty.field.put.v1', expectedRevision, contentHash]));
   const previous = m.get('SELECT * FROM world_field_receipts WHERE account_id=? AND request_key=?', actor.accountId, requestKey);
@@ -92,7 +100,13 @@ export function fieldOperation(m, op, args, actor, now) {
   }
   const before = current();
   assert(before.revision === expectedRevision, 'field_revision_conflict');
+  assert(before.document.schema!==FIELD_SCHEMA_V2||document.schema===FIELD_SCHEMA_V2,'field_document_downgrade_forbidden');
   assert(before.revision < Number.MAX_SAFE_INTEGER, 'field_revision_exhausted');
+  if(document.schema===FIELD_SCHEMA_V2){
+    const epoch=m.get("SELECT value FROM world_meta WHERE key='field_schema_version'")?.value;
+    assert(['1','2'].includes(epoch),'field_schema_unsupported');
+    if(epoch==='1')assert(Number(m.run("UPDATE world_meta SET value='2' WHERE key='field_schema_version' AND value='1'").changes)===1,'field_storage_metadata_mismatch');
+  }
   const revision = before.revision + 1, serialized = JSON.stringify(document);
   if (before.revision === 0) m.run('INSERT INTO world_field_documents VALUES (?,?,?,?,?)', actor.accountId, revision, serialized, contentHash, now);
   else m.run('UPDATE world_field_documents SET revision=?,document_json=?,content_hash=?,updated_at=? WHERE account_id=?', revision, serialized, contentHash, now, actor.accountId);

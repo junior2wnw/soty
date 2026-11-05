@@ -1,9 +1,10 @@
-import type {FieldContext,FieldShortcut,FieldDocument,FieldEntityRef} from '../../modules/field/contract.mjs';
+import type {FieldContext,AnyFieldShortcut as FieldShortcut,AnyFieldDocument as FieldDocument,AnyFieldEntityRef as FieldEntityRef,FieldPlacement} from '../../modules/field/contract.mjs';
 import type {FieldBounds,FieldPoint} from './unified-field-camera.mjs';
-export interface FieldDirectoryEntity {entity:FieldEntityRef;title:string;description?:string;symbol?:string;color?:string;avatarUrl?:string;avatarRevision?:number|null;coverKey?:string;source?:'public'|'member'|'owner'|'builtin';updatedAt?:number;unreadCount?:number;online?:boolean;personAction?:'chat'|'profile'}
+import type {FieldPresentation} from './unified-field-presentation.mjs';
+export interface FieldDirectoryEntity {entity:FieldEntityRef;title:string;description?:string;symbol?:string;color?:string;avatarUrl?:string;avatarRevision?:number|null;coverKey?:string;source?:'public'|'member'|'owner'|'builtin';updatedAt?:number;unreadCount?:number;online?:boolean;personAction?:'chat'|'profile';presentation?:FieldPresentation;hidden?:boolean}
 export interface FieldScene {contexts:FieldContext[];shortcuts:FieldShortcut[]}
 export interface UnifiedFieldMetrics {radius:number;gap:number;placementRadius:number;placementGap:number;person:number;personLabel:number;personLabelWidth:number;deviceWidth:number;deviceHeight:number;contextTitleWidth:number;contextTitleHeight:number;contourPadding:number;contextGap:number}
-export interface FieldNode {shortcutId:string;entity:FieldDirectoryEntity;contextId:string;slot:[number,number];kind:FieldEntityRef['kind'];cx:number;cy:number;x:number;y:number;width:number;height:number;footprint:FieldPoint[];bounds:FieldBounds}
+export interface FieldNode {shortcutId:string;entity:FieldDirectoryEntity;contextId:string;slot:[number,number];placement:FieldPlacement;presentation:FieldPresentation;kind:FieldEntityRef['kind'];cx:number;cy:number;x:number;y:number;width:number;height:number;footprint:FieldPoint[];bounds:FieldBounds}
 export interface FieldSceneContext extends FieldContext {children:string[];bounds:FieldBounds;body:FieldBounds;header:{x:number;y:number;width:number;height:number};contour:string}
 export interface UnifiedFieldLayout {nodes:FieldNode[];contexts:FieldSceneContext[];bounds:FieldBounds|null}
 export const UNIFIED_FIELD_METRICS:Readonly<UnifiedFieldMetrics>;
@@ -18,6 +19,6 @@ export function layoutUnifiedField(scene:FieldScene,entities:readonly FieldDirec
 export interface FieldSpatialIndex {query(bounds:FieldBounds,overscan?:number):FieldNode[]}
 export function createFieldSpatialIndex(nodes:FieldNode[],bucketSize?:number):FieldSpatialIndex;
 export function nearestFieldNode(nodes:FieldNode[],currentId:string,direction:readonly[number,number]):FieldNode|null;
-export interface FieldMoveTarget {contextId:string;slot:[number,number];swap?:boolean}
+export type FieldMoveTarget = {contextId:string;slot:[number,number];swap?:boolean;placement?:never}|{contextId:string;placement:Extract<FieldPlacement,{kind:'free'}>;slot?:never;swap?:never};
 export interface FieldMovePreview {valid:boolean;reason:'missing'|'collision'|'swap'|'free';target:FieldMoveTarget;occupied?:string|undefined;layout?:UnifiedFieldLayout}
 export function fieldMovePreview(document:FieldDocument,entities:readonly FieldDirectoryEntity[],shortcutId:string,target:FieldMoveTarget,metrics?:UnifiedFieldMetrics):FieldMovePreview;

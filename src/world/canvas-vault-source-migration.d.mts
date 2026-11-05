@@ -1,0 +1,4 @@
+import type {CanvasVaultLocalStore,CanvasVaultKey} from './canvas-vault-local.mjs';
+import type {CanvasVaultLocalKeyScope} from './canvas-vault-scope.mjs';
+export interface CanvasVaultLocalRecovery{schema:'soty.vault.local-recovery-state.v1';objectId:string;knownSource:'ready'|'pending';complete:boolean;needsPriorLocalPassword:boolean;unresolvedLegacy:Array<{slot:string;kind:'create'|'object';reason:'prior-local-password'|'source-unknown'|'object-unavailable'}>}
+export function migrateCanvasVaultLegacy(options:{store:CanvasVaultLocalStore;accountId:string;projectId:string;objectId:string;scope:CanvasVaultLocalKeyScope;session:CanvasVaultKey;priorPassword:string;request(operation:string,args:Record<string,unknown>):Promise<any>;authorize():Promise<any>;isCurrent():boolean;crypto?:Crypto}):Promise<Pick<CanvasVaultLocalRecovery,'knownSource'|'unresolvedLegacy'>>;

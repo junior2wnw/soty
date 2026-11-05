@@ -1,0 +1,34 @@
+import {DatabaseSync} from 'node:sqlite';
+import {check} from '../canvas-objects/contract.mjs';
+const ddl=`CREATE TABLE vault_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE vault_sources(vault_id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),kind TEXT NOT NULL CHECK(kind IN('native','placement')),object_id TEXT UNIQUE,binding_json TEXT CHECK(binding_json IS NULL OR json_valid(binding_json)),container_json TEXT NOT NULL CHECK(json_valid(container_json)),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,CHECK((kind='native' AND object_id IS NULL AND binding_json IS NULL) OR(kind='placement' AND object_id IS NOT NULL AND binding_json IS NOT NULL)));
+CREATE INDEX vault_owner ON vault_sources(owner_id,created_at,vault_id);
+CREATE TABLE vault_commands(account_id TEXT NOT NULL,request_id TEXT NOT NULL,operation TEXT NOT NULL,intent TEXT NOT NULL,receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),PRIMARY KEY(account_id,request_id));
+CREATE TRIGGER vault_source_immutable BEFORE UPDATE ON vault_sources WHEN NEW.vault_id<>OLD.vault_id OR NEW.owner_id<>OLD.owner_id OR NEW.kind<>OLD.kind OR NEW.object_id IS NOT OLD.object_id OR NEW.binding_json IS NOT OLD.binding_json OR NEW.created_at<>OLD.created_at OR NEW.revision<>OLD.revision+1 BEGIN SELECT RAISE(ABORT,'vault_source_immutable'); END;
+CREATE TRIGGER vault_receipt_update BEFORE UPDATE ON vault_commands BEGIN SELECT RAISE(ABORT,'vault_receipt_immutable'); END;
+CREATE TRIGGER vault_receipt_delete BEFORE DELETE ON vault_commands BEGIN SELECT RAISE(ABORT,'vault_receipt_immutable'); END;
+CREATE TRIGGER vault_receipt_replace BEFORE INSERT ON vault_commands WHEN EXISTS(SELECT 1 FROM vault_commands WHERE account_id=NEW.account_id AND request_id=NEW.request_id) BEGIN SELECT RAISE(ABORT,'vault_receipt_immutable'); END;`;
+export const VAULT_FORMAT2_DDL=`CREATE TABLE vault_uploads(vault_id TEXT PRIMARY KEY REFERENCES vault_sources(vault_id),owner_id TEXT NOT NULL,version INTEGER NOT NULL,size INTEGER NOT NULL CHECK(size>0 AND size<=26214400),chunk_bytes INTEGER NOT NULL CHECK(chunk_bytes=524288),chunks INTEGER NOT NULL CHECK(chunks>=1 AND chunks<=50),state TEXT NOT NULL CHECK(state IN('pending','complete','cancelled')),manifest_digest TEXT,created_at INTEGER NOT NULL);
+CREATE TABLE vault_cipher_chunks(vault_id TEXT NOT NULL REFERENCES vault_sources(vault_id),version INTEGER NOT NULL,part_index INTEGER NOT NULL CHECK(part_index>=0 AND part_index<50),size INTEGER NOT NULL CHECK(size>0 AND size<=524288),cipher_json TEXT NOT NULL CHECK(json_valid(cipher_json)),cipher_digest TEXT NOT NULL,PRIMARY KEY(vault_id,version,part_index));
+CREATE TABLE vault_conversions(claim_id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,provider_id TEXT NOT NULL,source_ref TEXT NOT NULL,source_store_id TEXT NOT NULL,source_revision INTEGER NOT NULL,vault_id TEXT NOT NULL UNIQUE REFERENCES vault_sources(vault_id),state TEXT NOT NULL CHECK(state IN('capturing','prepared','erased','active','aborted')),cipher_digest TEXT NOT NULL,source_receipt_json TEXT CHECK(source_receipt_json IS NULL OR json_valid(source_receipt_json)),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+CREATE UNIQUE INDEX vault_conversion_binding ON vault_conversions(owner_id,provider_id,source_ref) WHERE state<>'aborted';
+CREATE TABLE vault_conversion_commands(account_id TEXT NOT NULL,request_id TEXT NOT NULL,claim_id TEXT NOT NULL REFERENCES vault_conversions(claim_id),intent_hash TEXT NOT NULL,PRIMARY KEY(account_id,request_id));
+CREATE TRIGGER vault_cipher_chunk_update BEFORE UPDATE ON vault_cipher_chunks BEGIN SELECT RAISE(ABORT,'vault_cipher_chunk_immutable'); END;
+CREATE TRIGGER vault_cipher_chunk_replace BEFORE INSERT ON vault_cipher_chunks WHEN EXISTS(SELECT 1 FROM vault_cipher_chunks WHERE vault_id=NEW.vault_id AND version=NEW.version AND part_index=NEW.part_index) BEGIN SELECT RAISE(ABORT,'vault_cipher_chunk_immutable'); END;
+CREATE TRIGGER vault_conversion_identity BEFORE UPDATE ON vault_conversions WHEN NEW.claim_id<>OLD.claim_id OR NEW.owner_id<>OLD.owner_id OR NEW.provider_id<>OLD.provider_id OR NEW.source_ref<>OLD.source_ref OR NEW.source_store_id<>OLD.source_store_id OR NEW.source_revision<>OLD.source_revision OR NEW.vault_id<>OLD.vault_id OR NEW.created_at<>OLD.created_at OR(NEW.cipher_digest<>OLD.cipher_digest AND NOT(OLD.state='capturing' AND NEW.state='prepared' AND OLD.cipher_digest='' AND length(NEW.cipher_digest)=64))OR NOT((OLD.state='capturing' AND NEW.state IN('prepared','aborted'))OR(OLD.state='prepared' AND NEW.state IN('erased','active','aborted'))OR(OLD.state='erased' AND NEW.state='active')) BEGIN SELECT RAISE(ABORT,'vault_conversion_immutable'); END;
+CREATE TRIGGER vault_conversion_no_delete BEFORE DELETE ON vault_conversions BEGIN SELECT RAISE(ABORT,'vault_conversion_required'); END;
+CREATE TRIGGER vault_conversion_command_update BEFORE UPDATE ON vault_conversion_commands BEGIN SELECT RAISE(ABORT,'vault_conversion_command_immutable'); END;
+CREATE TRIGGER vault_conversion_command_delete BEFORE DELETE ON vault_conversion_commands BEGIN SELECT RAISE(ABORT,'vault_conversion_command_immutable'); END;`;
+const layout=db=>db.prepare("SELECT name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all().map(row=>[row.name,row.sql.replace(/\s+/gu,' ').trim()]);
+const expected=version=>{const db=new DatabaseSync(':memory:');try{db.exec(ddl);if(version===2)db.exec(VAULT_FORMAT2_DDL);return layout(db);}finally{db.close();}};
+const expectedLayouts=new Map([[1,expected(1)],[2,expected(2)]]);
+export function initializeVaultStorage(db,projectId,{allowFormat2Migration=false}={}){
+ check(typeof allowFormat2Migration==='boolean','vault_configuration_invalid',500);
+ db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON; PRAGMA busy_timeout=100');
+ let version=Number(db.prepare('PRAGMA user_version').get().user_version);const empty=!db.prepare("SELECT 1 FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' LIMIT 1").get();
+ if(version===0&&empty){db.exec('BEGIN IMMEDIATE');try{db.exec(ddl);db.prepare('INSERT INTO vault_meta VALUES(?,?)').run('project_id',projectId);db.exec('PRAGMA user_version=1; COMMIT');version=1;}catch(error){if(db.isTransaction)db.exec('ROLLBACK');throw error;}}
+ else check([1,2].includes(version),'vault_schema_unsupported',503);
+ check(JSON.stringify(layout(db))===JSON.stringify(expectedLayouts.get(version))&&db.prepare("SELECT value FROM vault_meta WHERE key='project_id'").get()?.value===projectId&&db.prepare('PRAGMA quick_check(1)').get().quick_check==='ok','vault_storage_invalid',503);
+ if(version===1&&allowFormat2Migration){db.exec('BEGIN IMMEDIATE');try{db.exec(VAULT_FORMAT2_DDL);db.exec('PRAGMA user_version=2; COMMIT');version=2;}catch(error){if(db.isTransaction)db.exec('ROLLBACK');throw error;}}
+ return Object.freeze({schemaVersion:version});
+}

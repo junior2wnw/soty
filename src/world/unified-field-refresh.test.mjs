@@ -35,7 +35,9 @@ function fixture({ mode = 'search', loadMine = async () => {}, beforeRead = asyn
     assert.equal(op, 'apps.directory.search'); return { apps: [app], nextCursor: null };
   } } });
   const environment = { exports, mode, filter: 'app', queries: { search: 'Хочу' }, searchGeneration: 0,
-    searchResponseScope: 'Хочу:app', searchItems: [], searchCursor: null, selected: null, summary: null, contextKey: '',
+    refreshLiveApps:async()=>{},
+    updateIdentity(){},
+    searchResponseScope: 'Хочу:app', searchItems: [], searchCursor: null, selected: null, previewCommunity: null, summary: null, contextKey: '',
     ready: Promise.resolve(), current: () => state.current, loadMine,
     searchSlot: async () => true, releaseSearchSlot() {}, directory, BUILTINS: [], matches: () => false,
     el: () => ({ hidden: false }),

@@ -20,7 +20,7 @@ export function createWidgetRuntimeControls(options) {
     const target=main&&isFocusTarget(control)?control:owner?.resolve()??control;
     return isFocusTarget(target)?target:isFocusTarget(control)?control:null;
   };
-  const valid=record=>live()&&active===record&&matchesCapture(record.capture);
+  const valid=record=>live()&&active===record&&matchesCapture(record.capture)&&(!record.intentCurrent||record.intentCurrent());
   function close(restoreFocus=false){
     const record=active;if(!record)return;
     if(!live())control.disabled=true;
@@ -40,16 +40,54 @@ export function createWidgetRuntimeControls(options) {
     if(notice)control.setAttribute('aria-describedby',message.id);else control.removeAttribute('aria-describedby');
     const record=active;if(!record)return;
     if(!valid(record)){close(false);return;}
-    record.text.textContent=message.textContent||'Если окно пустое, обновите его или откройте в новой вкладке.';
+    if(record.confirmation)return;
+    record.text.hidden=!notice;
+    record.text.textContent=notice?message.textContent:'';
     record.retry.hidden=retry.hidden;record.retry.disabled=!canAct()||retry.disabled;
     record.currentEntry.hidden=currentEntry.hidden;record.currentEntry.disabled=!canAct()||currentEntry.disabled;
     record.external.hidden=external.hidden;record.external.disabled=!canAct()||external.disabled;
     record.dismiss.hidden=dismiss.hidden;record.dismiss.disabled=dismiss.disabled;
   }
+  function confirmUnknown(witness,intentCurrent){
+    if(!live()||active||!matchesCapture(witness)||!intentCurrent())return Promise.resolve(false);
+    return new Promise(resolve=>{
+      const record={capture:witness,confirmation:true,intentCurrent,dialog:null,timer:null};active=record;
+      let answered=false;
+      const stillCurrent=()=>live()&&matchesCapture(witness)&&intentCurrent();
+      const finish=choice=>{
+        if(answered)return;
+        const accepted=choice&&valid(record);answered=true;
+        record.dialog.close({restoreFocus:!accepted});
+        resolve(accepted&&stillCurrent());
+      };
+      try{record.dialog=createDialog(main?'Закрыть приложение?':'Закрыть окно?',()=>{
+        if(record.timer!==null)view.clearInterval(record.timer);
+        if(active===record)active=null;
+        onModalChange(record.dialog.element,false);
+        if(!answered){answered=true;resolve(false);}
+      },{isCurrent:stillCurrent,resolve:returnTarget});}
+      catch{if(active===record)active=null;resolve(false);return;}
+      record.dialog.body.append(el('p','sa-widget-runtime-copy',main?'Несохранённое в приложении может пропасть. Оставить его открытым?':'Несохранённое внутри окна может пропасть. Оставить окно открытым?'));
+      const actions=el('div','sa-widget-runtime-dialog-actions');
+      const keep=button('Оставить открытым','back','sw-button-primary',()=>finish(false));
+      const discard=button('Закрыть без сохранения','close','sw-button-quiet',()=>finish(true));
+      actions.append(keep,discard);record.dialog.body.append(actions);
+      record.timer=view.setInterval(()=>{if(active===record&&!valid(record))close(false);},250);
+      onModalChange(record.dialog.element,true);if(valid(record))keep.focus();
+    });
+  }
+  async function requestClose(witness){
+    if(!live()||!matchesCapture(witness)||typeof owner?.requestClose!=='function')return;
+    const onRequest=owner.requestClose,stillCurrent=()=>live()&&matchesCapture(witness);
+    close(false);
+    if(!stillCurrent())return;
+    try{await onRequest({isCurrent:stillCurrent,confirmUnknown:intentCurrent=>confirmUnknown(witness,intentCurrent)});}
+    catch{if(stillCurrent())control.title='Не удалось закрыть окно. Попробуйте ещё раз.';}
+  }
   function open(){
     if(!live()||!control.isConnected)return;
     if(active){if(valid(active))active.dialog.element.focus();else close(false);return;}
-    const record={capture:capture(),allowReturn:false,dialog:null,timer:null,text:null,retry:null,currentEntry:null,external:null,dismiss:null};
+    const record={capture:capture(),allowReturn:false,dialog:null,timer:null,text:null,retry:null,currentEntry:null,external:null,dismiss:null,closeAction:null};
     active=record;
     // createDialog calls onClose before evaluating its return target. The
     // capture remains the witness after active is cleared by that cleanup.
@@ -85,7 +123,15 @@ export function createWidgetRuntimeControls(options) {
     record.currentEntry=button('Открыть актуальный вход','arrow','sw-button-primary',()=>act(currentEntry,true));
     record.external=button('Открыть в новой вкладке','external','sw-button-quiet',()=>act(external,true));
     record.dismiss=button('Скрыть сообщение','close','sw-button-quiet',()=>act(dismiss,true));
-    actions.append(record.retry,record.currentEntry,record.external,record.dismiss);dialog.body.append(record.text,actions);
+    actions.append(record.retry,record.currentEntry,record.external,record.dismiss);
+    if(typeof owner?.requestClose==='function'){
+      record.closeAction=button(main?'Закрыть приложение':'Закрыть окно','close','sw-button-quiet',()=>{
+        if(!valid(record))return;
+        void requestClose(record.capture);
+      });
+      actions.append(record.closeAction);
+    }
+    dialog.body.append(record.text,actions);
     record.timer=view.setInterval(()=>{if(active===record&&!valid(record))close(false);},250);
     sync();if(active===record)onModalChange(dialog.element,true);
   }
@@ -99,6 +145,7 @@ export function createWidgetRuntimeControls(options) {
   observer.observe(runtime,{childList:true,attributes:true,attributeFilter:['aria-busy']});
   sync();
   return Object.freeze({
+    requestClose:()=>live()?requestClose(capture()):Promise.resolve(),
     attach(target,returnOwner){
       if(main||!live()||header||!target?.isConnected||target.ownerDocument!==screen.ownerDocument
         ||typeof returnOwner?.isCurrent!=='function'||typeof returnOwner?.resolve!=='function'||!returnOwner.isCurrent())return false;

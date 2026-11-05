@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { createWorldService } from '../../modules/world/server/index.mjs';
 import { createHash } from 'node:crypto';
 import { createFieldPersistence } from './field-persistence.ts';
+import { convertFieldDocumentToV2 } from '../../modules/field/contract.mjs';
 
 const account = { accountId: 'persist_owner', deviceId: 'persist_browser', label: 'Раскладка' };
 const other = { accountId: 'persist_other', deviceId: 'persist_other_browser', label: 'Другой' };
@@ -42,6 +43,15 @@ function fixture(t) {
   return { create, api, world, setOffline: value => { offline = value; }, loseAck: () => { loseNextAck = true; }, writes: () => writes,
     gate: value => { gate = value; }, current: () => world.execute({ actor: account, op: 'world.field.get', args: { expectedAccountId: account.accountId } }) };
 }
+
+test('free v2 geometry survives lost ACK and local model recreation without a downgrade or duplicate write',async t=>{
+  const f=fixture(t),store=memoryStore(),first=f.create(store.port());await first.load();
+  const document=convertFieldDocumentToV2(doc(30));document.shortcuts.push({shortcutId:'free_note',entity:{kind:'builtin',id:'notes/free_note'},contextId:'context',placement:{kind:'free',x:27.5,y:-42,width:384,height:256}});
+  f.loseAck();const pending=await first.commit(document,{expectedRevision:0,requestId:'v2_lost_ack'});
+  assert.equal(pending.status,'volatile');assert.equal(pending.localDurable,true);assert.equal(f.writes(),1);first.dispose();
+  const second=f.create(store.port()),state=await second.load();assert.equal(state.state,'saved');assert.equal(state.revision,1);assert.equal(state.pendingCount,0);
+  assert.deepEqual(state.document,document);assert.deepEqual(f.current().document,document);assert.equal(f.writes(),2,'the second dispatch replays the same durable receipt, not a new revision');
+});
 
 test('three offline arrangements are locally durable and reload drains exact ordered CAS intents', async t => {
   const f = fixture(t), store = memoryStore(), first = f.create(store.port()); await first.load(); f.setOffline(true);

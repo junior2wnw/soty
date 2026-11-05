@@ -7,6 +7,14 @@ import { tmpdir } from 'node:os';
 import { loadUniversalConfiguration, validateHumanIdentityRenewalLimits } from '../universal-configuration.js';
 const issuer = 'https://soty.fixture.invalid/human-identity';
 const fails = error => error.code === 'universal_configuration_invalid' && error.message === 'universal_configuration_invalid' && !error.cause;
+
+test('frame continuity migration is explicit for existing storage and rejects misspelled permissions', () => {
+  const name = 'SOTY_APPS_FRAME_CONTINUITY_MIGRATION';
+  for (const value of [undefined, '', '0']) assert.deepEqual(loadUniversalConfiguration({ [name]: value }), {});
+  assert.deepEqual(loadUniversalConfiguration({ [name]: '1' }), { allowFrameContinuityMigration: true });
+  for (const value of ['true', 'yes', '2', true, 1, null]) assert.throws(() => loadUniversalConfiguration({ [name]: value }), fails);
+  assert.deepEqual(loadUniversalConfiguration({ [name]: '1', SOTY_UNIVERSAL_APPS_ENABLED: 'false' }), {});
+});
 function fixture(t) {
   const folder = mkdtempSync(join(tmpdir(), 'soty-universal-config-'));
   t.after(() => { assert.equal(dirname(resolve(folder)), resolve(tmpdir())); assert.match(basename(folder), /^soty-universal-config-/); rmSync(folder, { recursive: true, force: true }); });

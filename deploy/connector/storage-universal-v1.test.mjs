@@ -107,9 +107,9 @@ test('v3 images cannot start new stores even when a container copies v4 labels; 
       assertStorageCompatible(image(), { ...legacy, rooms, apps, notes, capabilities });
     }
   }
-  assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'rooms', 'world']);
-  assert.equal(JSON.parse(currentStorageReaders).version, 7);
-  assert.deepEqual(storageReaders(image()).connect, [3, 4]);
+  assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appAgentDirectory', 'appRegistration', 'apps', 'appsEndpoint', 'appsFrameContinuity', 'canvasObjects', 'canvasPages', 'canvasVault', 'canvasWidgets', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'invitations', 'materials', 'monitoring', 'notes', 'referrals', 'rooms', 'universalPublication', 'world']);
+  assert.equal(JSON.parse(currentStorageReaders).version, 10);
+  assert.deepEqual(storageReaders(image()).connect, [3, 4, 5]);
 });
 
 test('v4 format/readers and start receipts are closed, typed and never silently downgraded to v3', () => {
@@ -223,7 +223,7 @@ function hostGuard(root, label = currentStorageReaders) {
 test('real-format guard records current v7 evidence and rejects absent reader declarations before candidate START', async t => {
   const root = await directory(t); await seed(root, 'appRegistration'); await seed(root, 'feedback');
   const current = hostGuard(root), receipt = await guardStorageStart(current.context, current.runtime);
-  assert.equal(receipt.schema, 'soty.storage-start.v7'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.appRegistration, 1); assert.equal(receipt.feedback, 1);
+  assert.equal(receipt.schema, 'soty.storage-start.v10'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.appRegistration, 1); assert.equal(receipt.feedback, 1);
   requireStorageStartReceipt(receipt, current.runtime.Id);
   const old = hostGuard(root, reader3); await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/u);
   const noFeedback = JSON.parse(currentStorageReaders); delete noFeedback.readers.feedback;

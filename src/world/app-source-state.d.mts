@@ -20,7 +20,7 @@ export interface AppSourceStateView {
 }
 export interface AppSourceState {
   read(): AppSourceStateView;
-  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'launchPolicy' | 'exposureConfirmed' | 'nativeEntryMode' | 'nativeDomainId' | 'nativeConfirmed' | 'sourceDomainId'>>): void;
+  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'endpoint' | 'endpointAddress' | 'launchPolicy' | 'exposureConfirmed' | 'nativeEntryMode' | 'nativeDomainId' | 'nativeConfirmed' | 'sourceDomainId'>>): void;
   selectHistory(target: AppSourceTarget | (AppSourceTarget & { createdAt: number })): void;
   observe(next: AppInspection, options?: { publicationDirty?: boolean; completed?: SettingsPending }): void;
   reset(): void;

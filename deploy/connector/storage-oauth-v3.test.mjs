@@ -202,12 +202,13 @@ test('literal3 has all 64 pinned SQL objects and matches the committed baseline3
 
 test('all twelve independent store pairs are read-only; current image reads3 while image2 remains incompatible', async t => {
   const declared = JSON.parse(currentStorageReaders);
-  assert.equal(declared.version, 7);
-  assert.deepEqual(declared.readers.connect, [3, 4]);
+  assert.equal(declared.version, 10);
+  assert.deepEqual(declared.readers.connect, [3, 4, 5]);
   assert.deepEqual(declared.readers.apps, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   assert.deepEqual(declared.readers.world, [6, 7]);
   const independent = JSON.parse(reader3).readers;
-  for (const key of ['rooms', 'notes', 'capabilities']) assert.deepEqual(declared.readers[key], independent[key]);
+  for (const key of ['rooms', 'capabilities']) assert.deepEqual(declared.readers[key], independent[key]);
+  assert.deepEqual(declared.readers.notes, [1, 2, 3]);
   for (const notes of ['empty', 1, 2]) for (const capabilities of ['empty', 1, 2, 3]) {
     const root = await directory(t);
     if (notes !== 'empty') (await database(root, notes, 'notes')).close();
@@ -218,7 +219,7 @@ test('all twelve independent store pairs are read-only; current image reads3 whi
     if (capabilities === 3) assert.throws(() => assertStorageCompatible(image(reader2), result), /storage_reader_incompatible/u);
     else assertStorageCompatible(image(reader2), result);
     assert.deepEqual(await Promise.all(['notes', 'capabilities'].map(store => persistent(root, store))), before);
-    assert.deepEqual(Object.keys(result).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'ok', 'rooms', 'schema', 'world']);
+    assert.deepEqual(Object.keys(result).sort(), ['appAgentDirectory', 'appRegistration', 'apps', 'appsEndpoint', 'appsFrameContinuity', 'canvasObjects', 'canvasPages', 'canvasVault', 'canvasWidgets', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'invitations', 'materials', 'monitoring', 'notes', 'ok', 'referrals', 'rooms', 'schema', 'universalPublication', 'world']);
   }
 });
 

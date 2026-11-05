@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readAppHostingConfig } from '../app-hosting-config.mjs';
 import { validateNamedAppZone } from '../app-domain-policy.mjs';
-import { createHttpApp } from '../http-app.js';
+import { createHttpApp, waitForRejectedHttpStart } from '../http-app.js';
 import { createServer, request } from 'node:http';
 test('operator settings are nonsecret and strict; absence keeps the current production settings', () => {
   const dir = mkdtempSync(join(tmpdir(), 'soty-hosting-config-')), file = join(dir, 'hosting.json');
@@ -50,7 +50,12 @@ test('HTTP subdomain profile keeps the shell root while unknown app hosts cannot
         }
       } finally { await new Promise(resolve => server.close(resolve)); await app.locals.closeServices(); }
     }
-    assert.throws(() => createHttpApp(dir, { ...config, appHosting: {}, namedAppZone: '' }), /apps_zone_separate_site_required|apps_named_zone_shell_overlap/);
+    let rejectedStart;
+    assert.throws(() => {
+      try { createHttpApp(dir, { ...config, appHosting: {}, namedAppZone: '' }); }
+      catch (error) { rejectedStart = error; throw error; }
+    }, /apps_zone_separate_site_required|apps_named_zone_shell_overlap/);
+    await waitForRejectedHttpStart(rejectedStart);
   } finally { rmSync(dir, { recursive: true }); }
 });
 test('the explicit subdomain profile admits only the exact HTTPS shell root and keeps sibling sites separate', () => {

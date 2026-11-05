@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { check, keys, id, revision, document, hash, queryTerms, encodeCursor, decodeCursor, STATES, DEFAULT_LIMITS, NotesError } from './validation.mjs';
 import { migrateNotes, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS } from './schema.mjs';
 import { createNativeNotesPort } from './native.mjs';
+import { createNotesCanvasPort } from './canvas-port.mjs';
+import {createNotesVaultPort} from './vault-port.mjs';
 export { NotesError, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS, DEFAULT_LIMITS };
 export const NOTES_OPERATIONS = Object.freeze(['notes.list', 'notes.get', 'notes.put', 'notes.purge']);
 const moduleRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -20,41 +22,47 @@ const fullNote = row => ({ ...metadata(row), body: row.body, items: JSON.parse(r
 
 /** Trusted Connect extension; actor MUST come from an authenticated, non-revoked signed installation. */
 export function createNotesService({ databasePath, projectId, clock = Date.now, limits: overrides = {}, allowNativeMigration = false,
-  verifyNativeContext } = {}) {
+  verifyNativeContext, onChange,verifyCanvasObjectAuthority,allowVaultMigration=false,verifyVaultCipherReceipt,readVaultSource } = {}) {
   check(typeof databasePath === 'string' && databasePath.length > 0, 'notes_database_path_required');
   check(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'notes_project_id_required');
   check(typeof clock === 'function');
-  check(typeof allowNativeMigration === 'boolean');
+  check(onChange===undefined||typeof onChange==='function','notes_host_invalid');
+  check([verifyVaultCipherReceipt,readVaultSource].every(value=>value===undefined||typeof value==='function'),'notes_host_invalid');
+  check(verifyCanvasObjectAuthority===undefined||typeof verifyCanvasObjectAuthority==='function'&&verifyCanvasObjectAuthority.constructor?.name!=='AsyncFunction','notes_host_invalid');
+  check(typeof allowNativeMigration === 'boolean'&&typeof allowVaultMigration==='boolean');
   check(verifyNativeContext === undefined || (typeof verifyNativeContext === 'function'
     && verifyNativeContext.constructor?.name !== 'AsyncFunction'), 'native_context_invalid');
   keys(overrides, Object.keys(DEFAULT_LIMITS)); const limits = { ...DEFAULT_LIMITS, ...overrides };
   for (const [key, value] of Object.entries(limits)) check(Number.isSafeInteger(value) && value > 0 && value <= DEFAULT_LIMITS[key]);
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
   if (file !== ':memory:') { check(outsideModule(file), 'notes_database_must_be_outside_module'); mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); }
-  const db = new DatabaseSync(file); let closed = false, inTransaction = false, storage;
-  try { storage = migrateNotes(db, projectId, { allowNativeMigration }); } catch (error) { db.close(); throw error; }
+  const db = new DatabaseSync(file); let closed = false, inTransaction = false, storage, transactionChanges=null;
+  try { storage = migrateNotes(db, projectId, { allowNativeMigration,allowVaultMigration }); } catch (error) { db.close(); throw error; }
   const statements = new Map(); const prepare = sql => { if (!statements.has(sql)) statements.set(sql, db.prepare(sql)); return statements.get(sql); };
   const get = (sql, ...params) => prepare(sql).get(...params);
   const all = (sql, ...params) => prepare(sql).all(...params);
   const run = (sql, ...params) => prepare(sql).run(...params);
-  const ensureOpen = () => check(!closed, 'notes_service_closed');
+  const ensureOpen = () => {check(!closed, 'notes_service_closed');check(Number(get('PRAGMA user_version').user_version)===storage.schemaVersion,'notes_store_format_changed');};
   function transaction(action, { write = true, busyMs } = {}) {
     ensureOpen(); check(!inTransaction && !db.isTransaction, 'notes_nested_transaction');
     inTransaction = true;
-    let result, failure, failed = false, timeout, began = false;
+    const changes=[];transactionChanges=changes;
+    let result, failure, failed = false, timeout, began = false, committed=false;
     try {
       if (busyMs !== undefined) { timeout = get('PRAGMA busy_timeout').timeout; db.exec(`PRAGMA busy_timeout=${busyMs}`); }
-      db.exec(write ? 'BEGIN IMMEDIATE' : 'BEGIN'); began = true;
+      db.exec(write ? 'BEGIN IMMEDIATE' : 'BEGIN'); began = true;ensureOpen();
       result = action(); check(!result || typeof result.then !== 'function', 'notes_async_transaction_forbidden');
       db.exec('COMMIT');
+      committed=true;
     } catch (error) {
       failed = true; failure = error;
       if (began && db.isTransaction) { try { db.exec('ROLLBACK'); } catch { /* Preserve the primary failure. */ } }
     } finally {
       try { if (timeout !== undefined) db.exec(`PRAGMA busy_timeout=${timeout}`); }
       catch (error) { if (!failed) { failed = true; failure = error; } }
-      inTransaction = false;
+      inTransaction = false;transactionChanges=null;
     }
+    if(committed&&onChange)for(const change of changes)try{onChange(Object.freeze(change));}catch{/* A listener cannot roll back a committed note. */}
     if (failed) throw failure;
     return result;
   }
@@ -83,15 +91,16 @@ export function createNotesService({ databasePath, projectId, clock = Date.now, 
       params.push(`scope:"${hash(accountId)}" AND {title body items}:(${terms.map(term => `"${term}"*`).join(' AND ')})`);
     } else if ((args.query || '').trim()) clauses.push('0');
     if (cursor) { clauses.push('(n.pinned<? OR (n.pinned=? AND n.updated_at<?) OR (n.pinned=? AND n.updated_at=? AND n.id>?))'); params.push(cursor.pin, cursor.pin, cursor.time, cursor.pin, cursor.time, cursor.id); }
-    const rows = all(`SELECT n.id,n.title,n.preview,n.color,n.pinned,n.state,n.revision,n.created_at,n.updated_at FROM ${from} WHERE ${clauses.join(' AND ')} ORDER BY n.pinned DESC,n.updated_at DESC,n.id ASC LIMIT ?`, ...params, limit + 1);
+    const rows = all(`SELECT n.account_id,n.id,n.title,n.preview,n.color,n.pinned,n.state,n.revision,n.created_at,n.updated_at FROM ${from} WHERE ${clauses.join(' AND ')} ORDER BY n.pinned DESC,n.updated_at DESC,n.id ASC LIMIT ?`, ...params, limit + 1);
     const more = rows.length > limit; const page = rows.slice(0, limit); const last = page.at(-1);
-    return { notes: page.map(metadata), nextCursor: more ? encodeCursor({ scope, pin: last.pinned, time: last.updated_at, id: last.id }) : null, usage: accountUsage(accountId) };
+    return { notes: page.map(row=>vault.seal(accountId,row.id)?{...metadata(row),title:'Защищённая записка',sealed:true,protection:{kind:'password'}}:metadata(row)), nextCursor: more ? encodeCursor({ scope, pin: last.pinned, time: last.updated_at, id: last.id }) : null, usage: accountUsage(accountId) };
   }
   function put(args, accountId, now) {
     keys(args, ['expectedAccountId', 'noteId', 'mutationId', 'expectedRevision', 'title', 'body', 'items', 'color', 'pinned', 'state']);
     const noteId = id(args.noteId); const mutationId = id(args.mutationId); const expected = revision(args.expectedRevision);
     const doc = document(args, limits); const digest = hash(JSON.stringify([expected, doc]));
     const previous = get('SELECT * FROM notes WHERE account_id=? AND id=?', accountId, noteId);
+    check(!vault.seal(accountId,noteId),'notes_note_sealed');
     check(previous?.state !== 'deleted', 'notes_note_deleted');
     const replay = receipt(accountId, noteId, mutationId, digest); if (replay) return replay;
     if (!previous) check(expected === 0, 'notes_note_not_found');
@@ -115,11 +124,12 @@ export function createNotesService({ databasePath, projectId, clock = Date.now, 
     run('INSERT INTO notes_fts(rowid,scope,title,body,items) VALUES(?,?,?,?,?)', rowid, hash(accountId), doc.title, doc.body, doc.items.map(item => item.text).join('\n'));
     const counts = Object.fromEntries(STATES.map(state => [state, Number(doc.state === state) - Number(previous?.state === state)]));
     run('UPDATE note_accounts SET bytes=bytes+?,identities=identities+?,active=active+?,archived=archived+?,trashed=trashed+? WHERE account_id=?', doc.bytes - (previous?.bytes || 0), previous ? 0 : 1, counts.active, counts.archived, counts.trashed, accountId);
-    const result = { noteId, revision: nextRevision, updatedAt }; record(accountId, noteId, mutationId, digest, result); return result;
+    const result = { noteId, revision: nextRevision, updatedAt }; record(accountId, noteId, mutationId, digest, result);
+    transactionChanges?.push({accountId,noteId,revision:nextRevision});return result;
   }
   function purge(args, accountId, now) {
     keys(args, ['expectedAccountId', 'noteId', 'mutationId', 'expectedRevision']);
-    const noteId = id(args.noteId); const mutationId = id(args.mutationId); const expected = revision(args.expectedRevision);
+    const noteId = id(args.noteId); const mutationId = id(args.mutationId); const expected = revision(args.expectedRevision);check(!vault.seal(accountId,noteId),'notes_note_sealed');
     const digest = hash(JSON.stringify(['purge', expected])); const replay = receipt(accountId, noteId, mutationId, digest); if (replay) return replay;
     const previous = get('SELECT * FROM notes WHERE account_id=? AND id=?', accountId, noteId);
     check(previous && previous.state !== 'deleted', 'notes_note_not_found');
@@ -128,13 +138,16 @@ export function createNotesService({ databasePath, projectId, clock = Date.now, 
     run("UPDATE notes SET title='',body='',items='[]',preview='',color='plain',pinned=0,state='deleted',bytes=0,revision=revision+1,updated_at=? WHERE rowid=?", updatedAt, previous.rowid);
     run('DELETE FROM notes_fts WHERE rowid=?', previous.rowid);
     run('UPDATE note_accounts SET bytes=bytes-?,trashed=trashed-1 WHERE account_id=?', previous.bytes, accountId);
-    const result = { noteId, revision: previous.revision + 1, updatedAt, deleted: true }; record(accountId, noteId, mutationId, digest, result); return result;
+    const result = { noteId, revision: previous.revision + 1, updatedAt, deleted: true }; record(accountId, noteId, mutationId, digest, result);
+    transactionChanges?.push({accountId,noteId,revision:result.revision});return result;
   }
   const operations = new Set(NOTES_OPERATIONS);
+  const vault=createNotesVaultPort({db,storage,get,run,transaction,ensureOpen,fullNote,metadata,verifyCipherReceipt:verifyVaultCipherReceipt,onChange,clock});
   const native = createNativeNotesPort({ db, projectId, clock, limits, verifyNativeContext, transaction, put, ensureOpen });
-  return {
+  const canvas=createNotesCanvasPort({get,transaction,ensureOpen,metadata,fullNote,verifyObjectAuthority:verifyCanvasObjectAuthority,seal:vault.seal,readVaultSource,sourceStoreId:storage.registryId});
+  return Object.defineProperty({
     projectId, schemaVersion: storage.schemaVersion, registryId: storage.registryId,
-    supportedSchemaVersions: SUPPORTED_SCHEMA_VERSIONS, operations, native,
+    supportedSchemaVersions: SUPPORTED_SCHEMA_VERSIONS, operations, native,canvas,vault,
     execute({ op, args = {}, actor } = {}) {
       check(!closed, 'notes_service_closed'); check(operations.has(op), 'unsupported_operation');
       check(actor && typeof actor.accountId === 'string' && typeof actor.deviceId === 'string', 'authentication_required');
@@ -149,11 +162,11 @@ export function createNotesService({ databasePath, projectId, clock = Date.now, 
         else {
           keys(args, ['expectedAccountId', 'noteId']); const noteId = id(args.noteId);
           const row = get("SELECT * FROM notes WHERE account_id=? AND id=? AND state!='deleted'", accountId, noteId);
-          check(row, 'notes_note_not_found'); result = { note: fullNote(row) };
+          check(row, 'notes_note_not_found');check(!vault.seal(accountId,noteId),'notes_note_sealed');result = { note: fullNote(row) };
         }
         return result;
       }, { write: op !== 'notes.get' && op !== 'notes.list' });
     },
     close() { if (!closed) { check(!inTransaction && !db.isTransaction, 'notes_nested_transaction'); closed = true; statements.clear(); db.close(); } },
-  };
+  },'challengeStorage',{value:'memory',enumerable:true,writable:false,configurable:false});
 }

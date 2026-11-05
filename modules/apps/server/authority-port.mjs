@@ -2,6 +2,7 @@ import { assertApps, appId, cleanGrants, textId } from './protocol.mjs';
 import { runtimeTargetDigest, supportedRuntimeProfile, selectedRuntimeProfile } from './schema.mjs';
 import { createEngagementTransaction, synchronous } from './engagement-transaction.mjs';
 import { hasAudienceSchema, readAppAudience } from './audience.mjs';
+import { targetFromRow } from './endpoint-targets.mjs';
 
 /** Host-only port: signed Connect owns the outer installation fence. World and
  * Apps remain locked through a synchronous downstream commit. A runtime tuple
@@ -31,9 +32,7 @@ export function createAppAuthorityPort({ db, assertActor, withAuthorityFence, re
       assertApps(entry, 'apps_access_denied', 403);
       const target = policy && db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(id, policy.active_target_revision);
       assertApps(policy && target && policy.owner_account_id === app.owner_account_id && target.owner_account_id === app.owner_account_id
-        && supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest({ appId: id, revision: target.revision,
-          ownerAccountId: app.owner_account_id, connectorKey: target.connector_key, port: target.port,
-          entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
+        && supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest(targetFromRow(db, target)), 'apps_registry_corrupt', 500);
       if(selectedRuntimeProfile(target.profile)) {
         assertApps(typeof requireScopedTarget==='function','app_scoped_admission_required',503);
         synchronous(requireScopedTarget({appId:id,revision:target.revision,ownerAccountId:target.owner_account_id,

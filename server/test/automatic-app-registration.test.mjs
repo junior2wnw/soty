@@ -83,6 +83,7 @@ async function fixture(t) {
   let sequence = 0;
   async function create(autoRegister = true, extra = {}) {
     const result = await owner.extension('apps.agent.create', { ...target, requestId: `auto-request-${++sequence}`, text: 'Создать список', cwd: '', ...extra, ...(autoRegister ? { autoRegister: true } : {}) });
+    assert.ok(result.job, result.admission?.reason ?? 'job_missing');
     const leased = await app.locals.connectorService.store.poll(auth, 0, undefined, { automaticOwnerGuard: true }); assert.equal(leased.jobs[0]?.id, result.job.id);
     return result.job.id;
   }
@@ -461,13 +462,20 @@ test('the registered app can launch while feedback is locked and poll finishes f
 
 test('existing server heartbeat retries pending feedback even after the connector goes offline', { timeout: 30000 }, async t => {
   const f = await fixture(t), id = await f.create(), feedback = new DatabaseSync(join(f.dataDir, 'feedback', 'feedback.sqlite'));
+  const registrations = f.watchRegistration();
   feedback.exec('BEGIN IMMEDIATE');
   try {
     await f.submit(id);
-    await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value.autoRegistration.feedback === 'waiting'; });
+    await until(() => registrations() > 0);
+    const held = await f.read(id);
+    assert.equal(held.autoRegistration?.state, 'ready'); assert.equal(held.autoRegistration.feedback, 'waiting');
   } finally { feedback.exec('ROLLBACK'); feedback.close(); }
   f.stopRuntime();
-  const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.feedback === 'ready' && value; }, 14000);
+  const previousRegistrations = registrations();
+  // Observe the host heartbeat without exhausting the signed browser read budget.
+  await until(() => f.service().locals.connectorService.store.state.jobs.find(job => job.id === id)?.autoRegistrationFinal === 'ready', 14000);
+  assert.ok(registrations() > previousRegistrations);
+  const ready = await f.read(id); assert.equal(ready.autoRegistration.feedback, 'ready');
   assert.equal(ready.autoRegistration.appId, `app-${id.slice(4)}`);
 });
 
@@ -879,6 +887,8 @@ test('a failed archive receipt write rolls back cancellation and keeps the old-r
 });
 
 test('revoking the current actor before archive commit preserves the pending result', { timeout: 30000 }, async t => {
+  const nativeWallNow = Date.now.bind(Date); let fixtureNow = nativeWallNow();
+  t.mock.method(Date, 'now', () => fixtureNow = Math.max(fixtureNow, nativeWallNow()));
   const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
   await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
   await second.finishEnrollment(enrollment.requestId, preview.account.accountId); const secondDevice = (await second.getLocalState()).deviceId;

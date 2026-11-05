@@ -5,6 +5,7 @@ import { appPublicationArgs, appSettingsObservationRemaining, appSettingsUpdateA
 import { createAppSourceState, appSourceExposureScope } from './app-source-state.mjs';
 import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
 import { createAudienceControl } from './audience-control';
+import { createAppReferralSettings } from './app-referral-settings';
 import { deviceKey } from '../platform/device-key.mjs';
 import { exportAppDeployment, preferredInspectionEntry } from './app-deployment.mjs';
 import type { AppInspection, AppSettingsOptions, SettingsPending } from './app-settings.types';
@@ -15,7 +16,7 @@ type Confirmation = { kind: 'retire'; domainId: string; origin: string; revision
 type Completion = { kind: 'name' | 'grants' | 'publication'; args: Record<string, unknown> };
 type SourceState = ReturnType<typeof createAppSourceState>;
 type SourceIntent = ReturnType<SourceState['promoteIntent']>;
-interface SourceDevice { hostDeviceId: string; connectorId: string; name: string; online: boolean; claimed: boolean; bindingVersion: 1 | 2 | null }
+interface SourceDevice { hostDeviceId: string; connectorId: string; name: string; online: boolean; claimed: boolean; bindingVersion: 1 | 2 | null;sourceEndpoints?:{state:string;addresses?:{family:'IPv4';address:string}[]} }
 const pendingLabel = (pending: SettingsPending): string => pending.op === 'apps.domains.claim' ? 'Закрепление имени' : pending.op === 'apps.domains.retire' ? 'Закрытие адреса' : pending.op === 'apps.source.promote' ? 'Переключение источника' : 'Изменение доступа';
 function settingsError(reason: unknown): string {
   const code = reason && typeof reason === 'object' && 'code' in reason ? String(reason.code) : '';
@@ -102,8 +103,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   let observationTimer: ReturnType<typeof setTimeout> | null = null;
   let selectedSection = options.compactAccess ? 'access' : 'about';
   const current = (): boolean => !disposed && options.isCurrent();
+  const referrals = createAppReferralSettings({ accountId, appId, api, isCurrent: current });
   const sourceCurrent = (): boolean => current() && document.visibilityState === 'visible' && selectedSection === 'hosting' && sourceDetails.open;
-  const hasUnsavedDraft = (): boolean => { const state = model?.read(); return Boolean(sourceModel?.read().dirty || (state && (state.nameDirty || state.grantsDirty || state.publicationDirty || state.draft.slug.trim()))); };
+  const hasUnsavedDraft = (): boolean => { const state = model?.read(); return Boolean(referrals.hasUnsaved() || sourceModel?.read().dirty || (state && (state.nameDirty || state.grantsDirty || state.publicationDirty || state.draft.slug.trim()))); };
   const call = <T>(op: string, args: Record<string, unknown>): Promise<T> => api.request<T>(op, { ...args, expectedAccountId: accountId });
   const getPending = (): { pending: SettingsPending | null; storageError: string } => {
     try { return { pending: store.read().pending, storageError: store.canDispatch() ? '' : settingsError({ code: 'app_settings_lock_unavailable' }) }; }
@@ -476,6 +478,10 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     if (!sourceModel) return;
     const { snapshot } = sourceModel.read();
     if (sourceProfile.value === 'soty.relay-restricted.v1') sourceModel.patch({ profile: 'soty.relay-restricted.v1' });
+    else if(sourceProfile.value==='soty.relay-self-ip.v1'){
+      const selected=devices.find(value=>deviceKey(value)===sourceSelect.value),address=snapshot.source.endpoint?.address??selected?.sourceEndpoints?.addresses?.[0]?.address??'';
+      sourceModel.patch({profile:'soty.relay-self-ip.v1',endpointAddress:address});
+    }
     else {
       const integration = snapshot.source.integrations?.find(value => value.profile === sourceProfile.value);
       if (!integration) return;
@@ -494,7 +500,11 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const sourcePathInput = keyed(textInput('/', '/', 8192), 'source-path');
   sourcePathInput.required = true; sourcePathInput.pattern = '/.*'; sourcePathInput.autocomplete = 'off'; sourcePathInput.spellcheck = false; sourcePathInput.setAttribute('autocapitalize', 'off');
   const sourceFields = el('div', 'sw-app-settings-source-fields');
-  sourceFields.append(sourceField('Порт проекта', sourcePortInput), sourceField('Начальная страница', sourcePathInput));
+  const sourceAddressInput=keyed(textInput('','IP выбранного устройства',15),'source-ip');sourceAddressInput.inputMode='decimal';sourceAddressInput.autocomplete='off';sourceAddressInput.spellcheck=false;
+  sourceAddressInput.pattern='(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}';
+  const sourceAddressField=sourceField('IP на выбранном устройстве',sourceAddressInput);
+  sourceAddressInput.addEventListener('input',()=>{sourceModel?.patch({endpointAddress:sourceAddressInput.value});changedSource();});
+  sourceFields.append(sourceAddressField,sourceField('Порт проекта', sourcePortInput), sourceField('Начальная страница', sourcePathInput));
   const sourceAudience = keyed(el('select', 'sw-select'), 'source-audience');
   for (const [value, label] of [['restricted', 'Владелец и выбранные люди'], ['anyone', 'Все по включённым ссылкам']] as const) {
     const option = el('option', '', label); option.value = value; sourceAudience.append(option);
@@ -621,7 +631,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     });
     settingsTabs.set(id, tab); settingsNavigation.append(tab);
   }
-  identity.append(topActions, ...(options.aboutActions ?? []));
+  identity.append(topActions, ...(options.aboutActions ?? []), referrals.element);
   if (options.supportActions?.length) {
     const support = section('Поддержка приложения', 'Доступ к обращениям выдаётся отдельно от входа человека и публичности приложения.');
     support.append(...options.supportActions); identity.append(support);
@@ -635,13 +645,13 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     const ordinary = model.read(), { snapshot } = ordinary;
     sourceModel.observe(snapshot, { publicationDirty: ordinary.publicationDirty });
     const state = sourceModel.read(), { draft } = state, editable = snapshot.actions.canEdit;
-    const selectedProfile = draft.profile !== 'soty.relay-restricted.v1';
-    const profiles = new Set(['soty.relay-restricted.v1', ...(snapshot.source.integrations ?? []).map(value => value.profile), draft.profile]);
+    const selectedProfile = ['soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(draft.profile);
+    const profiles = new Set(['soty.relay-restricted.v1',...(snapshot.source.profile==='soty.relay-self-ip.v1'||devices.some(value=>value.sourceEndpoints?.state==='ready')?['soty.relay-self-ip.v1']:[]), ...(snapshot.source.integrations ?? []).map(value => value.profile), draft.profile]);
     for (const [value, node] of profileOptions) if (!profiles.has(value)) { node.remove(); profileOptions.delete(value); }
     for (const value of profiles) {
       let node = profileOptions.get(value);
       if (!node) { node = el('option'); node.value = value; profileOptions.set(value, node); sourceProfile.append(node); }
-      text(node, value === 'soty.relay-restricted.v1' ? 'Сайт' : 'Вход Сот и помощник');
+      text(node, value === 'soty.relay-restricted.v1' ? 'Сайт на localhost' : value==='soty.relay-self-ip.v1'?'Сайт по IP устройства':'Вход Сот и помощник');
     }
     if (sourceProfile.value !== draft.profile) sourceProfile.value = draft.profile;
     sourceProfile.disabled = !editable; sourceProfileField.hidden = profiles.size === 1; sourceProfileHint.hidden = !selectedProfile;
@@ -675,7 +685,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     text(sourceState, snapshot.app.state === 'revoked' ? 'Приложение закрыто в Сотах' : routeState || { offline: 'Компьютер не в сети', unknown: 'Нет свежей проверки', responding: 'Источник отвечает', unreachable: 'Источник сейчас недоступен' }[observationState]);
     text(sourceBinding, binding === 'bound' ? 'Компьютер подтвердил текущий маршрут.' : binding === 'legacy' ? 'На этом компьютере смена источника требует обновления Соты Коннектора.' : '');
     sourceBinding.hidden = !sourceBinding.textContent || snapshot.app.state === 'revoked';
-    text(sourceDevice, snapshot.source.deviceName); text(sourcePort, String(snapshot.source.port)); text(sourcePath, snapshot.source.entryPath);
+    text(sourceDevice, snapshot.source.deviceName); text(sourcePort, snapshot.source.endpoint?`${snapshot.source.endpoint.address}:${snapshot.source.port}`:String(snapshot.source.port)); text(sourcePath, snapshot.source.entryPath);
     const native = state.nativeEntry;
     entrySummary.hidden = !state.nativeReviewRequired;
     text(sourceEntrySummary, snapshot.source.launchEntry ? `В Сотах: ${snapshot.source.launchEntry.origin}${snapshot.source.entryPath}` : 'В Сотах: адрес пока не подтверждён.');
@@ -724,6 +734,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
         : !selectedDevice ? 'Обновите список или выберите другой компьютер.' : '');
     deviceHint.hidden = !deviceHint.textContent; text(deviceFailure, deviceError); deviceFailure.hidden = !deviceError;
     inputValue(sourcePortInput, draft.port); inputValue(sourcePathInput, draft.entryPath);
+    const selfIp=draft.profile==='soty.relay-self-ip.v1';sourceAddressField.hidden=!selfIp;sourceAddressInput.required=selfIp;sourceAddressInput.readOnly=!editable;inputValue(sourceAddressInput,draft.endpointAddress??draft.endpoint?.address??'');
     sourcePortInput.readOnly = !editable;
     sourcePathInput.readOnly = !editable || selectedProfile;
     if (sourceAudience.value !== draft.launchPolicy) sourceAudience.value = draft.launchPolicy; sourceAudience.disabled = !editable;
@@ -809,6 +820,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     copyField.hidden = !copyFallback; if (copyFallback) inputValue(copiedInput, copyFallback);
     loading.hidden = Boolean(model) || inspectionDenied; text(loading, busy || refreshing ? 'Загружаем настройки…' : 'Настройки пока недоступны. Обновите состояние кнопкой справа.');
     summaryCopy.hidden = !model || inspectionDenied; topActions.hidden = !model || inspectionDenied; content.hidden = !model || inspectionDenied;
+    referrals.setEditable(Boolean(model && !inspectionDenied && !staleInspection && !busy && !confirmation && model.read().snapshot.actions.canEdit));
     fresh.hidden = inspectionDenied; disable(fresh, busy || refreshing); fresh.setAttribute('aria-busy', String(refreshing));
     pendingBox.hidden = !pending;
     if (pending) { text(pendingTitle, `${pendingLabel(pending)}: результат требует проверки`); text(pendingDetail, pending.op === 'apps.source.promote' && pending.expectedSource
@@ -930,7 +942,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
       if (hasUnsavedDraft()) confirm({ kind: 'leave', ...(afterClose ? { afterClose } : {}) }, trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : summaryName));
       else options.onClose(afterClose);
     },
-    dispose() { disposed = true; inspectionGeneration++; refreshGeneration++; copyGeneration++; devicesGeneration++; sourceGeneration++; historyGeneration++;
+    dispose() { disposed = true; referrals.dispose(); inspectionGeneration++; refreshGeneration++; copyGeneration++; devicesGeneration++; sourceGeneration++; historyGeneration++;
       lastDisplayedPending = null; sourceReadbackNotice = null; sourceModel?.dispose(); if (sourceTimer) clearTimeout(sourceTimer); if (observationTimer) clearTimeout(observationTimer);
       host.removeEventListener('click', guardDisabled, true); window.removeEventListener('storage', storageChanged); document.removeEventListener('visibilitychange', visible); window.removeEventListener('beforeunload', beforeUnload); },
   };

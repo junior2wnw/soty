@@ -17,5 +17,13 @@ export function createWorkspaceDialog(className: string, label: string, onCancel
 export function showWorkspaceDialog(dialog: HTMLDialogElement, initialFocus?: string): void {
   document.body.append(dialog);
   dialog.showModal();
+  if (dialog.ownerDocument?.defaultView?.HTMLCanvasElement) {
+    let material: { dispose(): void } | null = null;
+    dialog.addEventListener('close', () => { material?.dispose(); material = null; }, { once: true });
+    // Keep the initial shell small; a late import cannot revive a closed portal.
+    void import('../world/shell-glass').then(({ mountDialogGlass }) => {
+      if (dialog.open && dialog.isConnected) material = mountDialogGlass(dialog);
+    });
+  }
   if (initialFocus) dialog.querySelector<HTMLElement>(initialFocus)?.focus();
 }

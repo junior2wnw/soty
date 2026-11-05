@@ -12,7 +12,7 @@ const view = (accountId = 'A', deviceId = 'D') => ({ schema: 'connect.local-view
   profiles: [], pendingEnrollment: null, pendingRecovery: null, recoveryPrepared: false, notificationError: null });
 
 async function bindingModule() {
-  const source = await readFile(new URL('./call-identity.ts', import.meta.url), 'utf8');
+  const source = await readFile(process.env.SOTY_CALL_IDENTITY_TEST_SOURCE ?? new URL('./call-identity.ts', import.meta.url), 'utf8');
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   const module = { exports: {} };
   vm.runInNewContext(compiled, { module, exports: module.exports, queueMicrotask });
@@ -56,6 +56,59 @@ test('actual binding initializes only public data, cross-realm fields work and n
   assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).ok, true);
   assert.equal(f.lifecycle.snapshot().scope.accountId, 'A'); assert.equal(f.lifecycle.snapshot().scope.deviceId, 'D');
   assert.equal(f.lifecycle.snapshot().microphone, 'off'); f.dispose();
+});
+
+test('committed SDK revision metadata is optional for older views and cannot change call ownership', async () => {
+  const f = await fixture({ initial: { ...view(), localRevision: 0 } }); await tick();
+  assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).ok, true);
+  const scope = f.lifecycle.snapshot().scope;
+  f.emit({ ...view(), localRevision: 9 });
+  assert.equal(f.lifecycle.snapshot().scope, scope);
+  f.emit(view()); // Older public-view producers omitted this metadata.
+  assert.equal(f.lifecycle.snapshot().scope, scope);
+  assert.equal(f.log.joins, 1); assert.equal(f.log.captures, 0); f.dispose();
+});
+
+test('malformed revision metadata clears active identity without executing accessors', async () => {
+  let getterReads = 0;
+  const getter = view(); Object.defineProperty(getter, 'localRevision', { get() { getterReads++; return 1; } });
+  const malformed = [undefined, null, '1', -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, {}, true]
+    .map(localRevision => ({ ...view(), localRevision }));
+  malformed.push(getter);
+  for (const state of malformed) {
+    const f = await fixture(); await tick();
+    assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).ok, true);
+    f.emit(state);
+    assert.equal(f.lifecycle.snapshot().state, 'ended');
+    assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).code, 'identity_required');
+    assert.equal(f.log.joins, 1); assert.equal(f.log.captures, 0); f.dispose();
+  }
+  assert.equal(getterReads, 0);
+});
+
+test('revision-bearing revoked/mismatched/error views and A-B-A keep identity fences', async () => {
+  const revised = (account = 'A', device = 'D', localRevision = 1) => ({ ...view(account, device), localRevision });
+  const read = deferred(), f = await fixture({ read: () => read.promise });
+  f.emit(revised());
+  assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).ok, true);
+  f.emit(revised('B', 'DB', 2)); f.emit(revised('A', 'D', 3));
+  read.resolve(revised('stale', 'stale-device', 99)); await tick();
+  assert.equal(f.lifecycle.snapshot().state, 'ended');
+  assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).ok, true);
+  assert.equal(f.lifecycle.snapshot().scope.accountId, 'A'); assert.equal(f.lifecycle.snapshot().scope.deviceId, 'D');
+  for (const bad of [
+    { ...revised(), current: { ...view().current, revoked: true } },
+    { ...revised(), current: { ...view().current, accountId: 'B' } },
+    { ...revised(), current: { ...view().current, deviceId: 'DB' } },
+    { ...revised(), notificationError: { code: 'NOTIFICATION_FAILED', message: 'Synthetic' } },
+    { ...revised(), unknownMetadata: true },
+  ]) {
+    f.emit(bad);
+    assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).code, 'identity_required');
+    f.emit(revised());
+    assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).ok, true);
+  }
+  f.dispose();
 });
 
 test('same account/device metadata preserves actual call; new device retires it synchronously', async () => {

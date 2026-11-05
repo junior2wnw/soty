@@ -1,154 +1,88 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { readFile } from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
 import ts from 'typescript';
 
-// Execute the real registration, unsaved-work guard and account fence.
-// Rendering, directory readiness and transport are inert ports; no DB/network.
-const source = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
-const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-const dialogsSource = await readFile(new URL('./dialogs.ts', import.meta.url), 'utf8');
-const dialogsCompiled = ts.transpileModule(dialogsSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-const appId = 'app-' + 'a'.repeat(32);
-const turn = () => new Promise(resolve => setImmediate(resolve));
-async function settle() { for (let n = 0; n < 6; n++) await turn(); }
-function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
-class Element {
-  constructor(tagName = 'div', className = '', text = '') {
-    Object.assign(this, { tagName, className, textContent: text, value: '', children: [], handlers: new Map(), open: true,
-      isConnected: true, disabled: false, hidden: false, parent: null, dataset: {}, classList: { add() {} } });
-  }
-  append(...nodes) { for (const node of nodes) { node.parent = this; this.children.push(node); if (this.tagName === 'select' && (!this.value || node.selected)) this.value = node.value; } }
-  replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
-  querySelector(selector) { for (const node of this.children) { if (node.tagName === selector || selector.startsWith('.') && node.className.split(' ').includes(selector.slice(1))) return node; const found = node.querySelector(selector); if (found) return found; } return null; }
-  querySelectorAll(selector) { return this.children.flatMap(node => [...(node.tagName === selector ? [node] : []), ...node.querySelectorAll(selector)]); }
-  addEventListener(type, fn) { if (!this.handlers.has(type)) this.handlers.set(type, []); this.handlers.get(type).push(fn); }
-  emit(type) { for (const fn of this.handlers.get(type) || []) fn({ preventDefault() {}, stopImmediatePropagation() {} }); }
-  reportValidity() { return true; } setAttribute() {} focus() {}
-}
-function fixture({ registration, fieldReady = Promise.resolve(), blocked = false, refreshTask } = {}) {
-  const ports = {
-    './dom': {
-      el: (tag, className, text) => new Element(tag, className, text),
-      button: (label, _icon, className, callback) => { const value = new Element('button', className, label); if (callback) value.addEventListener('click', callback); return value; },
-      textInput: (value = '') => Object.assign(new Element('input'), { value }),
-      labeledField: (label, input) => { const value = new Element('label', '', label); value.append(input); return value; },
-    },
-    './dialogs': { errorText: () => 'Не удалось подключить проект' },
-    './app-field-placement.mjs': { createAppFieldPlacementController: () => ({
-      async load() { return { contexts: [], pendingCount: 0, persistence: 'saved', localDurable: true }; },
-      hasUnsavedChanges: () => false, dispose() {},
-    }) },
+// The shell bridge executes for real. app-connect-flow.test tests the workflow
+// against real Apps/World SQLite rather than rebuilding its receipts in mocks.
+const source=await readFile(new URL('./app.ts',import.meta.url),'utf8');
+const compiled=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+const result={resultKind:'shortcut',app:{id:'app-'+'a'.repeat(32),name:'Real project'},contextId:'personal',shortcutId:'created-shortcut',audience:'private'};
+const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
+async function settle(){for(let n=0;n<5;n++)await new Promise(resolve=>setImmediate(resolve));}
+function fixture({fieldReady=Promise.resolve(),blocked=false,refreshTask,selectTask,selectAllowed=true}={}){
+  let mounted,composerOptions;const selections=[],module={exports:{}},ports={
+    './app-connect-dialog':{async mountAppConnectDialog(options){mounted=options;}},
+    './canvas-create-dialog':{openCanvasCreateDialog(options){composerOptions=options;return{element:{open:true},focus(){},async selectConnectedApp(id){selections.push(id);if(selectTask)await selectTask.promise;return selectAllowed;},hasUnsavedChanges:()=>true};}},
+    './dom':{el:(tag,className,text)=>({tag,className,textContent:text})},
+    './dialogs':{errorText:()=> 'Connection failed'},
   };
-  const dialogsModule = { exports: {} };
-  vm.runInNewContext(dialogsCompiled, { module: dialogsModule, exports: dialogsModule.exports,
-    require: name => ports[name] || {}, crypto: globalThis.crypto });
-  ports['./dialogs'].pinDialogSubmit = dialogsModule.exports.pinDialogSubmit;
-  const module = { exports: {} };
-  vm.runInNewContext(compiled + '\nexports.Controller=WorldApplication;', { module, exports: module.exports, require: name => ports[name] || {} });
-  const app = Object.create(module.exports.Controller.prototype), dialogs = [], calls = [], refreshes = [], ownRefreshes = [], toasts = [], opened = [];
-  const field = { ready: fieldReady, hasUnsavedChanges: () => blocked,
-    async flush() { if (blocked) throw Error('synthetic unsaved work'); },
-    async refresh(options) { refreshes.push(structuredClone(options)); if (refreshTask) await refreshTask.promise; },
-    async refreshOwnApps() { ownRefreshes.push(true); } };
-  Object.assign(app, { destroyed: false, deskAccount: 'account-A', accountGeneration: 1, screenSequence: 1, view: 'world', query: 'Хочу',
-    group: null, appStage: null, communities: [], desk: { pinnedApps: [] }, unifiedField: field, main: new Element(),
-    homeQuery: 'mine-query', unifiedFieldFilters: { mine: 'app', world: 'all' }, unifiedFieldView: { mineContext: 'personal', mineFit: 'context' },
-    toast(message) { toasts.push(message); }, loading: label => new Element('p', '', label),
-    async openApplication(value) { opened.push(structuredClone(value)); this.screenSequence++; this.unifiedField = null; },
-    openAppFieldPlacement() { assert.fail('placement must remain optional'); },
-    dialog(title, closed) {
-      const value = { title, element: new Element('dialog'), body: new Element(), close() { if (!value.element.open) return; value.element.open = false; closed?.(); } };
-      dialogs.push(value); return value;
-    },
-    api: { async request(op, args) {
-      calls.push({ op, args: structuredClone(args) });
-      if (op === 'apps.devices') return { devices: [{ claimed: true, hostDeviceId: 'synthetic-host', connectorId: 'synthetic-connector', name: 'Host', online: true }] };
-      assert.equal(op, 'apps.register'); return registration ? registration.promise : { app: { id: appId, name: 'ХочуИпотеку' } };
-    } },
+  vm.runInNewContext(compiled+'\nexports.Controller=WorldApplication;',{module,exports:module.exports,require:name=>ports[name]||{}});
+  const app=Object.create(module.exports.Controller.prototype),dialogs=[],refreshes=[],ownRefreshes=[],toasts=[],opened=[],focused=[];
+  const field={ready:fieldReady,hasUnsavedChanges:()=>blocked,flush:async()=>{if(blocked)throw Error('unsaved work');},async refresh(options){refreshes.push(structuredClone(options));if(refreshTask)await refreshTask.promise;},async refreshOwnApps(){ownRefreshes.push(true);},focusContext:id=>focused.push(id)};
+  Object.assign(app,{destroyed:false,deskAccount:'account-A',accountGeneration:1,screenSequence:1,view:'world',query:'query',group:null,appStage:null,dialogs:new Set(),desk:{pinnedApps:[]},unifiedField:field,
+    homeQuery:'mine-query',unifiedFieldFilters:{mine:'app',world:'all'},unifiedFieldView:{mineContext:'personal',mineFit:'context'},api:{request(){assert.fail('bridge must delegate the complete connection workflow');}},options:{connectDevice(){}},
+    toast:message=>toasts.push(message),loading:label=>({textContent:label}),openApplication:async value=>opened.push(value),openAppFieldPlacement(){assert.fail('a second placement chooser is forbidden');},
+    dialog(title){const value={title,element:{open:true},body:{append(){},replaceChildren(){}},close(){value.element.open=false;}};dialogs.push(value);return value;},
   });
-  async function submit() {
-    app.openAddApp(); await settle();
-    const dialog = dialogs[0], form = dialog.body.querySelector('form'); assert.ok(form);
-    form.querySelector('input').value = 'ХочуИпотеку';
-    form.emit('submit'); await settle(); return dialog;
-  }
-  return { app, field, dialogs, calls, refreshes, ownRefreshes, toasts, opened, submit };
+  app.openAddApp();assert.ok(mounted);
+  return{app,field,dialogs,refreshes,ownRefreshes,toasts,opened,focused,selections,get composerOptions(){return composerOptions;},get mounted(){return mounted;},complete:(value=result)=>mounted.onComplete(structuredClone(value))};
 }
 
-test('successful registration opens the app without a placement and never refreshes the retired field', async () => {
-  const ready = deferred(), f = fixture({ fieldReady: ready.promise }); await f.submit();
-  assert.equal(f.dialogs.length, 1); assert.equal(f.dialogs[0].element.open, false);
-  assert.equal(f.opened.length, 1); assert.equal(f.opened[0].appId, appId); assert.equal(f.opened[0].ownerAccountId, 'account-A');
-  assert.equal(f.refreshes.length, 0); ready.resolve(); await settle();
-  assert.equal(f.refreshes.length, 0);
-  assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1); assert.equal(f.calls.length, 2);
-  assert.deepEqual(f.calls[1].args.grants, { accountIds: [], communityIds: [] });
+const selected={resultKind:'selection',requestId:'selected-request',app:result.app,audience:'private',publication:{}};
+test('Window connect returns a fresh selection to its exact retained composer without pretending to have placed an app',async()=>{
+  const f=fixture();f.app.openCanvasComposer();const composer=f.app.canvasComposer;f.composerOptions.onConnectApp();assert.equal(f.mounted.resultKind,'selection');
+  await f.complete(selected);assert.deepEqual(f.selections,[result.app.id]);assert.equal(f.app.canvasComposer,composer);assert.equal(composer.element.open,true);assert.equal(f.dialogs.at(-1).element.open,true,'only dialog confirmation closes the child');
+  assert.equal(f.refreshes.length,0);assert.equal(f.focused.length,0);assert.equal(f.toasts.includes('Приложение на полотне'),false);
+});
+test('a pending Window intent reopened by plain connect uses the composer and never a shortcut fallback',async()=>{
+  const f=fixture();await f.complete(selected);assert.deepEqual(f.selections,[result.app.id]);assert.equal(f.composerOptions.initial.kind,'widget');assert.equal(f.refreshes.length,0);assert.equal(f.focused.length,0);
+});
+test('a changed chooser, current actor, or blocked retained mode leaves selection unconfirmed',async()=>{
+  for(const change of ['retired','replaced','busy']){const wait=deferred(),f=fixture({selectTask:wait,selectAllowed:change!=='busy'});f.app.openCanvasComposer();f.composerOptions.onConnectApp();
+    const completed=f.complete(selected);await settle();if(change==='retired'){f.app.accountGeneration++;}else if(change==='replaced')f.app.canvasComposer={element:{open:true}};wait.resolve();
+    await assert.rejects(completed,{code:'app_connect_selection_context_changed'});assert.equal(f.refreshes.length,0);assert.equal(f.toasts.length,0);assert.equal(f.dialogs.at(-1).element.open,true);}
+});
+test('device pairing keeps the exact connection child and outer composer available for return',()=>{
+  const f=fixture();f.app.runHook=hook=>hook();let paired=0;f.app.options.connectDevice=()=>{paired++;};f.app.openCanvasComposer();f.composerOptions.onConnectApp();f.mounted.connectDevice();assert.equal(paired,1);assert.equal(f.dialogs.at(-1).element.open,true);assert.equal(f.app.canvasComposer.element.open,true);
 });
 
-test('registered app refreshes the existing field when unsaved work prevents opening', async () => {
-  const ready = deferred(), f = fixture({ fieldReady: ready.promise, blocked: true }); await f.submit();
-  assert.equal(f.dialogs.length, 1); assert.equal(f.dialogs[0].element.open, false);
-  assert.equal(f.opened.length, 0); assert.equal(f.refreshes.length, 0);
-  assert.ok(f.toasts.includes('Изменения ещё не сохранены. Повторите сохранение перед выходом.'));
-  ready.resolve(); await settle(); assert.deepEqual(f.refreshes, [{ preserveView: true }]);
-  assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1);
-  assert.equal(f.app.query, 'Хочу'); assert.equal(f.app.view, 'world'); assert.equal(f.app.homeQuery, 'mine-query');
-  assert.deepEqual(f.app.desk.pinnedApps, []); assert.equal(f.app.unifiedFieldView.mineContext, 'personal');
-  assert.equal(f.app.unifiedFieldFilters.mine, 'app');
+test('connected app stays on the canvas and focuses its persisted context after field readiness',async()=>{
+  const ready=deferred(),f=fixture({fieldReady:ready.promise}),finished=f.complete();
+  assert.equal(f.dialogs.length,1);assert.equal(f.dialogs[0].element.open,false);assert.equal(f.opened.length,0);assert.equal(f.refreshes.length,0);
+  ready.resolve();await finished;assert.deepEqual(f.refreshes,[{preserveView:true}]);assert.deepEqual(f.focused,['personal']);assert.ok(f.toasts.includes('Приложение на полотне'));assert.equal(f.app.unifiedField,f.field);
 });
-
-test('registration failure and malformed app identity never refresh a directory or open placement', async () => {
-  for (const value of [null, { app: { id: 'wrong', name: 'Untrusted' } }]) {
-    const registration = deferred(), f = fixture({ registration }); await f.submit();
-    if (value) registration.resolve(value); else registration.reject(Object.assign(Error('synthetic failure'), { code: 'app_offline' }));
-    await settle(); assert.equal(f.refreshes.length, 0); assert.equal(f.opened.length, 0); assert.equal(f.dialogs.length, 1); assert.equal(f.toasts.length, 0);
+test('unsaved work stays in place without navigation, replacement or query/filter loss',async()=>{
+  const f=fixture({blocked:true});await f.complete();assert.equal(f.opened.length,0);assert.equal(f.app.unifiedField,f.field);assert.deepEqual(f.refreshes,[{preserveView:true}]);
+  assert.equal(f.app.query,'query');assert.equal(f.app.homeQuery,'mine-query');assert.equal(f.app.view,'world');assert.equal(f.app.unifiedFieldFilters.mine,'app');assert.equal(f.app.unifiedFieldView.mineContext,'personal');
+});
+test('initial account and context reach the workflow without fabricated app IDs',()=>{
+  const f=fixture();assert.equal(f.mounted.accountId,'account-A');assert.equal(f.mounted.preferredContextId,'personal');assert.deepEqual([...f.mounted.initialAppIds],[]);assert.equal(f.mounted.current(),true);assert.equal(f.mounted.accountCurrent(),true);
+  f.dialogs[0].close();assert.equal(f.mounted.current(),false);assert.equal(f.mounted.accountCurrent(),true);
+});
+test('late successful connection refreshes only the same field without opening or a toast',async()=>{
+  const ready=deferred(),f=fixture({fieldReady:ready.promise});f.dialogs[0].close();const finished=f.complete();assert.equal(f.ownRefreshes.length,0);ready.resolve();await finished;
+  assert.equal(f.ownRefreshes.length,1);assert.equal(f.opened.length,0);assert.equal(f.toasts.length,0);assert.equal(f.focused.length,0);
+});
+test('late completion after logout, account ABA, screen or field change does nothing',async()=>{
+  for(const change of[f=>{f.app.deskAccount='';f.app.accountGeneration++;},f=>{f.app.deskAccount='account-B';f.app.accountGeneration++;f.app.deskAccount='account-A';f.app.accountGeneration++;},f=>{f.app.screenSequence++;},f=>{f.app.unifiedField={ready:Promise.resolve(),refresh(){assert.fail('foreign field');}};}]){
+    const f=fixture();change(f);assert.equal(f.mounted.accountCurrent(),false);await f.complete();assert.equal(f.refreshes.length,0);assert.equal(f.ownRefreshes.length,0);assert.equal(f.opened.length,0);assert.equal(f.toasts.length,0);assert.equal(f.dialogs[0].element.open,true);
   }
 });
-
-test('a late successful registration refreshes only the same field without opening or a toast', async () => {
-  const registration = deferred(), ready = deferred(), f = fixture({ registration, fieldReady: ready.promise }); await f.submit();
-  f.dialogs[0].close(); registration.resolve({ app: { id: appId, name: 'Late app' } }); await settle();
-  assert.equal(f.opened.length, 0); assert.equal(f.refreshes.length, 0); assert.equal(f.ownRefreshes.length, 0); assert.equal(f.toasts.length, 0);
-  ready.resolve(); await settle(); assert.equal(f.ownRefreshes.length, 1);
-  assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1); assert.equal(f.app.screenSequence, 1);
-});
-
-test('late registration ACK after logout, account ABA, screen or field change does nothing', async () => {
-  for (const change of [f => { f.app.deskAccount = ''; f.app.accountGeneration++; },
-    f => { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; f.app.deskAccount = 'account-A'; f.app.accountGeneration++; },
-    f => { f.app.screenSequence++; }, f => { f.app.unifiedField = { ready: Promise.resolve(), refreshOwnApps() { throw Error('foreign field'); } }; }]) {
-    const registration = deferred(), f = fixture({ registration }); await f.submit(); change(f);
-    registration.resolve({ app: { id: appId, name: 'Late app' } }); await settle();
-    assert.equal(f.refreshes.length, 0); assert.equal(f.ownRefreshes.length, 0); assert.equal(f.opened.length, 0); assert.equal(f.dialogs.length, 1); assert.equal(f.toasts.length, 0);
+test('late readiness is fenced again if account, screen or field changes while waiting',async()=>{
+  for(const change of[f=>{f.app.deskAccount='account-B';f.app.accountGeneration++;},f=>{f.app.screenSequence++;},f=>{f.app.unifiedField=null;}]){
+    const ready=deferred(),f=fixture({fieldReady:ready.promise});f.dialogs[0].close();const finished=f.complete();change(f);ready.resolve();await finished;assert.equal(f.refreshes.length,0);assert.equal(f.ownRefreshes.length,0);assert.equal(f.toasts.length,0);
   }
 });
-
-test('a late refresh is fenced again if the account or field changes while initial readiness is pending', async () => {
-  for (const change of [f => { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; },
-    f => { f.app.screenSequence++; }, f => { f.app.unifiedField = null; }]) {
-    const registration = deferred(), ready = deferred(), f = fixture({ registration, fieldReady: ready.promise }); await f.submit();
-    f.dialogs[0].close(); registration.resolve({ app: { id: appId, name: 'Late app' } }); await settle();
-    change(f); ready.resolve(); await settle(); assert.equal(f.ownRefreshes.length, 0); assert.equal(f.opened.length, 0);
+test('refresh failure is reported only to the original still-current account and field',async()=>{
+  for(const changed of[false,true]){const refresh=deferred(),f=fixture({refreshTask:refresh});const finished=f.complete();await settle();assert.equal(f.refreshes.length,1);if(changed){f.app.deskAccount='account-B';f.app.accountGeneration++;}refresh.reject(Error('read unavailable'));await finished;
+    assert.equal(f.toasts.includes('Сота сохранена. Полотно пока не обновилось — повторите обновление.'),!changed);assert.equal(f.toasts.includes('Приложение на полотне'),false);assert.equal(f.opened.length,0);
   }
 });
-
-test('deferred directory readiness cannot refresh a replaced screen, changed account or new field instance', async () => {
-  for (const change of [f => { f.app.screenSequence++; }, f => { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; },
-    f => { f.app.unifiedField = { ready: Promise.resolve(), refresh() { throw Error('foreign field'); } }; }]) {
-    const ready = deferred(), f = fixture({ fieldReady: ready.promise, blocked: true }); await f.submit(); change(f); ready.resolve(); await settle();
-    assert.equal(f.refreshes.length, 0); assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1);
-  }
+test('primary create goes directly to the contextual form with selected device preserved',()=>{
+  const f=fixture(),calls=[];f.app.openAddApp=(...args)=>calls.push(args);f.app.openPreparedApp('selected-device');assert.deepEqual(calls,[[undefined,'selected-device']]);
 });
-
-test('refresh failure reports the saved registration only to its still-current account and field', async () => {
-  for (const switched of [false, true]) {
-    const refreshTask = deferred(), f = fixture({ blocked: true, refreshTask }); await f.submit();
-    assert.deepEqual(f.refreshes, [{ preserveView: true }]);
-    if (switched) { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; }
-    refreshTask.reject(Error('synthetic read failure')); await settle();
-    assert.equal(f.toasts.includes('Проект подключён, но список не обновился. Попробуйте позже.'), !switched);
-    assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1);
-  }
+test('a community entry passes its original group context to the shared form',()=>{
+  const f=fixture();f.app.openAddApp('group-project');assert.equal(f.mounted.communityId,'group-project');
 });

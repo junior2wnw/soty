@@ -16,6 +16,18 @@
 .sw-app-settings-actions>.sw-button { min-height: 44px; }
 .sw-app-settings-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; border-top: 1px solid var(--sw-line); padding-top: 12px; }
 .sw-app-settings-section h3 { font-size: 15px; line-height: 1.4; }
+.sw-referral-settings > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-size: 15px; font-weight: 650; }
+.sw-referral-settings > summary::after { content: '+'; margin-left: auto; color: var(--sw-muted); }
+.sw-referral-settings[open] > summary::after { content: '−'; }
+.sw-referral-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.sw-referral-rates { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+@media (max-width: 340px) { .sw-referral-rates { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+.sw-referral-rate { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 5px; min-width: 0; font-size: 12px; }
+.sw-referral-rate > span:first-child { grid-column: 1 / -1; }
+.sw-referral-rate .sw-input { width: 100%; min-width: 0; min-height: 44px; }
+.sw-referral-advanced { font-size: 12px; }
+.sw-referral-advanced > summary { cursor: pointer; padding: 10px 0; }
+.sw-referral-advanced > .sw-button { margin: 6px 6px 0 0; min-height: 44px; }
 .sw-app-settings-hint { font-size: 12px; line-height: 1.5; }
 .sw-app-settings-messages { display: flex; flex-direction: column; gap: 10px; }
 .sw-app-settings-messages:empty { display: none; }

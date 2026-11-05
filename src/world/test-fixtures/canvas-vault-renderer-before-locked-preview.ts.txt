@@ -1,0 +1,145 @@
+import {createNativeFieldObjects,type FieldObjectView,type NativeFieldSource} from './native-field-objects';
+import {nativeFieldSafeArea} from './native-field-safe-area.mjs';
+import {createFieldObjectOverview,type FieldObjectPresentation} from './field-object-overview';
+import {createCanvasVaultMemoryCache,vaultErrorCode} from './canvas-vault-local.mjs';
+import {CANVAS_VAULT_NOTE_TYPE,type CanvasVaultClient} from './canvas-vault-client.mjs';
+import type {FieldNode} from './unified-field-layout.mjs';
+import type {CanvasPresentation} from '../../modules/canvas-objects/contract.mjs';
+import './canvas-vault-renderer.css';
+
+export interface CanvasVaultView{schema:'soty.canvas-vault-view.v1';kind:'vault';contentType:string;byteLength:number;revision:number;canEdit:boolean}
+export interface CanvasVaultRenderOptions{
+  client:CanvasVaultClient;accountId:string;objectId:string;isCurrent():boolean;
+  projection():{view?:CanvasVaultView|{schema:string;state:'locked'|'sealing'};presentation?:CanvasPresentation}|null;
+  onObjectChanged?:(objectId:string)=>Promise<void>;
+  allowUnlock?:boolean;
+  lockedMessage?:string;
+  canReveal?:()=>boolean;
+  beforeReveal?:()=>Promise<boolean>;
+}
+export function canvasVaultErrorText(error:unknown,context?:'unlock'):string{
+  const code=vaultErrorCode(error);
+  if(code==='vault_secure_context_required')return'Для защиты нужен безопасный адрес. Откройте Соты через HTTPS или localhost на этом устройстве.';
+  if(code==='password_container_unavailable'||context==='unlock'&&code==='vault_local_password_or_data_invalid')return'Не удалось открыть объект. Проверьте пароль.';
+  if(code==='vault_password_invalid')return'Пароль должен содержать не меньше 8 символов.';
+  if(code==='vault_local_password_or_data_invalid')return'Пароль не открывает локальный черновик. Используйте пароль, с которым он был сохранён.';
+  if(code==='vault_wire_size')return'Защищённые файлы пока поддерживаются до 1 МБ.';
+  if(code==='vault_read_size')return'Защищённый материал превышает предел чтения 25 МБ.';
+  if(/local_(?:unavailable|quota|conflict)/u.test(code))return'Зашифрованный черновик не сохранён на устройстве. Освободите место и повторите.';
+  if(/locked|expired/u.test(code))return'Время доступа истекло. Откройте объект паролем снова.';
+  if(/revoked|unavailable|denied|account_changed|access_changed/u.test(code))return'Доступ изменился. Обновите полотно.';
+  if(/media|decode|NotSupported|content_invalid/u.test(code))return'Не удалось открыть этот материал в браузере.';
+  if(code==='vault_conversion_required')return'Перенос существующих открытых материалов в защищённое хранилище ещё не готов.';
+  if(code==='vault_local_draft_pending')return'Сначала сохраните изменения во всех открытых копиях, затем меняйте пароль.';
+  if(code==='vault_local_rotation_pending')return'Пароль на сервере изменён. Повторите действие с прежним и новым паролем, чтобы завершить перенос локальных черновиков.';
+  return'Не удалось завершить действие. Повторите попытку.';
+}
+const make=(tag:string,className='',text='')=>{const node=document.createElement(tag);node.className=className;if(text)node.textContent=text;return node;};
+function safe(root:HTMLElement,node:FieldNode){const inset=nativeFieldSafeArea(node.presentation??node.entity.presentation??{shape:'rect'},node.width,node.height);for(const[side,value]of Object.entries(inset))root.style.setProperty(`--nf-safe-${side}`,`${value}px`);}
+
+export function createCanvasSealingView(initial:FieldNode,options:{isCurrent():boolean;onObjectChanged?:(objectId:string)=>Promise<void>}):FieldObjectView{
+  const root=make('article','nf-object cv-sealing'),title=make('strong','','Подготавливаем защиту'),status=make('p','cv-message','Защита ещё не завершена. Содержимое временно закрыто.');let dead=false;
+  const overview=createFieldObjectOverview(root,{isCurrent:()=>!dead&&options.isCurrent(),readIdentity:()=>({title:'Защита не завершена',symbol:'clock'})});
+  root.append(title,status);status.setAttribute('role','status');safe(root,initial);
+  if(options.onObjectChanged){const retry=make('button','nf-play','Проверить') as HTMLButtonElement;retry.type='button';retry.dataset.fieldControl='';root.append(retry);
+    retry.addEventListener('click',()=>{if(dead||!options.isCurrent()||retry.disabled)return;retry.disabled=true;void options.onObjectChanged!(initial.entity.entity.id).catch(error=>{if(!dead)status.textContent=canvasVaultErrorText(error);}).finally(()=>{if(!dead)retry.disabled=false;});});}
+  return{element:root,overview:overview.element,setPresentation:overview.setPresentation,update(node){safe(root,node);overview.update();},setVisible(){},async flush(){},hasUnsavedChanges:()=>false,dispose(){dead=true;overview.dispose();root.replaceChildren();root.textContent='';root.remove();}};
+}
+
+/** Plaintext lives only in the currently unlocked DOM/RAM; the NoteSession ports are both overridden. */
+export function createCanvasVaultView(initial:FieldNode,options:CanvasVaultRenderOptions):FieldObjectView{
+  const root=make('div','cv-host');let dead=false,visible=false,node=initial,inner:FieldObjectView|null=null,native:ReturnType<typeof createNativeFieldObjects>|null=null,mode='';
+  let media:HTMLImageElement|HTMLAudioElement|HTMLVideoElement|null=null,url='',flight:Promise<void>|null=null,sequence=0;
+  let passwordInput:HTMLInputElement|null=null;let readController:AbortController|null=null;
+  const cache=createCanvasVaultMemoryCache();
+  const allowed=()=>!dead&&options.isCurrent();
+  const open=()=>allowed()&&options.allowUnlock!==false&&options.client.isUnlocked(options.objectId)&&(!options.canReveal||options.canReveal());
+  let presentation:FieldObjectPresentation='glance';
+  const overview=createFieldObjectOverview(root,{isCurrent:allowed,readIdentity:()=>{
+    if(!open())return{title:'Под паролем',symbol:'lock'};
+    const view=options.projection()?.view;if(!view||!('kind'in view)||view.kind!=='vault')return{title:'Под паролем',symbol:'lock'};
+    const kind=view.contentType===CANVAS_VAULT_NOTE_TYPE?'note':view.contentType.startsWith('image/')?'image':view.contentType.startsWith('video/')?'video':view.contentType.startsWith('audio/')?'audio':'file';
+    return{title:{note:'Записка',image:'Фотография',video:'Видео',audio:'Аудиозапись',file:'Защищённый материал'}[kind],symbol:{note:'note',image:'image',video:'camera',audio:'music',file:'lock'}[kind],
+      visual:!!url&&(media instanceof HTMLImageElement?media.complete&&media.naturalWidth>0:media instanceof HTMLVideoElement&&media.readyState>=2)};
+  }});
+  function clear(){overview.clear();sequence++;readController?.abort();readController=null;if(passwordInput){passwordInput.value='';passwordInput=null;}inner?.dispose();inner=null;native?.dispose();native=null;if(media){if(media instanceof HTMLMediaElement)media.pause();media.removeAttribute('src');if(media instanceof HTMLMediaElement)media.load();media=null;}if(url){URL.revokeObjectURL(url);url='';}root.replaceChildren();void cache.clear();flight=null;mode='';}
+  function locked(){
+    const form=make(options.allowUnlock===false?'article':'form','nf-object cv-locked'),mark=make('span','cv-lock-mark','◈'),title=make('strong','','Под паролем');safe(form,node);
+    if(options.allowUnlock===false){form.append(mark,title,make('p','cv-message',options.lockedMessage??'Войдите в Соты, чтобы открыть объект по паролю.'));root.append(form);mode='locked';overview.update();return;}
+    const input=document.createElement('input');passwordInput=input;input.type='password';input.autocomplete='current-password';input.minLength=8;input.maxLength=1024;input.placeholder='Пароль';input.setAttribute('aria-label','Пароль объекта');input.dataset.fieldControl='';
+    const submit=make('button','cv-unlock','Открыть') as HTMLButtonElement;submit.type='submit';submit.dataset.fieldControl='';
+    const backendView=options.projection()?.view;
+    const status=make('p','cv-message');status.setAttribute('role','status');status.setAttribute('aria-live','polite');let busy=false,opened=options.client.isUnlocked(options.objectId)&&!!backendView&&'kind'in backendView&&backendView.kind==='vault';
+    if(opened){input.hidden=true;submit.textContent='Завершить перенос';status.textContent='На этом устройстве перенос ещё не завершён.';}
+    form.append(mark,title,input,submit,status);form.addEventListener('submit',event=>{event.preventDefault();if(!allowed()||busy)return;busy=true;submit.disabled=true;status.textContent='Открываем…';
+      void(async()=>{try{if(!opened){await options.client.unlock(options.objectId,input.value);opened=true;}if(!allowed())return;input.value='';input.hidden=true;
+        if(options.beforeReveal&&!await options.beforeReveal()){if(allowed()){status.textContent='Перенос на этом устройстве не завершён. Прежние черновики сохранены; повторите попытку.';submit.textContent='Завершить перенос';}return;}
+        if(!allowed())return;await options.onObjectChanged?.(options.objectId);if(allowed()){status.textContent='Доступ открыт';submit.textContent='Показать';}}
+        catch(error){if(allowed())status.textContent=canvasVaultErrorText(error,'unlock');}finally{busy=false;if(allowed())submit.disabled=false;}})();
+    });root.append(form);mode='locked';overview.update();
+  }
+  function note(view:CanvasVaultView){
+    const noteId=options.client.noteId(options.objectId)!;
+    const recovery=make('div','cv-native-recovery'),recoveryStatus=make('p','cv-message');recoveryStatus.setAttribute('role','status');let recoveryFlight:Promise<void>|null=null;
+    const recoveryTicket=sequence;
+    const refreshRecoveries=()=>{
+      if(!view.canEdit||!open()||recoveryFlight||!options.client.nativeRecoveries)return;
+      recoveryFlight=(async()=>{try{
+        const values=await options.client.nativeRecoveries(options.objectId);if(!open()||sequence!==recoveryTicket)return;recovery.replaceChildren();
+        for(const value of values){const restore=make('button','nf-play','Открыть прежний черновик') as HTMLButtonElement;restore.type='button';restore.dataset.fieldControl='';
+          restore.addEventListener('click',()=>{if(!open()||restore.disabled)return;restore.disabled=true;void(async()=>{try{
+            await inner?.flush();if(!open())return;if(inner?.hasUnsavedChanges()||inner?.hasUnconfirmedWork?.())throw new Error('vault_current_draft_pending');
+            await options.client.restoreNativeRecovery(options.objectId,value.recordId);if(!open())return;clear();note(view);
+          }catch(error){if(open()){recoveryStatus.textContent=String((error as {message?:unknown})?.message)==='vault_current_draft_pending'?'Сначала сохраните текущую версию записки.':canvasVaultErrorText(error);restore.disabled=false;}}})();});recovery.append(restore);}
+        recovery.append(recoveryStatus);recovery.hidden=values.length===0;
+      }catch(error){if(open()&&sequence===recoveryTicket)recoveryStatus.textContent=canvasVaultErrorText(error);}finally{recoveryFlight=null;}})();
+    };
+    const source=():NativeFieldSource|null=>{
+      const value=options.projection(),current=value?.view;if(!open()||!current||!('kind'in current)||current.kind!=='vault'||current.contentType!==CANVAS_VAULT_NOTE_TYPE)return null;
+      return{kind:'note',noteId,readOnly:!current.canEdit,fontSize:value.presentation?.fontSize??16,
+        summary:{noteId,title:'',preview:'',color:'plain',pinned:false,state:'active',revision:current.revision,createdAt:0,updatedAt:0}};
+    };
+    native=createNativeFieldObjects({accountId:options.accountId,projectId:'soty-vault',isCurrent:open,resolve:source,
+      store:options.client.draftStore(options.objectId),cache,
+      onNoteChange:()=>{if(options.client.pruneNativeRecoveries)void options.client.pruneNativeRecoveries(options.objectId).then(refreshRecoveries).catch(()=>{});},
+      api:{async request<T>(operation:string,args:Record<string,unknown>={}):Promise<T>{if(!open())throw Object.assign(new Error('canvas_object_locked'),{code:'canvas_object_locked'});
+        if(operation==='notes.get'&&args.noteId===noteId)return{note:await options.client.readNote(options.objectId,{fresh:true})} as T;
+        const current=options.projection()?.view;if(operation==='notes.put'&&args.noteId===noteId&&current&&'kind'in current&&current.kind==='vault'&&current.canEdit)return await options.client.writeNote(options.objectId,args) as T;
+        throw Object.assign(new Error('canvas_access_denied'),{code:'canvas_access_denied'});
+      }}});
+    inner=native.createObject(node);if(inner){inner.element.append(recovery);root.append(inner.element);inner.setVisible(visible);}mode=view.contentType;refreshRecoveries();
+  }
+  function material(view:CanvasVaultView){
+    const kind=view.contentType.startsWith('image/')?'image':view.contentType.startsWith('audio/')?'audio':view.contentType.startsWith('video/')?'video':null;
+    const supported=/^(?:image\/(?:png|jpeg|webp)|audio\/(?:webm|ogg|wav)|video\/webm)$/u.test(view.contentType);
+    const card=make('article','nf-object cv-media');card.dataset.vaultKind=kind??'unsupported';safe(card,node);
+    const status=make('p','cv-message');status.setAttribute('role','status');const play=make('button','nf-play',kind==='image'?'Загрузить фотографию':'Воспроизвести') as HTMLButtonElement;play.type='button';play.dataset.fieldControl='';
+    if(!supported){status.textContent='Этот защищённый формат пока не поддерживается';card.append(status);root.append(card);mode=view.contentType;return;}
+    media=kind==='image'?document.createElement('img'):document.createElement(kind==='audio'?'audio':'video');
+    if(media instanceof HTMLImageElement){media.className='nf-image';media.alt='Защищённая фотография';media.draggable=false;media.decoding='async';}
+    else{media.className=kind==='audio'?'nf-audio':'nf-video';media.controls=kind!=='video'||presentation!=='overview';media.preload='none';media.autoplay=false;media.hidden=true;media.dataset.fieldControl='';if(media instanceof HTMLVideoElement)media.playsInline=true;}
+    const player=media;card.append(player,status,play);root.append(card);mode=view.contentType;
+    async function load(explicitPlay=false){
+      if(!open()||!player||flight)return;const ticket=sequence,controller=new AbortController();readController=controller;play.disabled=true;status.textContent='Загружаем…';
+      flight=(async()=>{try{
+        if(!url){const value=await options.client.readContent(options.objectId,{signal:controller.signal});try{if(!open()||ticket!==sequence)return;if(value.contentType!==view.contentType)throw Object.assign(new Error('vault_content_changed'),{code:'vault_content_changed'});
+          url=URL.createObjectURL(new Blob([value.bytes],{type:value.contentType}));player.src=url;player.hidden=false;if(player instanceof HTMLMediaElement){player.preload='metadata';player.load();}
+        }finally{value.bytes.fill(0);}}
+        if(!open()||ticket!==sequence)return;status.textContent='';play.hidden=true;overview.update();if(explicitPlay&&player instanceof HTMLMediaElement)try{await player.play();}catch{status.textContent='Нажмите воспроизведение на плеере';}
+      }catch(error){if(open()&&ticket===sequence){status.textContent=canvasVaultErrorText(error);play.hidden=false;play.textContent='Повторить';}}
+      finally{if(readController===controller)readController=null;if(ticket===sequence){flight=null;play.disabled=false;}}})();await flight;
+    }
+    play.addEventListener('click',()=>{void load(kind!=='image');});player.addEventListener('error',()=>{if(!open())return;status.textContent='Не удалось открыть материал в браузере';play.hidden=false;play.textContent='Повторить';if(url){player.removeAttribute('src');URL.revokeObjectURL(url);url='';}});
+    for(const event of['load','loadeddata'])player.addEventListener(event,()=>{if(open()&&media===player)overview.update();});
+    inner={element:card,update(next){safe(card,next);},setVisible(value){if(value&&kind==='image')void load();},activate(){void load(kind!=='image');},async flush(){},hasUnsavedChanges:()=>false,dispose(){}};inner.setVisible(visible);
+  }
+  function update(next:FieldNode){
+    node=next;if(!allowed()){clear();return;}const value=options.projection()?.view,desired=open()&&value&&'kind'in value&&value.kind==='vault'?value.contentType:'locked';
+    if(mode!==desired){clear();if(desired==='locked')locked();else if(value&&'kind'in value&&value.kind==='vault'){if(desired===CANVAS_VAULT_NOTE_TYPE)note(value);else material(value);}}
+    else if(mode==='locked'){const card=root.firstElementChild as HTMLElement|null;if(card)safe(card,node);}else inner?.update(node);overview.update();
+  }
+  const unsubscribe=options.client.subscribe((id,reason)=>{if(id!==options.objectId||dead)return;if(reason!=='unlocked'){clear();if(allowed())locked();}});
+  update(initial);
+  return{element:root,overview:overview.element,glanceSize(){const view=options.projection()?.view;return open()&&view&&'kind'in view&&view.kind==='vault'&&view.contentType===CANVAS_VAULT_NOTE_TYPE?{width:320,height:240}:null;},setPresentation(value){presentation=value;overview.setPresentation(value);if(media instanceof HTMLVideoElement)media.controls=value!=='overview';},update,setVisible(value){visible=value;inner?.setVisible(value);},activate(){inner?.activate?.();if(mode==='locked')root.querySelector('input')?.focus();},async flush(){await inner?.flush();},hasUnsavedChanges:()=>inner?.hasUnsavedChanges()===true,
+    dispose(){if(dead)return;dead=true;unsubscribe();clear();overview.dispose();root.remove();}};
+}

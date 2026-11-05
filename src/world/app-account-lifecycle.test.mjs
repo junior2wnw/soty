@@ -14,6 +14,9 @@ import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
 import * as workspaceReturn from './workspace-return.mjs';
 import * as appInbox from './app-inbox.mjs';
+import * as socialInbox from './social-inbox.mjs';
+import * as platformLiveClient from '../platform/platform-live-client.mjs';
+import * as nativeLocal from '../../modules/notes/browser/native-local.mjs';
 import * as appSavedState from './app-saved-state.mjs';
 import * as fieldContract from '../../modules/field/contract.mjs';
 import * as appBootRecovery from './app-boot-recovery.mjs';
@@ -32,6 +35,10 @@ import * as projectCapture from './project-feedback-capture.mjs';
 import * as projectPicker from './project-feedback-picker.mjs';
 import * as appProjectCapture from './app-project-capture.mjs';
 import * as appScopedRenewal from './app-scoped-renewal.mjs';
+import * as appHostSessionRenewal from './app-host-session-renewal.mjs';
+import * as appRetainedRuntime from './app-retained-runtime.mjs';
+import * as appRuntimeClose from './app-runtime-close.mjs';
+import * as appStageLive from './app-stage-live.mjs';
 import { createOtsovEditorHost } from './otsov-editor-handoff.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
@@ -45,6 +52,8 @@ import { createSourceRegistry } from '../../modules/apps/server/sources.mjs';
 import { createEngagementEntryResolver } from '../../modules/apps/server/engagement-access.mjs';
 import { createScopedAdmissionRegistry } from '../../modules/apps/scoped-embed/admissions.mjs';
 import { HIVE_SELECTED_SOURCE } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
+import * as appConnectFlow from './app-connect-flow.mjs';
+import * as glassWidgetContext from '../../vendor/optical-glass/src/widget-context.js';
 
 // Exercise the actual controller methods. UI/network ports are inert fixtures;
 // no source regex assertions, copied transition implementation or DOM package.
@@ -60,6 +69,7 @@ const stageSource = await readFile(process.env.SOTY_NEUTRAL_RUNTIME_STAGE_SOURCE
 const stageCompiled = ts.transpileModule(stageSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const dialogsSource = await readFile(new URL('./dialogs.ts', import.meta.url), 'utf8');
 const dialogsCompiled = ts.transpileModule(dialogsSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const appConnectDialogCompiled=ts.transpileModule(await readFile(new URL('./app-connect-dialog.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const productSource = await readFile(new URL('./product.ts', import.meta.url), 'utf8');
 const productCompiled = ts.transpileModule(productSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const accountCenterCompiled = ts.transpileModule(await readFile(new URL('./account-center.ts', import.meta.url), 'utf8'),
@@ -70,7 +80,17 @@ const fieldDirectoryCompiled = ts.transpileModule(await readFile(new URL('./fiel
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const turn = () => new Promise(resolve => setImmediate(resolve));
+async function until(predicate, message) {
+  const deadline = performance.now() + 5000;
+  while (!predicate()) { assert.ok(performance.now() < deadline, message); await turn(); }
+}
+async function submitChat(composer) {
+  composer.requestSubmit();
+  assert.equal(composer.getAttribute('aria-busy'), 'true', 'the ready composer starts the submission');
+  await until(() => composer.getAttribute('aria-busy') === 'false', 'the submission reaches its success or error state');
+}
 const failure = code => Object.assign(new Error(code), { code });
+
 // Inline declarations used by the actual mounted controls; no layout or CSS parsing is simulated.
 function stylePort() {
   const values = new Map();
@@ -170,6 +190,9 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     './app-launch.mjs': appLaunch,
     './workspace-return.mjs': workspaceReturn,
     './app-inbox.mjs': appInbox,
+    './social-inbox.mjs': socialInbox,
+    '../platform/platform-live-client.mjs': platformLiveClient,
+    '../../modules/notes/browser/native-local.mjs': nativeLocal,
     './app-saved-state.mjs': appSavedState,
     '../../modules/field/contract.mjs': fieldContract,
     './conversation-target.mjs': conversationTargets,
@@ -186,6 +209,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     './app-runtime-phase-trace.mjs': appRuntimePhaseTrace,
     './app-runtime-display.mjs': appRuntimeDisplay,
     './app-widget-runtime-controls.mjs': widgetRuntimeControls,
+    '../../vendor/optical-glass/src/widget-context.js': glassWidgetContext,
     './browser-assist-pilot.mjs': browserAssistPilot,
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
@@ -204,6 +228,10 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     './project-feedback-picker.mjs': projectPicker,
     './app-project-capture.mjs': appProjectCapture,
     './app-scoped-renewal.mjs': appScopedRenewal,
+    './app-host-session-renewal.mjs': appHostSessionRenewal,
+    './app-retained-runtime.mjs':appRetainedRuntime,
+    './app-runtime-close.mjs':appRuntimeClose,
+    './app-stage-live.mjs':appStageLive,
     './otsov-editor-handoff.mjs': { createOtsovEditorHost },
     './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
@@ -214,6 +242,19 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   const dialogsModule = { exports: {} };
   vm.runInNewContext(dialogsCompiled, { module: dialogsModule, exports: dialogsModule.exports, require: name => ports[name] ?? {}, crypto: globalThis.crypto });
   ports['./dialogs'].pinDialogSubmit = dialogsModule.exports.pinDialogSubmit;
+  // Actual contextual form/flow; only account-local storage, lock scheduling and
+  // placement persistence are inert ports here. Real SQLite is covered separately.
+  const appConnectPlacements=[],connectionValues=new Map(),connectionQueues=new Map();
+  const connectionLocks={request(name,work){const next=(connectionQueues.get(name)||Promise.resolve()).catch(()=>{}).then(work);connectionQueues.set(name,next.catch(()=>{}));return next;}};
+  const connectDialogModule={exports:{}};
+  const connectionPorts={...ports,'./dom':{...ports['./dom'],button(label,symbol,className,callback){const node=makeButton(label,symbol,className,callback);node.append(makeElement('span','',label));return node;}},
+    './app-connect-flow.mjs':appConnectFlow,'./app-connect-locks.mjs':{createAppConnectLocks:()=>connectionLocks},
+    './app-field-placement-browser':{createAppFieldPlacementController(options){
+      const state=()=>({contexts:[{contextId:'personal',title:'Личное'}],generation:1,persistence:'saved',localDurable:true,pendingCount:0,placements:appConnectPlacements.filter(value=>value.appId===options.appId&&value.accountId===options.accountId)});
+      return{async load(){return state();},async retry(){return state();},async place({contextId}){if(!options.isCurrent())throw failure('field_account_changed');let row=appConnectPlacements.find(value=>value.appId===options.appId&&value.accountId===options.accountId);if(!row){row={appId:options.appId,accountId:options.accountId,contextId,shortcutId:`shortcut-${options.appId}`};appConnectPlacements.push(row);}return{status:'saved',shortcutId:row.shortcutId,snapshot:state()};},dispose(){}};
+    }}};
+  vm.runInNewContext(appConnectDialogCompiled,{module:connectDialogModule,exports:connectDialogModule.exports,require:name=>connectionPorts[name]??{},crypto:globalThis.crypto,localStorage:{getItem:key=>connectionValues.get(key)??null,setItem:(key,value)=>connectionValues.set(key,value)}});
+  ports['./app-connect-dialog']=connectDialogModule.exports;
   for (const [name, code] of [['./account-center', accountCenterCompiled], ['./field-directory', fieldDirectoryCompiled], ['../platform/origin-continuity', originContinuityCompiled]]) {
     const loaded = { exports: {} };
     vm.runInNewContext(code, { module: loaded, exports: loaded.exports, require: name => ports[name] ?? {}, document, location, crypto: globalThis.crypto });
@@ -223,12 +264,13 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   vm.runInNewContext(productCompiled, { module: productModule, exports: productModule.exports, require: name => ports[name] ?? {},
     localStorage: { getItem: key => preferences.get(key) ?? null, setItem: (key, value) => preferences.set(key, value) }, URLSearchParams });
   ports['./product'].saveDeskPreferences = productModule.exports.saveDeskPreferences;
+  ports['./product'].capabilities = productModule.exports.capabilities;
   const stageModule = { exports: {} };
   vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController, URL, crypto: globalThis.crypto });
   ports['./app-stage'] = stageModule.exports;
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication; exports.bindRootClick = function() { return ${rootClickHandler}; }; exports.bindConnection = function() { return ${connectionHandler}; };`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
-    document, navigator: view.navigator, crypto: globalThis.crypto, Element: ElementPort, HTMLElement: ElementPort, HTMLButtonElement: ElementPort, Event, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
+    document, navigator: view.navigator, crypto: globalThis.crypto, Element: ElementPort, HTMLElement: ElementPort, HTMLButtonElement: ElementPort, Event, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, clearInterval,
     setInterval: view.setInterval, matchMedia: view.matchMedia, ResizeObserver: class { observe() {} disconnect() {} },
     history: { replaceState(_state, _title, url) { location.hash = url; }, pushState(_state, _title, url) { location.hash = url; } }, console,
   });
@@ -249,7 +291,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     applicationReturn: null, pendingReturnPresentation: null,
     homeState: { slots: new Map([['private-slot', initial]]), scroll: 20, fieldX: 3, fieldY: 9, communityId: 'private-group', focusId: 'private-focus', focusControl: null, lens: 'all', pinned: new Set(['old-pin']) },
     homeStatus: { devices: 'ready', apps: 'ready', communities: 'ready', notes: 'ready' },
-    desk: { favorites: [`favorite-${initial}`], recent: [] }, fieldState: {}, homeFieldState: {}, discoveryApps: new Map([['private-group', [{ appId: `private-${initial}` }]]]), homeQuery: 'private apps', homeFilter: 'together', discoveryScope: 'private-scope', discoveryPages: ['private-cursor'],
+    desk: { favorites: [`favorite-${initial}`], recent: [] }, unifiedFieldView:{},fieldState: {}, homeFieldState: {}, discoveryApps: new Map([['private-group', [{ appId: `private-${initial}` }]]]), homeQuery: 'private apps', homeFilter: 'together', discoveryScope: 'private-scope', discoveryPages: ['private-cursor'],
     results: { people: [{ name: `private-${initial}` }], communities: [], totals: {} }, discoveryStatus: 'ready', query: 'private search', kind: 'people', routeLoaded: true,
     view: 'mine', activeRoute: hash,
     options: { localAccount: async () => ({ accountId: local, label: 'Local identity' }), listDevices: async () => [{ deviceId: `device-${local}` }] },
@@ -277,7 +319,11 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, settingsMounts, settingsCloseRequests, ports, makeElement, draftDisk, connectionChanged: module.exports.bindConnection.call(app), rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, appConnectPlacements,discussionCalls, nativeVoiceBridges, settingsMounts, settingsCloseRequests, ports, makeElement, draftDisk, connectionChanged: module.exports.bindConnection.call(app), rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
+    // A direct test consumer owns this returned mount, as mountChat/mountDirectChat
+    // now do in production. Do not wrap app.mountConversation itself: that would
+    // hide whether those actual callers preserve their surrounding screen owner.
+    mountOwnedConversation(...args) { const mounted = app.mountConversation(...args); app.chatCleanup = mounted.dispose; return mounted; },
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
@@ -577,7 +623,7 @@ test('the actual root capture leaves notification and Help controls operable whi
 
 test('existing group chat mounts the common renderer with actual group authority and the original draft namespace', () => {
   const f=fixture(), captured=[];
-  f.app.mountConversation=(parent,target,presentation)=>{captured.push({parent,target,presentation});return ()=>true;};
+  f.app.mountConversation=(parent,target,presentation)=>{captured.push({parent,target,presentation});return {isCurrent:()=>true,flush:async()=>{},hasUnsavedChanges:()=>false,dispose(){}};};
   const group={communityId:'group-real',name:'Комната',memberCount:2,membership:{state:'active',pinned:false,muted:false},permissions:{canWrite:true,canModerate:true}};
   const parent=new ElementPort();f.app.mountChat(parent,group,true);
   assert.equal(captured[0].target.kind,'community');assert.equal(captured[0].target.draftKey,group.communityId);
@@ -587,7 +633,7 @@ test('existing group chat mounts the common renderer with actual group authority
 
 test('a closed chat cannot restore membership through a late metadata response on the same screen', async () => {
   const f=fixture(), gate=deferred();let target, mounted=true;
-  f.app.mountConversation=(_parent,value)=>{target=value;return ()=>mounted;};
+  f.app.mountConversation=(_parent,value)=>{target=value;return {isCurrent:()=>mounted,flush:async()=>{},hasUnsavedChanges:()=>false,dispose(){mounted=false;}};};
   const group={communityId:'group-real',name:'Комната',memberCount:2,membership:{state:'active',pinned:false,muted:false},permissions:{canWrite:true,canModerate:true}};
   f.app.api={request:()=>gate.promise};f.app.communities=[group];f.app.mountChat(new ElementPort(),group,true);
   const pending=target.refresh();mounted=false;gate.resolve({community:{...group,revision:99}});
@@ -624,30 +670,29 @@ test('actual app onboarding pins A at dispatch and ignores a late success after 
     if (op === 'apps.devices') return Promise.resolve({ devices: [{ claimed: true, online: true, hostDeviceId: 'host-A', connectorId: 'connector-A', name: 'A device' }] });
     assert.equal(op, 'apps.register'); return pending.promise; } };
   f.app.openAddApp(); await turn(); const dialog = f.dialogs.at(-1), form = dialog.body.children[0];
-  const collect = (element, tag) => [element, ...element.children.flatMap(child => child instanceof ElementPort ? collect(child, tag) : [])].filter(child => child.tagName === tag);
-  const inputs = collect(form, 'input'), selectors = collect(form, 'select');
-  inputs[0].value = 'Synthetic A project'; inputs[1].value = '3000'; selectors[0].value = 'host-A'; selectors[1].value = '';
-  const event = { preventDefault() {} }; form.listeners.get('submit')(event); form.listeners.get('submit')(event);
+  const inputs = form.querySelectorAll('input');
+  inputs.find(node=>node.getAttribute('aria-label')==='Адрес приложения').value='localhost:3000';
+  inputs.find(node=>node.getAttribute('aria-label')==='Название приложения').value='Synthetic A project';form.querySelector('select').value='host-A|connector-A';
+  const event = { preventDefault() {} }; form.listeners.get('submit')(event); form.listeners.get('submit')(event);await turn();
   const dispatched = calls.filter(call => call.op === 'apps.register'); assert.equal(dispatched.length, 1); assert.equal(dispatched[0].args.expectedAccountId, 'account-A');
   f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
-  pending.resolve({ app: { id: 'synthetic-accepted-A' } }); await turn();
-  assert.equal(f.app.lastToast, undefined); assert.equal(f.personalFrames.length, 0); assert.equal(dialog.element.open, false);
+  pending.resolve({ app: { id: 'app-11111111111111111111111111111111',name:'Synthetic A project' } }); await turn();
+  assert.equal(f.app.lastToast, undefined); assert.equal(f.personalFrames.length, 0); assert.equal(dialog.element.open, false);assert.equal(f.appConnectPlacements.length,0);
 });
 
-test('successful manual registration opens the app and does not require field placement', async () => {
+test('successful manual connection places its actual app on the field without a second chooser or navigation', async () => {
   const f = fixture(), appId = 'app-11111111111111111111111111111111'; let opened;
   f.app.api = { request(op) {
     if (op === 'apps.devices') return Promise.resolve({ devices: [{ claimed: true, online: true, hostDeviceId: 'host-A', connectorId: 'connector-A', name: 'A device' }] });
-    assert.equal(op, 'apps.register'); return Promise.resolve({ app: { id: appId, name: 'Synthetic project' } });
+    if(op==='apps.register')return Promise.resolve({app:{id:appId,name:'Synthetic project'}});
+    assert.equal(op,'apps.inspect');return Promise.resolve({schema:'soty.app-inspection.v1',app:{id:appId,name:'Synthetic project',state:'enabled'},source:{hostDeviceId:'host-A',connectorId:'connector-A',port:3000,entryPath:'/'},publication:{audience:'private',launchPolicy:'restricted',listed:false,activeDomainIds:[]}});
   } };
   f.app.openApplication = async app => { opened = app; };
-  f.app.openAppFieldPlacement = () => assert.fail('placement must stay optional');
-  f.app.openAddApp(); await turn(); const dialog = f.dialogs.at(-1), form = dialog.body.children[0];
-  const collect = (element, tag) => [element, ...element.children.flatMap(child => child instanceof ElementPort ? collect(child, tag) : [])].filter(child => child.tagName === tag);
-  const inputs = collect(form, 'input'), selectors = collect(form, 'select');
-  inputs[0].value = 'Synthetic project'; inputs[1].value = '3000'; selectors[0].value = 'host-A'; selectors[1].value = '';
-  form.listeners.get('submit')({ preventDefault() {} }); await turn();
-  assert.equal(dialog.element.open, false); assert.equal(opened.appId, appId); assert.equal(opened.ownerAccountId, 'account-A');
+  f.app.openAppFieldPlacement = () => assert.fail('a second placement chooser is forbidden');
+  f.app.openAddApp(); await turn(); const dialog = f.dialogs.at(-1), form = dialog.body.children[0], inputs=form.querySelectorAll('input');
+  inputs.find(node=>node.getAttribute('aria-label')==='Адрес приложения').value='localhost:3000';inputs.find(node=>node.getAttribute('aria-label')==='Название приложения').value='Synthetic project';form.querySelector('select').value='host-A|connector-A';
+  form.listeners.get('submit')({ preventDefault() {} }); await turn();await turn();
+  assert.equal(dialog.element.open, false); assert.equal(opened,undefined);assert.equal(f.appConnectPlacements.length,1);assert.equal(f.appConnectPlacements[0].appId,appId);assert.equal(f.appConnectPlacements[0].accountId,'account-A');assert.equal(f.appConnectPlacements[0].contextId,'personal');
 });
 
 test('first local identity keeps a visible status while the real profile request is pending', async () => {
@@ -813,6 +858,7 @@ test('same-account settings refresh retains the running app and existing window'
 const stageAppId = `app-${'c'.repeat(32)}`, stageDomainId = `dom_${'d'.repeat(32)}`;
 const stageResponse = path => ({ url: `https://runtime.example/_soty/boot?${new URLSearchParams({ path })}#${'e'.repeat(43)}`,
   entry: { appId: stageAppId, domainId: stageDomainId, origin: 'https://runtime.example', path } });
+const appSurface=f=>f.app.retainedMainApps?.active()?.host??f.app.main;
 const stageBinding = { schema: 'soty.app-launch-binding.v1', policyEpoch: 1, targetRevision: 1,
   targetDigest: 'b'.repeat(64), profile: 'soty.relay-restricted.v1', bindingFloor: 1 };
 
@@ -854,7 +900,13 @@ function promotedEntryFixture(t) {
       db.exec('COMMIT'); return { appId, domainId, origin, path };
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
-  return { entry, db, async promote() {
+  return { entry, db, launchMetadata(){
+    const value=publications.execute({op:'apps.publication.get',actor,args:{appId:stageAppId}});
+    return appLaunch.isScopedRuntimeProfile(value.target.profile)
+      ?{runtimeProfile:value.target.profile,sourceProfile:admissions.require(target).sourceProfile}
+      :{launchBinding:{schema:'soty.app-launch-binding.v1',policyEpoch:value.policyEpoch,targetRevision:value.target.revision,
+        targetDigest:value.target.digest,profile:value.target.profile,bindingFloor:value.requiredBindingVersion}};
+  },async promote() {
     const before = publications.execute({ op: 'apps.publication.get', actor, args: { appId: stageAppId } });
     const prepared = await sources.execute({ op: 'apps.source.prepare', actor, args: { appId: stageAppId,
       expectedPolicyEpoch: before.policyEpoch, expectedTargetRevision: before.activeTargetRevision,
@@ -867,13 +919,36 @@ function promotedEntryFixture(t) {
   } };
 }
 function entryTransport(f, model, calls, denyLaunch = () => false) {
+  const managed=new Map(),selected=new Map();
   f.app.api = { async request(op, args) {
+    // Inert metadata transport, not a Root grant. Lifecycle closes have their
+    // own visible log; the original address-selection log remains launch/read.
+    if(op==='apps.session.close'||op==='apps.scoped.close'){(f.entryTransportClosures??=[]).push({op,args:structuredClone(args)});return{closed:true};}
     assert.equal(args.expectedAccountId, 'account-A'); calls.push({ op, args: structuredClone(args) });
-    assert.ok(op === 'apps.launch' || op === 'apps.entry.get');
+    assert.ok(['apps.launch','apps.entry.get','apps.directory.resolve','apps.session.context','apps.scoped.context'].includes(op));
+    if(op==='apps.directory.resolve')return{schema:'soty.app-directory.v1',items:[]};
+    if(op==='apps.session.context'){
+      const value=managed.get(args.frameId),fresh=model.launchMetadata?.()??{launchBinding:stageBinding};
+      if(!value||value.hostSession.lease!==args.lease||value.hostSession.revision!==args.revision||!appLaunch.sameAppLaunchBinding(value.launchBinding,fresh.launchBinding))throw failure('app_source_changed');
+      const state=model.contextState??'current';return{schema:'soty.app-host-session-context.v1',state,hostSession:value.hostSession,hostSessionExpiresAt:state==='current'?value.hostSessionExpiresAt:null,entry:value.entry,runtimeOrigin:value.runtimeOrigin,launchBinding:value.launchBinding};
+    }
+    if(op==='apps.scoped.context'){
+      const value=selected.get(args.handle),fresh=model.launchMetadata?.()??{runtimeProfile:model.runtimeProfile,sourceProfile:model.sourceProfile};
+      if(!value||fresh.runtimeProfile!==value.runtimeProfile||JSON.stringify(fresh.sourceProfile)!==JSON.stringify(value.source))throw failure('scoped_embed_source_changed');
+      return{ready:true,appId:args.appId,scopedSource:value.source,target:{revision:1,digest:'b'.repeat(64)},expiresAt:Date.now()+120000};
+    }
     if (op === 'apps.launch' && denyLaunch(args)) throw failure('app_scoped_admission_required');
     const entry = model.entry(args);
-    return op === 'apps.entry.get' ? { entry } : { entry,
-      launchUrl: `${entry.origin}/_soty/boot?${new URLSearchParams({ path: entry.path })}#${'e'.repeat(43)}` };
+    if(op==='apps.entry.get')return{entry};
+    const metadata=model.launchMetadata?.()??{runtimeProfile:model.runtimeProfile,sourceProfile:model.sourceProfile,launchBinding:stageBinding};
+    if(appLaunch.isScopedRuntimeProfile(metadata.runtimeProfile)){selected.set('S'.repeat(43),{runtimeProfile:metadata.runtimeProfile,source:metadata.sourceProfile});return{entry,runtimeProfile:metadata.runtimeProfile,
+      scopedSource:metadata.sourceProfile,scopedCloseHandle:'S'.repeat(43),
+      launchUrl:`${entry.origin}/_soty/boot?${new URLSearchParams({path:entry.path})}#${'e'.repeat(43)}`};}
+    const zone=new URL(entry.origin),family=createHash('sha256').update(JSON.stringify([entry,metadata.launchBinding,'account-A'])).digest('hex').slice(0,24);
+    const runtimeOrigin=`${zone.protocol}//app-m${entry.appId.slice(4)}-${family}${zone.hostname.slice(zone.hostname.indexOf('.'))}${zone.port?':'+zone.port:''}`;
+    const result={entry,launchBinding:metadata.launchBinding,runtimeOrigin,hostSession:{schema:'soty.app-host-session.v1',frameId:createHash('sha256').update(crypto.randomUUID()).digest('base64url'),
+      lease:createHash('sha256').update(crypto.randomUUID()).digest('base64url'),revision:1,expiresAt:Date.now()+(model.contextState==='admitting'?30000:86400000)},hostSessionExpiresAt:Date.now()+(model.contextState==='admitting'?20000:120000),
+      launchUrl:`${runtimeOrigin}/_soty/boot?${new URLSearchParams({path:entry.path})}#${'e'.repeat(43)}`};managed.set(result.hostSession.frameId,result);return result;
   } };
 }
 
@@ -882,16 +957,17 @@ test('ordinary application click resolves the active entry after actual Apps8 So
   const cached = { appId: stageAppId, name: 'Отзывы', entry: model.entry() };
   entryTransport(f, model, calls);
   await f.app.openApplication(cached);
-  assert.equal(f.app.appStage.entry().path, '/'); assert.ok(f.app.main.querySelector('iframe'));
+  assert.equal(f.app.appStage.entry().path, '/'); assert.ok(appSurface(f).querySelector('iframe'));
   await model.promote(); assert.equal(model.entry().path, '/embed');
   assert.equal(model.db.prepare('SELECT entry_path FROM local_apps WHERE id=?').get(stageAppId).entry_path, '/');
   calls.length = 0; await f.app.openApplication(cached);
   assert.equal(cached.entry.path, '/', 'the existing field/catalogue snapshot remains stale');
-  assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.launch');
-  assert.equal(Object.hasOwn(calls[0].args, 'path'), false, 'ordinary click asks the server for its current default');
-  assert.equal(Object.hasOwn(calls[0].args, 'domainId'), false, 'ordinary click does not pin a cached address');
+  assert.deepEqual(calls.map(row=>row.op),['apps.directory.resolve','apps.entry.get','apps.session.context','apps.launch']);
+  const freshLaunch=calls.filter(row=>row.op==='apps.launch');assert.equal(freshLaunch.length,1);
+  assert.equal(Object.hasOwn(freshLaunch[0].args, 'path'), false, 'ordinary click asks the server for its current default');
+  assert.equal(Object.hasOwn(freshLaunch[0].args, 'domainId'), false, 'ordinary click does not pin a cached address');
   assert.equal(f.app.appStage.entry().path, '/embed');
-  assert.equal(new URL(f.app.main.querySelector('iframe').src).searchParams.get('path'), '/embed');
+  assert.equal(new URL(appSurface(f).querySelector('iframe').src).searchParams.get('path'), '/embed');
   assert.deepEqual(appLaunch.parseAppLaunchRoute(f.location.hash).target, { appId: stageAppId }, 'reload keeps the ordinary app intent');
   f.app.cleanScreen();
 });
@@ -901,18 +977,18 @@ test('ordinary card follows a changed server address in one launch and keeps app
   const selected = { appId: stageAppId, domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' };
   // The actual server selector is covered by selected-source-promotion.test;
   // this inert transport exercises the real controller/launcher boundary.
-  entryTransport(f, { entry: () => selected }, calls);
+  entryTransport(f, { entry: () => selected,runtimeProfile:'soty.selected-human-embed.v2',sourceProfile:HIVE_SELECTED_SOURCE }, calls);
   await f.app.openApplication(cached);
   assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.launch');
-  assert.deepEqual(calls[0].args, { appId: stageAppId, expectedAccountId: 'account-A', instanceId: 'main' });
-  assert.equal(new URL(f.app.main.querySelector('iframe').src).origin, selected.origin);
+  assert.deepEqual(calls[0].args, { appId: stageAppId, expectedAccountId: 'account-A', instanceId: 'main',hostSession:true });
+  assert.equal(new URL(appSurface(f).querySelector('iframe').src).origin, selected.origin);
   assert.deepEqual(f.app.appStage.entry(), selected); assert.equal(cached.entry.domainId, stageDomainId);
   const reload = appLaunch.parseAppLaunchRoute(f.location.hash);
   assert.deepEqual(reload.target, { appId: stageAppId });
-  calls.length = 0; f.app.cleanScreen();
+  calls.length = 0; f.app.retainedMainApps?.clear(); f.app.cleanScreen();
   await f.app.openApplication(cached, reload);
   assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.launch');
-  assert.deepEqual(calls[0].args, { appId: stageAppId, expectedAccountId: 'account-A', instanceId: 'main' });
+  assert.deepEqual(calls[0].args, { appId: stageAppId, expectedAccountId: 'account-A', instanceId: 'main',hostSession:true });
   assert.deepEqual(f.app.appStage.entry(), selected); f.app.cleanScreen();
 });
 
@@ -926,7 +1002,7 @@ test('cold app-only discussion resolves the current address without launching or
   assert.deepEqual(calls[0].args, { appId: stageAppId, expectedAccountId: 'account-A' });
   assert.deepEqual(f.app.appStage.entry(), selected);
   assert.deepEqual(appLaunch.parseAppLaunchRoute(f.location.hash).target, { appId: stageAppId });
-  assert.equal(f.app.main.querySelector('iframe'), null); f.app.cleanScreen();
+  assert.equal(appSurface(f).querySelector('iframe'), null); f.app.cleanScreen();
 });
 
 test('explicit legacy deep links stay exact on refusal; a new ordinary click recovers the active Source entry', async t => {
@@ -942,13 +1018,13 @@ test('explicit legacy deep links stay exact on refusal; a new ordinary click rec
   const old = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId,
     domainId: cached.entry.domainId, path: '/' }, undefined, { panel: 'discussion' }));
   await f.app.openApplication(cached, old);
-  assert.equal(f.app.main.querySelector('iframe'), null);
+  assert.equal(appSurface(f).querySelector('iframe'), null);
   assert.deepEqual(calls.map(({ op, args }) => [op, args.path]), [['apps.entry.get', '/']], 'a cold discussion resolves the exact entry without a runtime admission');
   assert.equal(f.app.appStage.entry().path, '/'); assert.equal(appLaunch.parseAppLaunchRoute(f.location.hash).target.path, '/');
   const failures = calls.length; await turn(); assert.equal(calls.length, failures, 'no automatic default retry of a refused deep link');
   calls.length = 0; await f.app.openApplication(cached);
   assert.equal(calls.length, 1); assert.equal(Object.hasOwn(calls[0].args, 'path'), false);
-  assert.equal(f.app.appStage.entry().path, '/embed'); assert.ok(f.app.main.querySelector('iframe'));
+  assert.equal(f.app.appStage.entry().path, '/embed'); assert.ok(appSurface(f).querySelector('iframe'));
   f.app.cleanScreen();
 });
 function bootHint(f, frame) {
@@ -975,7 +1051,7 @@ test('actual stage binds relay identity to its mounted frame and closes the old 
     return operation.endsWith('.close') ? { closed: true }
       : { schema: 'soty.relay-window-grant.v1', grant: (args.expectedAccountId === 'account-A' ? 'A' : 'B').repeat(43), expiresAt: Date.now() + 30000 };
   };
-  const first = f.app.main.querySelector('iframe');
+  const first = appSurface(f).querySelector('iframe');
   const ask = (frame, origin = 'https://runtime.example') => f.view.dispatchEvent(Object.assign(new Event('message'), {
     data: { schema: 'soty.relay-window-identity.v1', type: 'request', requestId: 'a'.repeat(36) }, source: frame.contentWindow, origin,
   }));
@@ -983,7 +1059,7 @@ test('actual stage binds relay identity to its mounted frame and closes the old 
   ask(first); await turn(); assert.equal(requests.length, 1); assert.equal(requests[0].args.expectedAccountId, 'account-A');
   assert.equal(first.contentWindow.sent.filter(value => value.data?.schema === 'soty.relay-window-identity.v1').length, 1);
   bootHint(f, first)(); await turn(); await turn();
-  const second = f.app.main.querySelector('iframe'); assert.notEqual(first, second); assert.equal(launches, 2);
+  const second = appSurface(f).querySelector('iframe'); assert.notEqual(first, second); assert.equal(launches, 2);
   assert.equal(requests[1].operation, 'apps.relay.identity.close');
   ask(first); ask(second); await turn(); assert.equal(requests.length, 3);
   assert.equal(second.contentWindow.sent.filter(value => value.data?.schema === 'soty.relay-window-identity.v1').length, 1);
@@ -992,7 +1068,7 @@ test('actual stage binds relay identity to its mounted frame and closes the old 
   f.setLocal('account-B');
   const route = appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/' });
   await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
-  const current = f.app.main.querySelector('iframe'); assert.ok(current); assert.notEqual(current, second);
+  const current = appSurface(f).querySelector('iframe'); assert.ok(current); assert.notEqual(current, second);
   ask(second); ask(current); await turn();
   const grants = requests.filter(value => value.operation === 'apps.relay.identity');
   assert.equal(grants.length, 3); assert.equal(grants[2].args.expectedAccountId, 'account-B');
@@ -1008,13 +1084,13 @@ test('repeated refresh while an old relay grant is closing starts only one launc
     if (operation === 'apps.relay.identity.close') { closes++; await closeGate.promise; return { closed: true }; }
     return fallback(operation, args);
   };
-  const frame = f.app.main.querySelector('iframe');
+  const frame = appSurface(f).querySelector('iframe');
   f.view.dispatchEvent(Object.assign(new Event('message'), { data: { schema: 'soty.relay-window-identity.v1', type: 'request', requestId: 'a'.repeat(36) },
     source: frame.contentWindow, origin: 'https://runtime.example' })); await turn();
-  const refresh = f.app.main.querySelectorAll('button').find(value => value.dataset.stageControl === 'refresh');
+  const refresh = appSurface(f).querySelectorAll('button').find(value => value.dataset.stageControl === 'refresh');
   refresh.emit('click'); refresh.emit('click'); await turn();
-  assert.equal(closes, 1); assert.equal(launches, 1); assert.equal(f.app.main.querySelector('iframe'), frame);
-  closeGate.resolve(); await turn(); await turn(); assert.equal(launches, 2); assert.notEqual(f.app.main.querySelector('iframe'), frame);
+  assert.equal(closes, 1); assert.equal(launches, 1); assert.equal(appSurface(f).querySelector('iframe'), frame);
+  closeGate.resolve(); await turn(); await turn(); assert.equal(launches, 2); assert.notEqual(appSurface(f).querySelector('iframe'), frame);
 });
 
 test('manual reopen attaches identity to the new launch binding', async t => {
@@ -1028,10 +1104,10 @@ test('manual reopen attaches identity to the new launch binding', async t => {
   };
   const ask = frame => f.view.dispatchEvent(Object.assign(new Event('message'), { data: { schema: 'soty.relay-window-identity.v1', type: 'request', requestId: 'a'.repeat(36) },
     source: frame.contentWindow, origin: 'https://runtime.example' }));
-  ask(f.app.main.querySelector('iframe')); await turn();
-  f.app.main.querySelectorAll('button').find(value => value.dataset.stageControl === 'refresh').emit('click');
+  ask(appSurface(f).querySelector('iframe')); await turn();
+  appSurface(f).querySelectorAll('button').find(value => value.dataset.stageControl === 'refresh').emit('click');
   await turn(); await turn(); assert.equal(launches, 2);
-  ask(f.app.main.querySelector('iframe')); await turn();
+  ask(appSurface(f).querySelector('iframe')); await turn();
   assert.deepEqual(identity.map(value => value.launchBinding.policyEpoch), [1, 2]);
 });
 
@@ -1046,6 +1122,68 @@ async function widgetStage(request) {
   await f.app.appStage.ready;
   return f;
 }
+
+async function hostSessionStage(t,{retained=false}={}){
+  // Actual Stage/launcher/controller, synthetic closed transport DTOs. These
+  // tests prove DOM/lifecycle wiring, not HTTP cookie or Root authority.
+  const intent=appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({appId:stageAppId,domainId:stageDomainId,path:'/'}));
+  const f=fixture({hash:'#'+intent.route}),account=f.app.deskAccount,generation=f.app.accountGeneration,operations=[];
+  let shown=true;const until=Date.now()+120000,first={schema:'soty.app-host-session.v1',frameId:'F'.repeat(43),lease:'A'.repeat(43),revision:1,expiresAt:Date.now()+86400000};
+  const next={...first,lease:'B'.repeat(43),revision:2};let requestId,checked=false,closed=false;
+  const hostOrigin='https://app-m'+stageAppId.slice(4)+'-'+ 'c'.repeat(24)+'.example';
+  const boot=()=>stageResponse('/').url.replace('https://runtime.example',hostOrigin);
+  const dto=session=>({hostSession:session,hostSessionExpiresAt:until,entry:stageResponse('/').entry,runtimeOrigin:hostOrigin,launchBinding:stageBinding});
+  const api={async request(op,args){
+    operations.push({op,args:structuredClone(args)});assert.equal(args.expectedAccountId,account);
+    if(op==='apps.session.context'){
+      if(closed)throw Object.assign(failure('app_host_session_closed'),{status:403});
+      if(args.lease!==first.lease)throw Object.assign(failure('app_host_session_conflict'),{status:409});
+      return{schema:'soty.app-host-session-context.v1',state:'renew-required',...dto(first),hostSessionExpiresAt:null};
+    }
+    if(op==='apps.session.renew'){requestId=args.requestId;return{...dto(next),launchUrl:boot().replace('#','&mode=renew#'),expiresAt:Date.now()+30000,hostSessionRequestId:requestId};}
+    if(op==='apps.session.confirm'){if(!checked)throw Object.assign(failure('app_host_session_unconfirmed'),{status:409});return{schema:'soty.app-host-session-confirmation.v1',requestId,confirmed:true,...dto(next)};}
+    if(op==='apps.session.close')return{closed:true};
+    throw Error('Unexpected host-session operation '+op);
+  }};
+  let launches=0;
+  const stage=f.mountStage(f.app.main,{api,accountId:account,app:{appId:stageAppId,name:'Retained ordinary app'},intent,
+    isCurrent:()=>!f.app.destroyed&&f.app.deskAccount===account&&f.app.accountGeneration===generation,...(retained?{isPresented:()=>shown}:{}),
+    request:async args=>{launches++;assert.equal(args.hostSession,true);return{...stageResponse('/'),url:boot(),...dto(first)};},
+    onNavigate(){},onBack(){},async onAccount(){},onSettings(){}});
+  f.app.appStage=stage;t.after(()=>stage.dispose());await stage.ready;
+  return{...f,stage,operations,hide(){shown=false;f.location.hash='#mine';stage.syncPresentation?.();},launches:()=>launches,verify(){checked=true;},deny(){closed=true;},wakeup(carrier,extra={}){
+    f.view.dispatchEvent(Object.assign(new Event('message'),{source:carrier.contentWindow,origin:hostOrigin,ports:[],data:{schema:'soty.app-host-session-wakeup.v1',requestId},...extra}));
+  }};
+}
+
+test('actual ordinary Stage renews through a separate hidden carrier without changing the visible iframe or its retained input',async t=>{
+  const f=await hostSessionStage(t),runtime=appSurface(f).querySelector('.sa-runtime'),frame=runtime.querySelector('iframe'),src=frame.src;
+  frame.contentWindow.editor={value:'Retained input without Source SDK',selectionStart:4,selectionEnd:13};const editor=frame.contentWindow.editor;
+  const renewing=f.stage.renewHostSession('reset');await turn();const carrier=appSurface(f).querySelector('.sa-host-session-carrier');
+  assert.ok(carrier);assert.notEqual(carrier,frame);assert.equal(carrier.hidden,true);assert.equal(runtime.querySelector('iframe'),frame);
+  f.verify();f.wakeup(carrier);assert.equal(await renewing,true);
+  assert.equal(runtime.querySelector('iframe'),frame);assert.equal(frame.src,src);assert.equal(frame.contentWindow.editor,editor);
+  assert.deepEqual(editor,{value:'Retained input without Source SDK',selectionStart:4,selectionEnd:13});assert.equal(f.launches(),1);
+  assert.equal(appSurface(f).querySelector('.sa-host-session-carrier'),null);assert.deepEqual(f.operations.map(value=>value.op),['apps.session.context','apps.session.renew','apps.session.confirm']);
+});
+
+test('actual hidden-carrier wakeup checks origin, Window and exact shape; a matching message still cannot replace signed cookie confirmation',async t=>{
+  const f=await hostSessionStage(t),frame=appSurface(f).querySelector('iframe'),renewing=f.stage.renewHostSession('reset');await turn();const carrier=appSurface(f).querySelector('.sa-host-session-carrier');
+  f.wakeup(carrier,{origin:'https://wrong.example'});f.wakeup(carrier,{source:{}});f.wakeup(carrier,{data:{schema:'soty.app-host-session-wakeup.v1',requestId:'wrong'}});await turn();
+  assert.equal(f.operations.some(value=>value.op==='apps.session.confirm'),false);assert.equal(appSurface(f).querySelector('.sa-host-session-carrier'),carrier);
+  f.wakeup(carrier);assert.equal(await renewing,false);assert.equal(appSurface(f).querySelector('iframe'),frame);assert.equal(f.launches(),1);
+});
+
+test('disposing an actual retained Stage aborts its hidden carrier and closes only its own known member',async t=>{
+  const f=await hostSessionStage(t),renewing=f.stage.renewHostSession('reset');await turn();assert.ok(appSurface(f).querySelector('.sa-host-session-carrier'));
+  f.stage.dispose();assert.equal(await renewing,false);await turn();assert.equal(appSurface(f).querySelector('.sa-host-session-carrier'),null);
+  assert.equal(f.operations.some(value=>value.op==='apps.session.confirm'),false);const closes=f.operations.filter(value=>value.op==='apps.session.close');assert.ok(closes.length>=1);assert.ok(closes.every(value=>value.args.frameId==='F'.repeat(43)));
+});
+
+test('authoritative host-member closure clears the old runtime through the existing Stage privacy path',async t=>{
+  const f=await hostSessionStage(t),root=f.app.main;f.deny();await assert.rejects(f.stage.renewHostSession('reset'),{code:'app_host_session_closed'});await turn();
+  assert.equal(f.app.main,root);assert.equal(root.querySelector('iframe'),null);assert.equal(f.launches(),1);assert.equal(f.operations.some(value=>value.op==='apps.session.renew'),false);
+});
 
 async function staleSourceStage({ lookup, open, discussion = false } = {}) {
   const f = fixture({ hash: '#world' }), account = f.app.deskAccount, generation = f.app.accountGeneration;
@@ -1068,8 +1206,8 @@ async function staleSourceStage({ lookup, open, discussion = false } = {}) {
   await f.app.appStage.ready;
   if (discussion) {
     assert.equal(launches, 0, 'cold discussion does not issue runtime admission');
-    f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
-    f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'discussion').emit('click'); await turn();
+    appSurface(f).querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
+    appSurface(f).querySelectorAll('button').find(node => node.dataset.stageControl === 'discussion').emit('click'); await turn();
   }
   return { ...f, currentRequests: requests, opened, stale, launches: () => launches };
 }
@@ -1077,9 +1215,9 @@ async function staleSourceStage({ lookup, open, discussion = false } = {}) {
 test('a stale Source address offers one explicit current-entry lookup without rebinding its original launcher', async t => {
   const pending = deferred(), fresh = { appId: stageAppId, domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' };
   const f = await staleSourceStage({ lookup: () => pending.promise }); t.after(() => f.app.cleanScreen());
-  const retry = f.app.main.querySelector('.sa-current-entry-retry');
-  assert.equal(retry.hidden, false); assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, true);
-  assert.match(f.app.main.querySelector('.sa-runtime').children[0].textContent, /Адрес приложения изменился/u);
+  const retry = appSurface(f).querySelector('.sa-current-entry-retry');
+  assert.equal(retry.hidden, false); assert.equal(appSurface(f).querySelector('.sa-recovery-retry').hidden, true);
+  assert.match(appSurface(f).querySelector('.sa-runtime').children[0].textContent, /Адрес приложения изменился/u);
   assert.equal(f.currentRequests.length, 1, 'failed launch only resolved its original exact entry');
   retry.emit('click'); retry.emit('click'); await turn();
   assert.deepEqual(f.currentRequests.at(-1), { op: 'apps.entry.get', args: { appId: stageAppId, current: true, expectedAccountId: 'account-A' } });
@@ -1087,12 +1225,12 @@ test('a stale Source address offers one explicit current-entry lookup without re
   pending.resolve({ entry: fresh }); await turn();
   assert.deepEqual(f.opened, [fresh]); assert.equal(retry.disabled, false);
   assert.deepEqual(f.app.appStage.entry(), f.stale, 'the captured old address was not silently changed');
-  assert.equal(f.launches(), 1); assert.equal(f.app.main.querySelector('iframe'), null);
+  assert.equal(f.launches(), 1); assert.equal(appSurface(f).querySelector('iframe'), null);
 });
 
 for (const transition of ['account ABA', 'grant removal']) test(`a late current-entry reply cannot navigate after ${transition}`, async t => {
   const pending = deferred(), f = await staleSourceStage({ lookup: () => pending.promise }); t.after(() => f.app.cleanScreen());
-  f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  appSurface(f).querySelector('.sa-current-entry-retry').emit('click'); await turn();
   if (transition === 'account ABA') { f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); }
   else f.app.appStage.updateApp({ appId: stageAppId, name: 'Moved Source', grants: { accountIds: [], communityIds: [] } });
   pending.resolve({ entry: { appId: stageAppId, domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' } }); await turn();
@@ -1102,18 +1240,18 @@ for (const transition of ['account ABA', 'grant removal']) test(`a late current-
 test('a mismatched current-entry DTO cannot substitute another app', async t => {
   const f = await staleSourceStage({ lookup: async () => ({ entry: { appId: `app-${'f'.repeat(32)}`,
     domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' } }) }); t.after(() => f.app.cleanScreen());
-  f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  appSurface(f).querySelector('.sa-current-entry-retry').emit('click'); await turn();
   assert.deepEqual(f.opened, []); assert.equal(f.launches(), 1);
-  assert.match(f.app.main.querySelector('.sa-message').textContent, /безопасно открыть/u);
+  assert.match(appSurface(f).querySelector('.sa-message').textContent, /безопасно открыть/u);
 });
 
 test('current-entry navigation preserves an unsaved discussion and makes no lookup until it can leave', async t => {
   const f = await staleSourceStage({ discussion: true, lookup: async () => { throw Error('must_not_request'); } }); t.after(() => f.app.cleanScreen());
   f.discussionCalls.unsaved = true;
-  f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  appSurface(f).querySelector('.sa-current-entry-retry').emit('click'); await turn();
   assert.equal(f.currentRequests.length, 1); assert.deepEqual(f.opened, []);
-  assert.match(f.app.main.querySelector('.sa-message').textContent, /Сохраните незавершённое действие/u);
-  assert.equal(f.app.main.querySelector('.sa-current-entry-retry').disabled, false);
+  assert.match(appSurface(f).querySelector('.sa-message').textContent, /Сохраните незавершённое действие/u);
+  assert.equal(appSurface(f).querySelector('.sa-current-entry-retry').disabled, false);
 });
 
 for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has a bounded UNKNOWN notice and manual retry without another launch or API request`, async t => {
@@ -1122,9 +1260,9 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has 
     runtimeProfile: 'soty.selected-human-embed.v2', scopedCloseHandle: 'h'.repeat(43),
     scopedSource: { id: 'soty.standard-workspace', version: 2, digest: 'a'.repeat(64) },
   } : {}) }; }); t.after(() => f.app.cleanScreen());
-  const runtime = f.app.main.querySelector('.sa-runtime'), message = f.app.main.querySelector('.sa-message');
-  const retry = f.app.main.querySelector('.sa-recovery-retry'), deadline = [...f.timers.values()].find(value => value.delay === 12000);
-  const separate = f.app.main.querySelector('.sa-external-recovery');
+  const runtime = appSurface(f).querySelector('.sa-runtime'), message = appSurface(f).querySelector('.sa-message');
+  const retry = appSurface(f).querySelector('.sa-recovery-retry'), deadline = [...f.timers.values()].find(value => value.delay === 12000);
+  const separate = appSurface(f).querySelector('.sa-external-recovery');
   assert.ok(deadline); assert.match(message.textContent, /Открываем окно/u); assert.equal(runtime.getAttribute('aria-busy'), 'true');
   assert.equal(separate.hidden, true, 'the separate-window fallback waits for an actual loading failure');
   assert.equal(retry.hidden, false); assert.equal(retry.disabled, false);
@@ -1132,7 +1270,7 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has 
   assert.match(message.textContent, /не подтверждена/u); assert.equal(runtime.getAttribute('aria-busy'), 'false');
   assert.equal(retry.hidden, false); assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
   assert.equal(separate.hidden, false, 'an unconfirmed frame exposes the existing explicit external-launch action');
-  f.app.main.querySelector('iframe').emit('load'); await turn();
+  appSurface(f).querySelector('iframe').emit('load'); await turn();
   assert.equal(separate.hidden, false, 'a late load cannot attest Native paint or clear an unconfirmed notice');
   if (profile === 'legacy') assert.equal(message.hidden, true, 'late Native document load stays neutral, without an authenticated-paint assertion');
   else assert.match(message.textContent, /Окно загружено, но запуск приложения не подтверждён/u);
@@ -1145,55 +1283,55 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget load settles
     runtimeProfile: 'soty.selected-human-embed.v2', scopedCloseHandle: 'h'.repeat(43),
     scopedSource: { id: 'soty.standard-workspace', version: 2, digest: 'a'.repeat(64) },
   } : {}) }; }); t.after(() => f.app.cleanScreen());
-  const frame = f.app.main.querySelector('iframe'), message = f.app.main.querySelector('.sa-message');
+  const frame = appSurface(f).querySelector('iframe'), message = appSurface(f).querySelector('.sa-message');
   f.view.dispatchEvent(Object.assign(new Event('message'), { source: frame.contentWindow, origin: 'https://runtime.example',
     data: { schema: 'soty.app-slot-ready.v1', requestId: 'guessed', ready: true }, ports: [] }));
   assert.match(message.textContent, /Открываем окно/u, 'a renewal hint cannot attest this visible frame');
   frame.emit('load'); await turn();
   if (profile === 'legacy') {
     assert.equal(message.hidden, true, 'a loaded legacy document has a neutral transport state, never an authenticated-paint assertion');
-    assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
-    const external = f.app.main.querySelector('.sa-external-recovery');
+    assert.equal(appSurface(f).querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
+    const external = appSurface(f).querySelector('.sa-external-recovery');
     assert.equal(external.hidden, false); assert.equal(external.disabled, false);
-    assert.equal(f.app.main.querySelector('iframe'), frame); assert.equal(calls, 1);
+    assert.equal(appSurface(f).querySelector('iframe'), frame); assert.equal(calls, 1);
     assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
     return;
   }
   assert.equal(message.hidden, false); assert.match(message.textContent, /Открываем окно/u);
-  assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'true');
-  assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
+  assert.equal(appSurface(f).querySelector('.sa-runtime').getAttribute('aria-busy'), 'true');
+  assert.equal(appSurface(f).querySelector('.sa-recovery-retry').hidden, false);
   assert.equal(calls, 1);
   assert.deepEqual(f.requests.map(value => value.op), profile === 'scoped' ? ['apps.scoped.context'] : []);
   const deadline = [...f.timers.values()].find(value => value.delay === 12000); assert.ok(deadline);
   deadline.fn(); await turn();
   assert.match(message.textContent, /запуск приложения не подтверждён/u);
-  assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
-  assert.equal(f.app.main.querySelector('iframe'), frame); assert.equal(calls, 1); assert.equal(f.timers.size, 0);
+  assert.equal(appSurface(f).querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
+  assert.equal(appSurface(f).querySelector('iframe'), frame); assert.equal(calls, 1); assert.equal(f.timers.size, 0);
   assert.deepEqual(f.requests.map(value => value.op), profile === 'scoped' ? ['apps.scoped.context'] : []);
 });
 
 test('widget transport error permits one explicit retry and ignores queued events from the replaced frame', async t => {
   let calls = 0; const pending = deferred();
   const f = await widgetStage(async () => ++calls === 1 ? stageResponse('/') : pending.promise); t.after(() => f.app.cleanScreen());
-  const first = f.app.main.querySelector('iframe'), oldEvents = [...first.handlers.get('load'), ...first.handlers.get('error')];
+  const first = appSurface(f).querySelector('iframe'), oldEvents = [...first.handlers.get('load'), ...first.handlers.get('error')];
   first.emit('error');
-  const retry = f.app.main.querySelector('.sa-recovery-retry');
-  assert.match(f.app.main.querySelector('.sa-message').textContent, /Не удалось подтвердить запуск приложения/u);
+  const retry = appSurface(f).querySelector('.sa-recovery-retry');
+  assert.match(appSurface(f).querySelector('.sa-message').textContent, /Не удалось подтвердить запуск приложения/u);
   assert.equal(retry.hidden, false); assert.equal(f.timers.size, 0);
   retry.emit('click'); retry.emit('click'); await turn();
   assert.equal(calls, 2); assert.equal(retry.disabled, true);
   pending.resolve(stageResponse('/')); await turn();
-  const second = f.app.main.querySelector('iframe'), notice = f.app.main.querySelector('.sa-message').textContent;
+  const second = appSurface(f).querySelector('iframe'), notice = appSurface(f).querySelector('.sa-message').textContent;
   assert.notEqual(second, first); assert.equal(retry.disabled, false);
   for (const event of oldEvents) event();
-  assert.equal(f.app.main.querySelector('iframe'), second); assert.equal(f.app.main.querySelector('.sa-message').textContent, notice);
+  assert.equal(appSurface(f).querySelector('iframe'), second); assert.equal(appSurface(f).querySelector('.sa-message').textContent, notice);
   assert.equal(calls, 2); assert.equal([...f.timers.values()].filter(value => value.delay === 12000).length, 1);
 });
 
 for (const transition of ['Back', 'account ABA']) test(`widget ${transition} clears the display timer and denies late frame events`, async () => {
   let calls = 0;
   const f = await widgetStage(async () => { calls++; return stageResponse('/'); });
-  const frame = f.app.main.querySelector('iframe'), events = [...frame.handlers.get('load'), ...frame.handlers.get('error')];
+  const frame = appSurface(f).querySelector('iframe'), events = [...frame.handlers.get('load'), ...frame.handlers.get('error')];
   const deadline = [...f.timers.values()].find(value => value.delay === 12000);
   if (transition === 'Back') { f.location.hash = '#mine'; f.app.cleanScreen(); }
   else { f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); }
@@ -1203,60 +1341,60 @@ for (const transition of ['Back', 'account ABA']) test(`widget ${transition} cle
 
 test('actual stage uses one fresh launch per original open and offers a manual action after a repeated untrusted hint', async () => {
   const calls = [], f = await recoveryStage(async (_app, args) => { calls.push(args); return { ...stageResponse('/'), launchBinding: stageBinding }; });
-  const first = f.app.main.querySelector('iframe'), emit = bootHint(f, first); emit(); emit(); await turn();
-  const second = f.app.main.querySelector('iframe'); assert.notEqual(first, second); assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1], { appId: stageAppId, domainId: stageDomainId, path: '/', expectedAccountId: 'account-A', instanceId: 'main' });
+  const first = appSurface(f).querySelector('iframe'), emit = bootHint(f, first); emit(); emit(); await turn();
+  const second = appSurface(f).querySelector('iframe'); assert.notEqual(first, second); assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1], { appId: stageAppId, domainId: stageDomainId, path: '/', expectedAccountId: 'account-A', instanceId: 'main',hostSession:true });
   bootHint(f, second)(); await turn(); assert.equal(calls.length, 2);
-  const actions = f.app.main.querySelector('.sa-stage-runtime-notice'), retry = actions.querySelector('.sa-recovery-retry');
+  const actions = appSurface(f).querySelector('.sa-stage-runtime-notice'), retry = actions.querySelector('.sa-recovery-retry');
   assert.equal(retry.parent, actions); assert.equal(retry.textContent, 'Открыть приложение заново');
-  assert.notEqual(retry, f.app.main.querySelector('.sa-external-recovery'));
+  assert.notEqual(retry, appSurface(f).querySelector('.sa-external-recovery'));
   assert.equal(retry.hidden, false);
-  assert.match(f.app.main.querySelector('.sa-message').textContent, /Откройте приложение заново/u);
+  assert.match(appSurface(f).querySelector('.sa-message').textContent, /Откройте приложение заново/u);
   f.app.cleanScreen(); assert.equal(f.timers.size, 0);
 });
 
 test('actual stage refuses a display-watch nonce as boot recovery while the separate recovery nonce still works', async t => {
   let calls = 0;
   const f = await recoveryStage(async () => { calls++; return { ...stageResponse('/'), launchBinding: stageBinding }; }); t.after(() => f.app.cleanScreen());
-  const frame = f.app.main.querySelector('iframe'); frame.emit('load');
+  const frame = appSurface(f).querySelector('iframe'); frame.emit('load');
   const display = frame.contentWindow.sent.findLast(value => value.data.schema === 'soty.runtime-display-watch.v1');
   const recovery = frame.contentWindow.sent.findLast(value => value.data.schema === 'soty.app-boot-watch.v1');
   assert.ok(display); assert.ok(recovery); assert.match(display.data.nonce, /^[a-f0-9]{32}$/u); assert.match(recovery.data.nonce, /^[A-Za-z0-9_-]{43}$/u);
   const emit = nonce => f.view.dispatchEvent(Object.assign(new Event('message'), { source: frame.contentWindow, origin: 'https://runtime.example', ports: [],
     data: { schema: 'soty.app-boot-failure.v1', appId: stageAppId, nonce, error: 'app_session_check_failed' } }));
   emit(display.data.nonce); await turn();
-  assert.equal(calls, 1); assert.equal(f.app.main.querySelector('iframe'), frame);
+  assert.equal(calls, 1); assert.equal(appSurface(f).querySelector('iframe'), frame);
   emit(recovery.data.nonce); await turn();
-  assert.equal(calls, 2); assert.notEqual(f.app.main.querySelector('iframe'), frame);
+  assert.equal(calls, 2); assert.notEqual(appSurface(f).querySelector('iframe'), frame);
 });
 
 test('actual controller account ABA during recovery cannot mount or display a late former-account response', async () => {
   const pending = deferred(); let calls = 0;
   const f = await recoveryStage(async () => ++calls === 1 ? { ...stageResponse('/'), launchBinding: stageBinding } : pending.promise);
-  const first = f.app.main.querySelector('iframe'); bootHint(f, first)(); await turn(); assert.equal(calls, 2);
+  const first = appSurface(f).querySelector('iframe'); bootHint(f, first)(); await turn(); assert.equal(calls, 2);
   f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
   pending.resolve({ ...stageResponse('/'), launchBinding: stageBinding }); await turn();
-  assert.equal(f.app.appStage, null); assert.equal(f.app.main.querySelector('iframe'), null); assert.equal(f.app.main.children.length, 0);
+  assert.equal(f.app.appStage, null); assert.equal(appSurface(f).querySelector('iframe'), null); assert.equal(f.app.main.children.length, 0);
   assert.equal(f.timers.size, 0);
 });
 
 test('actual route Back during recovery disposes the watcher and never replaces the new screen', async () => {
   const pending = deferred(); let calls = 0;
   const f = await recoveryStage(async () => ++calls === 1 ? { ...stageResponse('/'), launchBinding: stageBinding } : pending.promise);
-  bootHint(f, f.app.main.querySelector('iframe'))(); await turn();
+  bootHint(f, appSurface(f).querySelector('iframe'))(); await turn();
   f.location.hash = '#mine'; f.app.cleanScreen(); pending.resolve({ ...stageResponse('/'), launchBinding: stageBinding }); await turn();
-  assert.equal(f.app.main.querySelector('iframe'), null); assert.equal(f.app.main.children.length, 0); assert.equal(calls, 2);
+  assert.equal(appSurface(f).querySelector('iframe'), null); assert.equal(f.app.main.children.length, 0); assert.equal(calls, 2);
 });
 
 test('observed grant removal and same-ID reactivation cancel an in-flight recovery without reviving its nonce', async () => {
   const pending = deferred(); let calls = 0;
   const f = await recoveryStage(async () => ++calls === 1 ? { ...stageResponse('/'), launchBinding: stageBinding } : pending.promise);
-  const stage = f.app.appStage, original = f.app.main.querySelector('iframe');
+  const stage = f.app.appStage, original = appSurface(f).querySelector('iframe');
   const granted = { appId: stageAppId, name: 'Editor', grants: { accountIds: ['account-A'], communityIds: [] } };
   stage.updateApp(granted); const emit = bootHint(f, original); emit(); await turn();
   stage.updateApp({ ...granted, grants: { accountIds: [], communityIds: [] } }); stage.updateApp(granted);
   pending.resolve({ ...stageResponse('/'), launchBinding: stageBinding }); await turn(); emit(); await turn();
-  assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 2); f.app.cleanScreen();
+  assert.equal(appSurface(f).querySelector('iframe'), original); assert.equal(calls, 2); f.app.cleanScreen();
 });
 
 test('actual stage rejects source drift and lost ACK with a clear manual recovery action', async () => {
@@ -1267,30 +1405,30 @@ test('actual stage rejects source drift and lost ACK with a clear manual recover
       if (mode === 'lost-ack') throw failure('NETWORK_TIMEOUT');
       return { ...stageResponse('/'), launchBinding: { ...stageBinding, policyEpoch: 2 } };
     });
-    const original = f.app.main.querySelector('iframe'); bootHint(f, original)(); await turn();
-    assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 2);
-    const actions = f.app.main.querySelector('.sa-stage-runtime-notice'), retry = actions.querySelector('.sa-recovery-retry');
+    const original = appSurface(f).querySelector('iframe'); bootHint(f, original)(); await turn();
+    assert.equal(appSurface(f).querySelector('iframe'), original); assert.equal(calls, 2);
+    const actions = appSurface(f).querySelector('.sa-stage-runtime-notice'), retry = actions.querySelector('.sa-recovery-retry');
     assert.equal(retry.parent, actions); assert.equal(retry.textContent, 'Открыть приложение заново');
-    assert.notEqual(retry, f.app.main.querySelector('.sa-external-recovery'));
+    assert.notEqual(retry, appSurface(f).querySelector('.sa-external-recovery'));
     assert.equal(retry.hidden, false);
-    assert.equal(f.app.main.querySelector('.sa-message').hidden, false); f.app.cleanScreen();
+    assert.equal(appSurface(f).querySelector('.sa-message').hidden, false); f.app.cleanScreen();
   }
 });
 
 test('legacy launch response mounts its runtime without requiring new metadata or a recovery message channel', async () => {
   let calls = 0; const f = await recoveryStage(async () => { calls++; return stageResponse('/'); });
-  const original = f.app.main.querySelector('iframe'); original.emit('load'); await turn();
+  const original = appSurface(f).querySelector('iframe'); original.emit('load'); await turn();
   assert.equal(original.contentWindow.sent.some(value => value.data?.schema === 'soty.app-boot-watch.v1'), false);
   assert.ok(original.contentWindow.sent.some(value => value.data?.schema === 'soty.runtime-display-watch.v1'));
   assert.equal(calls, 1);
   assert.deepEqual(f.requests, [], 'legacy launch does not acquire a new Source-session dependency');
   assert.equal(f.timers.size, 0, 'neutral transport load is not a deadline or Native readiness attestation');
-  assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 1);
-  assert.equal(f.app.main.querySelector('.sa-message').hidden, true);
-  assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
-  const external = f.app.main.querySelector('.sa-external-recovery');
+  assert.equal(appSurface(f).querySelector('iframe'), original); assert.equal(calls, 1);
+  assert.equal(appSurface(f).querySelector('.sa-message').hidden, true);
+  assert.equal(appSurface(f).querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
+  const external = appSurface(f).querySelector('.sa-external-recovery');
   assert.equal(external.hidden, false); assert.equal(external.disabled, false);
-  assert.equal(external.parent, f.app.main.querySelector('.sa-stage-runtime-notice'), 'the existing action is outside the CSS-hidden actions group');
+  assert.equal(external.parent, appSurface(f).querySelector('.sa-stage-runtime-notice'), 'the existing action is outside the CSS-hidden actions group');
   assert.equal(f.timers.size, 0); f.app.cleanScreen();
 });
 
@@ -1299,32 +1437,32 @@ test('actual stage preserves a discussion through initial metadata and rename, b
   const f = fixture({ hash: '#' + route });
   f.app.options.openApp = async () => stageResponse('/');
   await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
-  const stage = f.app.appStage, frame = f.app.main.querySelector('iframe');
+  const stage = f.app.appStage, frame = appSurface(f).querySelector('iframe');
   const observed = { appId: stageAppId, name: 'Observed editor', status: 'ready', ownerAccountId: 'account-A', grants: { accountIds: ['person-b', 'person-a'], communityIds: [] } };
   stage.updateApp(observed); assert.equal(f.discussionCalls.refresh, 0);
   stage.updateApp({ ...observed, name: 'Renamed', deviceLabel: 'Another label', grants: { accountIds: ['person-a', 'person-b'], communityIds: [] } });
-  assert.equal(f.discussionCalls.refresh, 0); assert.equal(f.app.main.querySelector('iframe'), frame);
+  assert.equal(f.discussionCalls.refresh, 0); assert.equal(appSurface(f).querySelector('iframe'), frame);
   const changed = { ...observed, grants: { accountIds: ['person-a'], communityIds: [] } };
   stage.updateApp(changed); assert.equal(f.discussionCalls.refresh, 1);
   stage.updateApp({ ...changed, publication: { launchPolicy: 'anyone', activeNamedAddressCount: 1 } });
-  assert.equal(f.discussionCalls.refresh, 2); assert.equal(f.app.main.querySelector('iframe'), frame);
+  assert.equal(f.discussionCalls.refresh, 2); assert.equal(appSurface(f).querySelector('iframe'), frame);
 });
 test('actual controller and stage preserve the same runtime through discussion, archive and route Back', async () => {
   const route = appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/editor?q=one#row' });
   const f = fixture({ hash: '#' + route }), calls = [];
   f.app.options.openApp = async (_app, parameters) => { calls.push(parameters); return stageResponse(parameters.path); };
   await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
-  const frame = f.app.main.querySelector('iframe'), stage = f.app.appStage, sequence = f.app.screenSequence;
+  const frame = appSurface(f).querySelector('iframe'), stage = f.app.appStage, sequence = f.app.screenSequence;
   assert.ok(frame);
   for (const presentation of [{ panel: 'discussion' }, { panel: 'discussion', conversationId: `conv_${'f'.repeat(32)}` }, { panel: 'discussion' }, undefined]) {
     f.location.hash = '#' + appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/editor?q=one#row' }, undefined, presentation);
     await f.Controller.prototype.openRoute.call(f.app);
-    assert.equal(f.app.appStage, stage); assert.equal(f.app.main.querySelector('iframe'), frame);
+    assert.equal(f.app.appStage, stage); assert.equal(appSurface(f).querySelector('iframe'), frame);
     assert.equal(f.app.screenSequence, sequence); assert.equal(calls.length, 1);
   }
   f.location.hash = '#' + appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/other' });
   await f.Controller.prototype.openRoute.call(f.app);
-  assert.notEqual(f.app.main.querySelector('iframe'), frame); assert.equal(calls.length, 2);
+  assert.notEqual(appSurface(f).querySelector('iframe'), frame); assert.equal(calls.length, 2);
   assert.equal(calls[1].path, '/other'); f.app.cleanScreen();
 });
 
@@ -1333,12 +1471,12 @@ test('actual stage starts no runtime in the owner archive and opens it only on o
   const f = fixture({ hash: '#' + admin.route }); let calls = 0;
   f.app.options.openApp = async () => { calls++; return stageResponse('/'); };
   await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, admin);
-  assert.equal(calls, 0); assert.equal(f.app.main.querySelector('iframe'), null);
+  assert.equal(calls, 0); assert.equal(appSurface(f).querySelector('iframe'), null);
   f.location.hash = '#' + appLaunch.formatAppLaunchRoute({ appId: stageAppId }, undefined, { panel: 'discussion' });
   await f.Controller.prototype.openRoute.call(f.app); await turn();
-  assert.equal(calls, 0); assert.equal(f.app.main.querySelector('iframe'), null, 'ordinary cold discussion also defers runtime');
-  f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
-  assert.equal(calls, 1); assert.ok(f.app.main.querySelector('iframe')); f.app.cleanScreen();
+  assert.equal(calls, 0); assert.equal(appSurface(f).querySelector('iframe'), null, 'ordinary cold discussion also defers runtime');
+  appSurface(f).querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
+  assert.equal(calls, 1); assert.ok(appSurface(f).querySelector('iframe')); f.app.cleanScreen();
 });
 
 test('actual application stage cannot revive a late launch after account A to B to A', async () => {
@@ -1350,16 +1488,16 @@ test('actual application stage cannot revive a late launch after account A to B 
   f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
   pending.resolve(stageResponse('/')); await opening;
   assert.equal(f.app.accountGeneration, firstGeneration + 2); assert.equal(f.app.appStage, null);
-  assert.equal(f.app.main.querySelector('iframe'), null); assert.equal(f.app.main.children.length, 0);
+  assert.equal(appSurface(f).querySelector('iframe'), null); assert.equal(f.app.main.children.length, 0);
 });
 
 test('same-account network loss during shell refresh preserves the running app stage', async () => {
   const route = appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/' });
   const f = fixture({ hash: '#' + route }); f.app.options.openApp = async () => stageResponse('/');
   await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
-  const stage = f.app.appStage, frame = f.app.main.querySelector('iframe');
+  const stage = f.app.appStage, frame = appSurface(f).querySelector('iframe');
   f.setOnline(false); await f.app.refresh();
-  assert.equal(f.app.appStage, stage); assert.equal(f.app.main.querySelector('iframe'), frame);
+  assert.equal(f.app.appStage, stage); assert.equal(appSurface(f).querySelector('iframe'), frame);
   assert.equal(f.app.lastToast, 'NETWORK_ERROR'); f.app.cleanScreen();
 });
 
@@ -1426,7 +1564,8 @@ test('actual app controller enqueues launch before slow optional metadata on the
   for (const held of ['apps.list', 'apps.catalog', 'world.community.get']) {
     const projectId = 'actual-app-queue', origin = 'https://shell.example', endpoint = `${origin}/rpc`, scope = { projectId, endpoint };
     const appId = `app-${'a'.repeat(32)}`, domainId = `dom_${'b'.repeat(32)}`, operations = [], entered = deferred(), release = deferred();
-    const launchUrl = `https://app.runtime.example/_soty/boot?path=%2F#${'t'.repeat(43)}`;
+    const runtimeOrigin=`https://app-m${appId.slice(4)}-${'c'.repeat(24)}.runtime.example`;
+    const launchUrl = `${runtimeOrigin}/_soty/boot?path=%2F#${'t'.repeat(43)}`;
     let value = null;
     const copy = () => value === null ? null : structuredClone(value);
     const storage = {
@@ -1437,9 +1576,11 @@ test('actual app controller enqueues launch before slow optional metadata on the
       },
     };
     const service = createConnectService({ databasePath: ':memory:', projectId, allowedOrigins: [origin], extensions: [{
-      operations: new Set(['apps.launch', 'apps.list', 'apps.catalog', 'world.community.get']), execute({ op, actor }) {
+      operations: new Set(['apps.launch', 'apps.session.close', 'apps.list', 'apps.catalog', 'world.community.get']), execute({ op, actor }) {
         operations.push(op);
-        if (op === 'apps.launch') return { launchUrl, entry: { appId, domainId, origin: 'https://app.runtime.example', path: '/' } };
+        if (op === 'apps.session.close') return {closed:true};
+        if (op === 'apps.launch') return { launchUrl, entry: { appId, domainId, origin: 'https://app.runtime.example', path: '/' },runtimeOrigin,
+          launchBinding:stageBinding,hostSession:{schema:'soty.app-host-session.v1',frameId:'F'.repeat(43),lease:'A'.repeat(43),revision:1,expiresAt:Date.now()+86400000},hostSessionExpiresAt:Date.now()+120000 };
         if (op === 'world.community.get') return { community: { communityId: 'community-test', membership: { state: 'none' } } };
         if (op === 'apps.list' && held === 'apps.catalog') return { apps: [] };
         if (op === 'apps.catalog') return { apps: [{ id: appId, name: 'Actual app name', state: 'enabled', ownerAccountId: 'another-owner',
@@ -1463,12 +1604,12 @@ test('actual app controller enqueues launch before slow optional metadata on the
     try {
       await entered.promise; await turn();
       assert.equal(operations[0], 'apps.launch', held);
-      assert.equal(f.app.main.querySelector('iframe')?.src, launchUrl, 'runtime frame is mounted while optional response is still held');
+      assert.equal(appSurface(f).querySelector('iframe')?.src, launchUrl, 'runtime frame is mounted while optional response is still held');
       await opening;
     } finally { release.resolve(); await opening; }
     await metadata.promise; await turn();
-    assert.equal(f.app.main.querySelector('iframe')?.title, 'Actual app name');
-    assert.equal(f.app.main.querySelector('iframe')?.src, launchUrl, 'public metadata cannot replace the admitted runtime');
+    assert.equal(appSurface(f).querySelector('iframe')?.title, 'Actual app name');
+    assert.equal(appSurface(f).querySelector('iframe')?.src, launchUrl, 'public metadata cannot replace the admitted runtime');
     assert.deepEqual(f.app.appStage.entry(), { appId, domainId, origin: 'https://app.runtime.example', path: '/' });
     f.app.cleanScreen();
   }
@@ -1502,33 +1643,33 @@ async function currentReviewMain({ discussion = false } = {}) {
   await f.app.openApplication({ appId: stageAppId, name: 'Moved application' }, appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/embed' }, undefined, discussion ? { panel: 'discussion' } : undefined)));
   if (discussion) {
     assert.equal(calls.length, 0, 'cold discussion has no runtime admission');
-    f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
-    f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'discussion').emit('click'); await turn();
+    appSurface(f).querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
+    appSurface(f).querySelectorAll('button').find(node => node.dataset.stageControl === 'discussion').emit('click'); await turn();
   }
   return { ...f, calls, lookups };
 }
 
 test('actual main UI current-entry button creates a new exact stage, retaining the old launcher target and excluding origin from its route', async t => {
   const f = await currentReviewMain({ discussion: true }); t.after(() => f.app.cleanScreen()); const oldStage = f.app.appStage;
-  const retry = f.app.main.querySelector('.sa-current-entry-retry'); assert.equal(retry.hidden, false);
+  const retry = appSurface(f).querySelector('.sa-current-entry-retry'); assert.equal(retry.hidden, false);
   retry.emit('click'); await turn(); await turn();
   assert.notEqual(f.app.appStage, oldStage); assert.deepEqual(f.app.appStage.entry(), currentReviewEntry);
   assert.equal(f.calls.length, 2); assert.equal(f.calls[0].domainId, stageDomainId); assert.equal(f.calls[1].domainId, currentReviewEntry.domainId);
   assert.equal(f.calls[1].path, '/embed'); assert.equal(f.calls[1].expectedAccountId, 'account-A');
   assert.equal(f.location.hash, '#' + appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: currentReviewEntry.domainId, path: '/embed' }));
-  assert.equal(f.lookups.filter(args => args.current).length, 1); assert.ok(f.app.main.querySelector('iframe'));
+  assert.equal(f.lookups.filter(args => args.current).length, 1); assert.ok(appSurface(f).querySelector('iframe'));
 });
 
 test('actual main UI recovery cannot discard an unsaved discussion', async t => {
   const f = await currentReviewMain({ discussion: true }); t.after(() => f.app.cleanScreen()); const oldStage = f.app.appStage;
-  f.discussionCalls.unsaved = true; f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  f.discussionCalls.unsaved = true; appSurface(f).querySelector('.sa-current-entry-retry').emit('click'); await turn();
   assert.equal(f.app.appStage, oldStage); assert.equal(f.calls.length, 1); assert.equal(f.lookups.filter(args => args.current).length, 0);
 });
 
 test('actual main UI current-entry lookup cannot reopen a stage after account ABA', async t => {
   const f = await currentReviewMain(), gate = deferred(); t.after(() => f.app.cleanScreen());
   f.app.api.request = async (_op, args) => args.current ? gate.promise : { entry: oldReviewEntry };
-  f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  appSurface(f).querySelector('.sa-current-entry-retry').emit('click'); await turn();
   f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); gate.resolve({ entry: currentReviewEntry }); await turn();
   assert.equal(f.app.appStage, null); assert.equal(f.calls.length, 1);
 });
@@ -1604,15 +1745,15 @@ function currentReviewFind(node, predicate) {
 test('temporary external-recovery button performs the existing gesture popup launch for the exact widget entry without replacing its frame', async t => {
   const admissions = [], f = await widgetStage(async args => { admissions.push(structuredClone(args)); return stageResponse('/'); });
   t.after(() => f.app.cleanScreen()); ElementPort.prototype.click = function() { this.emit('click'); };
-  const frame = f.app.main.querySelector('iframe'), fallback = currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external-recovery');
+  const frame = appSurface(f).querySelector('iframe'), fallback = currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external-recovery');
   let opens = 0, navigated = null;
   const popup = { closed: false, opener: {}, location: { replace(url) { navigated = url; } }, close() { this.closed = true; } };
   f.view.open = () => { opens++; return popup; };
   const deadline = [...f.timers.values()].find(timer => timer.delay === 12000); deadline.fn(); assert.equal(fallback.hidden, false);
   fallback.emit('click'); assert.equal(opens, 1, 'the popup is created synchronously in the original click');
   await turn(); await turn();
-  assert.equal(admissions.length, 2); assert.deepEqual(admissions[1], admissions[0]); assert.ok(navigated?.startsWith('https://runtime.example/_soty/boot?'));
-  assert.equal(popup.opener, null); assert.equal(popup.closed, false); assert.equal(f.app.main.querySelector('iframe'), frame); assert.equal(f.location.hash, '#world');
+  assert.equal(admissions.length, 2);const {hostSession,...sameTarget}=admissions[0];assert.equal(hostSession,true);assert.equal(Object.hasOwn(admissions[1],'hostSession'),false);assert.deepEqual(admissions[1],sameTarget);assert.ok(navigated?.startsWith('https://runtime.example/_soty/boot?'));
+  assert.equal(popup.opener, null); assert.equal(popup.closed, false); assert.equal(appSurface(f).querySelector('iframe'), frame); assert.equal(f.location.hash, '#world');
 });
 
 test('temporary external recovery closes its unfinished popup on account change without navigating it with a late private URL', async t => {
@@ -1780,7 +1921,7 @@ for (const route of ['chat', 'app']) test(`cold ${route} link replays pending fi
   } else f.app.openApplication = () => navigation.promise;
   const refreshing = f.app.refresh();
   try {
-    for (let i = 0; i < 50 && h.local()?.pending.length; i++) await turn();
+    await until(() => h.local()?.pending.length === 0, 'background pending replay does not wait for the cold route');
     assert.equal(h.local().pending.length, 0, 'background pending replay does not wait for the cold route');
     assert.deepEqual(h.remote().document, document); assert.deepEqual(h.operations, ['world.field.get', 'world.field.put']);
   } finally {
@@ -2292,6 +2433,9 @@ test('review F1 a superseded direct-open failure does not surface on the selecte
 });
 
 function reviewDirectPoll(f) {
+  // The old probe supplied directEnabled=true as a closure port. The shared
+  // account inbox now reads that same capability from the actual profile.
+  f.app.profile.directMessagesVersion=1;
   const declaration = cacheFind(cacheAst, node => ts.isVariableDeclaration(node) && node.name.getText(cacheAst) === 'refreshDirect');
   const inert = () => {};
   return cacheBindArrow(f, declaration?.initializer,
@@ -2301,7 +2445,7 @@ function reviewDirectPoll(f) {
 }
 function reviewMountedDirect(f, thread) {
   let target; f.app.updateNavUnread = () => {};
-  f.app.mountConversation = (_parent, value) => { target = value; return () => true; };
+  f.app.mountConversation = (_parent, value) => { target = value; return {isCurrent:()=>true,flush:async()=>{},hasUnsavedChanges:()=>false,dispose(){}}; };
   f.app.mountDirectChat(new ElementPort(), thread); return target;
 }
 test('review F2 actual direct poll cannot restore unread counts after the actual read-ACK closure', async () => {
@@ -2455,9 +2599,9 @@ test('actual main application entry receives the shared descriptor resolver', as
   f.app.options.readNativeVoice = () => { reads++; return gate.promise; };
   f.app.options.openApp = async () => { launches++; return stageResponse('/'); };
   const opening = f.app.openApplication({ appId: stageAppId, name: 'Voice' }); t.after(() => f.app.cleanScreen()); await turn();
-  try { assert.equal(reads, 1); assert.equal(launches, 0); assert.equal(f.app.main.querySelector('iframe'), null); }
+  try { assert.equal(reads, 1); assert.equal(launches, 0); assert.equal(appSurface(f).querySelector('iframe'), null); }
   finally { gate.resolve(null); await opening; }
-  assert.equal(launches, 1); assert.ok(f.app.main.querySelector('iframe'));
+  assert.equal(launches, 1); assert.ok(appSurface(f).querySelector('iframe'));
 });
 test('actual constructor widget entry receives the shared descriptor resolver and legacy ready voice option', async t => {
   const f = fixture({ hash: '#world' }), gate = deferred(); let reads = 0, launches = 0;
@@ -2465,9 +2609,9 @@ test('actual constructor widget entry receives the shared descriptor resolver an
   f.app.options.openApp = async () => { launches++; return stageResponse('/'); };
   const intent = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId }));
   const stage = voiceWidgetFromActualConstructor(f, intent); t.after(() => stage.dispose()); await turn();
-  try { assert.equal(reads, 1); assert.equal(launches, 0); assert.equal(f.app.main.querySelector('iframe'), null); }
+  try { assert.equal(reads, 1); assert.equal(launches, 0); assert.equal(appSurface(f).querySelector('iframe'), null); }
   finally { gate.resolve(null); await stage.ready; }
-  assert.equal(launches, 1); assert.ok(f.app.main.querySelector('iframe'));
+  assert.equal(launches, 1); assert.ok(appSurface(f).querySelector('iframe'));
   stage.dispose(); f.app.options.nativeVoice = { client: voiceClientFixture(f), mount: voiceMountFixture() };
   const ready = voiceWidgetFromActualConstructor(f, intent); t.after(() => ready.dispose()); await ready.ready;
   assert.equal(reads, 1, 'legacy ready widget does not reread the pending metadata port'); assert.equal(f.nativeVoiceBridges.length, 1);
@@ -2492,12 +2636,16 @@ test('disposing one actual voice stage retires only its own bridge and leaves th
   const a = voiceStageFixture(f, { nativeVoice }), b = voiceStageFixture(f, { nativeVoice, host }); t.after(() => { a.stage.dispose(); b.stage.dispose(); });
   await Promise.all([a.stage.ready, b.stage.ready]); assert.equal(f.nativeVoiceBridges.length, 2);
   const first = a.host.querySelector('iframe'), second = b.host.querySelector('iframe'); assert.ok(first); assert.ok(second);
+  // The independent UI-context host now sends its initial mode. Voice scope
+  // replies retain their exact per-frame lifetime and must not count that mode.
+  const voiceReplies = frame => frame.contentWindow.sent.filter(value => value.data.schema === 'soty.kvartalufa-voice-carrier.v1');
+  for (const frame of [first, second]) assert.deepEqual(frame.contentWindow.sent.map(value => value.data.schema), ['glass-ui.widget-context.v1']);
   const scope = (frame, requestId) => f.view.dispatchEvent(Object.assign(new Event('message'), { source: frame.contentWindow, origin: 'https://runtime.example', data: { schema: 'soty.kvartalufa-voice-carrier.v1', method: 'scope', requestId } }));
   scope(first, 'scope-first-111'); scope(second, 'scope-second-111'); await turn();
-  assert.equal(first.contentWindow.sent.length, 1); assert.equal(second.contentWindow.sent.length, 1);
+  assert.equal(voiceReplies(first).length, 1); assert.equal(voiceReplies(second).length, 1);
   a.stage.dispose(); a.stage.dispose(); assert.equal(f.nativeVoiceBridges[0].disposed, 1); assert.equal(f.nativeVoiceBridges[1].disposed, 0);
   scope(first, 'scope-first-222'); scope(second, 'scope-second-222'); await turn();
-  assert.equal(first.contentWindow.sent.length, 1); assert.equal(second.contentWindow.sent.length, 2); assert.equal(b.host.querySelector('iframe'), second);
+  assert.equal(voiceReplies(first).length, 1); assert.equal(voiceReplies(second).length, 2); assert.equal(b.host.querySelector('iframe'), second);
 });
 
 
@@ -2729,7 +2877,7 @@ for (const scenario of ['initial accepted send', 'later history poll', 'newer te
       canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
       async request(action) { if (action === 'list') return pollResponse ?? page.promise; throw Error(`Unexpected chat action: ${action}`); }, setUnread() {} };
     const parent = f.makeElement('div');
-    f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+    f.mountOwnedConversation(parent, target, { showHeader: false, notify() {} });
     await f.app.chatDraftSession.ready; await turn();
     const input = parent.querySelector('textarea'), composer = parent.querySelector('.sw-composer'), send = composer.querySelector('.sw-button-primary');
     input.focus(); assert.equal(input.value, 'Original A');
@@ -2761,7 +2909,7 @@ for (const coarse of [false, true]) test(`chat composer keyboard: ${coarse ? 'to
   f.app.preferences = { motion: false };
   const parent = f.makeElement('div'), target = { kind: 'community', id: 'keyboard_room', draftKey: 'keyboard_room', name: 'Keyboard fixture', record: {},
     canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {}, async request() { return { messages: [], hasMore: false }; }, setUnread() {} };
-  f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+  f.mountOwnedConversation(parent, target, { showHeader: false, notify() {} });
   await f.app.chatDraftSession.ready; await turn();
   const input = parent.querySelector('textarea'), composer = parent.querySelector('.sw-composer');
   let submissions = 0, prevented = 0; composer.requestSubmit = () => { submissions++; };
@@ -2859,7 +3007,7 @@ test('chat never dispatches a text message when its shared queue is unavailable 
   const parent = f.makeElement('div'), target = { kind: 'community', id: 'room_fixture', draftKey: 'room_fixture', name: 'Synthetic conversation', subtitle: 2,
     canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
     async request(action, args) { if (action === 'list') return { messages: [], hasMore: false }; if (action === 'send') { sent.push(args); return { message: { messageId: 'message_saved', clientId: args.clientId, seq: 1, text: args.text, author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false } }; } throw Error(`Unexpected action ${action}`); }, setUnread() {} };
-  f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+  f.mountOwnedConversation(parent, target, { showHeader: false, notify() {} });
   await f.app.chatDraftSession.ready; await turn(); const composer = parent.querySelector('.sw-composer'), input = parent.querySelector('textarea');
   failing = true; composer.requestSubmit(); await turn();
   assert.equal(sent.length, 0, 'Unsaved intent must never reach the server');
@@ -2890,10 +3038,13 @@ for (const claimSucceeds of [false, true]) test(`chat attachment with unavailabl
   const target = { kind: 'community', id: 'room_files', draftKey: 'room_files', name: 'Synthetic conversation', subtitle: 2,
     canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
     async request(action, args) { if (action === 'list') return { messages: [], hasMore: false }; if (action === 'send') { events.push('send'); return { message: { messageId: 'message_file', clientId: args.clientId, seq: 1, text: args.text, author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false } }; } throw Error(`Unexpected action ${action}`); }, setUnread() {} };
-  const parent = f.makeElement('div'); f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
-  await turn(); await turn(); failing = true; parent.querySelector('.sw-composer').requestSubmit(); await turn(); await turn();
-  assert.deepEqual(events, claimSucceeds ? ['claim', 'send', 'ack'] : ['claim']);
-  f.app.chatCleanup();
+  const parent = f.makeElement('div'); f.mountOwnedConversation(parent, target, { showHeader: false, notify() {} });
+  try {
+    await f.app.chatDraftSession.ready;
+    assert.equal(parent.querySelector('textarea').disabled, false);
+    failing = true; await submitChat(parent.querySelector('.sw-composer'));
+    assert.deepEqual(events, claimSucceeds ? ['claim', 'send', 'ack'] : ['claim']);
+  } finally { f.app.chatCleanup(); }
 });
 
 for (const retryFrom of ['first', 'second']) for (const variant of ['different', 'identical-edited', 'identical-unchanged']) {
@@ -2914,11 +3065,12 @@ for (const retryFrom of ['first', 'second']) for (const variant of ['different',
   for(const f of [first,second]){f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=box;Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});}
   const target={kind:'community',id:room,draftKey:room,name:'Synthetic chat',subtitle:2,canWrite:true,canModerate:false,preferences:{pinned:false,muted:false},async refresh(){},setUnread(){},
     async request(action,args){if(action==='list')return {messages:[],hasMore:false};if(action==='send'){sends.push(args.clientId);const result=call(actor,'chat.send',{communityId:room,clientId:args.clientId,text:args.text,replyTo:args.replyTo});if(lost){lost=false;throw Object.assign(Error('Synthetic lost ACK'),{code:'NETWORK_ERROR'});}return result;}throw Error(`Unexpected action ${action}`);}};
-  const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});
+  const p1=first.makeElement('div'),p2=second.makeElement('div');first.mountOwnedConversation(p1,target,{showHeader:false,notify(){}});second.mountOwnedConversation(p2,target,{showHeader:false,notify(){}});
   try {
-    await turn();p1.querySelector('.sw-composer').requestSubmit();await turn();await turn();assert.equal(sends.length,1);
+    await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
+    await submitChat(p1.querySelector('.sw-composer'));assert.equal(sends.length,1);
     const input2=p2.querySelector('textarea');input2.value=nextText;if(variant!=='identical-unchanged')input2.emit('input');
-    (retryFrom==='first'?p1:p2).querySelector('.sw-composer').requestSubmit();await turn();await turn();
+    await submitChat((retryFrom==='first'?p1:p2).querySelector('.sw-composer'));
     assert.equal(sends.length,2);assert.equal(sends[1],sends[0]);
     assert.deepEqual(call(peer,'chat.list',{communityId:room}).messages.map(m=>m.text),['Первое сообщение']);
     assert.equal(second.app.chatDrafts.read('account-A',room).text,nextText);
@@ -2937,14 +3089,16 @@ for (const conflict of [false,true]) test(`old chat pending survives new queue s
   f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=()=>({ready:Promise.resolve(),canSend:()=>false,refs:()=>[],pendingIntent:()=>pending,acceptedIntent:()=>null,close(){},
     async prepareSend(value){events.push('claim');if(!pending)pending={clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]};return {state:'pending',intent:pending};},async acknowledge(_ids,value){events.push('ack');if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}});
   const target={kind:'community',id:'legacy_room',draftKey:'legacy_room',name:'Legacy',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push('send:'+args.clientId);return {message:{messageId:'message_'+args.clientId,clientId:args.clientId,seq:events.length,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
-  if(!conflict){assert.deepEqual(events,['claim']);assert.equal(pending.clientId,'legacy_intent');}
-  else {assert.deepEqual(events,[]);parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
-    assert.deepEqual(events,['claim','send:other_intent','ack']);assert.equal(pending,null);assert.equal(drafts.read('account-A','legacy_room').pending.clientId,'legacy_intent');
-    assert.equal(drafts.read('account-A','legacy_room').text,'Legacy text');assert.match(f.app.lastToast,/прежнее сообщение/u);
-    parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
-    assert.deepEqual(events,['claim','send:other_intent','ack','claim','send:legacy_intent','ack']);assert.equal(drafts.read('account-A','legacy_room').pending,null);}
-  f.app.chatCleanup();
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});
+  try {
+    await f.app.chatDraftSession.ready;
+    if(!conflict){await until(()=>pending?.clientId==='legacy_intent','the old intent is durably claimed');assert.deepEqual(events,['claim']);assert.equal(pending.clientId,'legacy_intent');}
+    else {assert.deepEqual(events,[]);await submitChat(parent.querySelector('.sw-composer'));
+      assert.deepEqual(events,['claim','send:other_intent','ack']);assert.equal(pending,null);assert.equal(drafts.read('account-A','legacy_room').pending.clientId,'legacy_intent');
+      assert.equal(drafts.read('account-A','legacy_room').text,'Legacy text');assert.match(f.app.lastToast,/прежнее сообщение/u);
+      await submitChat(parent.querySelector('.sw-composer'));
+      assert.deepEqual(events,['claim','send:other_intent','ack','claim','send:legacy_intent','ack']);assert.equal(drafts.read('account-A','legacy_room').pending,null);}
+  } finally { f.app.chatCleanup(); }
 });
 
 test('history acknowledgement clears the shared old intent without erasing a different locally retained one', async () => {
@@ -2957,7 +3111,7 @@ test('history acknowledgement clears the shared old intent without erasing a dif
     async acknowledge(_ids,value){events.push('ack:'+value.clientId);if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}});
   const old={messageId:'message_queued_old',clientId:'queued_old',seq:1,text:'Already delivered',author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false};
   const target={kind:'community',id:'room_ack',draftKey:'room_ack',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[old],hasMore:false};throw Error('Unexpected network operation');}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
   assert.deepEqual(events,['ack:queued_old']);assert.equal(pending,null);assert.equal(drafts.read('account-A','room_ack').pending.clientId,'local_next');assert.equal(drafts.read('account-A','room_ack').text,'Next thought');
   f.app.chatCleanup();
 });
@@ -2969,11 +3123,14 @@ test('chat recreates the shared queue after an initial IndexedDB open failure wi
   const makeBox=f.ports['./attachment-outbox.mjs'].createAttachmentOutbox;let attempts=0;
   f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=options=>{attempts++;if(attempts===1)return {ready:Promise.reject(Object.assign(Error('Synthetic IDB open failure'),{code:'attachment_local_storage'})),canSend:()=>false,pendingIntent:()=>null,acceptedIntent:()=>null,close(){events.push('close failed');}};return makeBox(options);};
   const target={kind:'community',id:'room_recover',draftKey:'room_recover',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push('send:'+args.clientId);return {message:{messageId:'message_recovered',clientId:args.clientId,seq:1,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
-  assert.equal(attempts,1);assert.equal(parent.querySelector('textarea').value,'Keep and send');assert.equal(parent.querySelector('.sw-error').textContent,'chat_local_storage_unavailable');
-  parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
-  assert.equal(attempts,2);assert.deepEqual(events,['close failed','send:after_idb_recovery']);assert.equal(drafts.read('account-A','room_recover').pending,null);assert.equal(drafts.read('account-A','room_recover').text,'');
-  f.app.chatCleanup();
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});
+  try {
+    await f.app.chatDraftSession.ready;
+    await until(()=>parent.querySelector('.sw-error').textContent==='chat_local_storage_unavailable','the queue open failure is visible');
+    assert.equal(attempts,1);assert.equal(parent.querySelector('textarea').value,'Keep and send');assert.equal(parent.querySelector('.sw-error').textContent,'chat_local_storage_unavailable');
+    await submitChat(parent.querySelector('.sw-composer'));
+    assert.equal(attempts,2);assert.deepEqual(events,['close failed','send:after_idb_recovery']);assert.equal(drafts.read('account-A','room_recover').pending,null);assert.equal(drafts.read('account-A','room_recover').text,'');
+  } finally { f.app.chatCleanup(); }
 });
 
 test('queue reopening restores its earlier pending ID and retains the other local pending send', async () => {
@@ -2984,7 +3141,7 @@ test('queue reopening restores its earlier pending ID and retains the other loca
   f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=()=>{attempts++;if(attempts===1)return {ready:Promise.reject(Object.assign(Error('Synthetic IDB failure'),{code:'attachment_local_storage'})),canSend:()=>false,pendingIntent:()=>null,acceptedIntent:()=>null,close(){}};
     return {ready:Promise.resolve(),canSend:()=>false,refs:()=>[],pendingIntent:()=>pending,acceptedIntent:()=>null,close(){},async prepareSend(value){if(!pending)pending={clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]};return {state:'pending',intent:pending};},async acknowledge(_ids,value){if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}};};
   const target={kind:'community',id:'room_recover_pending',draftKey:'room_recover_pending',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push(args.clientId);return {message:{messageId:'message_old',clientId:args.clientId,seq:1,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
   assert.equal(attempts,2);assert.deepEqual(events,['idb_before_error']);assert.equal(pending,null);assert.equal(drafts.read('account-A','room_recover_pending').pending.clientId,'local_after_error');assert.equal(drafts.read('account-A','room_recover_pending').text,'Next thought');
   f.app.chatCleanup();
 });
@@ -2993,7 +3150,7 @@ test('chat conflict chooser keeps a newer edit made while the chooser was open',
   const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
   const first=fixture(),second=fixture();for(const f of [first,second]){f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;}
   const target={kind:'community',id:'room_conflict',draftKey:'room_conflict',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected request');}};
-  const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});
+  const p1=first.makeElement('div'),p2=second.makeElement('div');first.mountOwnedConversation(p1,target,{showHeader:false,notify(){}});second.mountOwnedConversation(p2,target,{showHeader:false,notify(){}});
   await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
   const i1=p1.querySelector('textarea'),i2=p2.querySelector('textarea');i1.value='First';i1.emit('input');i2.value='Second';i2.emit('input');
   await Promise.all([first.app.chatDraftSession.flush(),second.app.chatDraftSession.flush()]);await Promise.all([first.app.chatDraftSession.refresh(),second.app.chatDraftSession.refresh()]);
@@ -3013,7 +3170,7 @@ test('sending reloads the shared drafts even when a cross-tab notification was m
   const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},sent=[];
   f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};
   const target={kind:'community',id:'room_silent',draftKey:'room_silent',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);throw Error('Unexpected send');}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
   const input=parent.querySelector('textarea');input.value='First';input.emit('input');await f.app.chatDraftSession.flush();
   await f.draftDisk.draftWrite('account-A:room_silent:',{baseId:null,id:'external_001',writer:'tab_external',text:'Second',replyTo:null});
   assert.equal(f.app.chatDraftSession.read().heads.length,1);parent.querySelector('.sw-composer').requestSubmit();
@@ -3026,10 +3183,10 @@ test('late legacy text is visible after reload and requires explicit recovery be
   const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},old=chatState.createChatDraftStore(storage),sent=[];
   const target={kind:'community',id:'room_old_live',draftKey:'room_old_live',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);throw Error('Unexpected send');}};
   const setup=()=>{const f=fixture();f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;return f;};
-  const first=setup(),p1=first.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});await first.app.chatDraftSession.ready;
+  const first=setup(),p1=first.makeElement('div');first.mountOwnedConversation(p1,target,{showHeader:false,notify(){}});await first.app.chatDraftSession.ready;
   const key='soty.chat.draft.v1:account-A:room_old_live';old.edit('account-A','room_old_live','Unsent from old tab');first.app.chatDrafts.storageChanged(key,storage.getItem(key));
   assert.equal(await first.app.chatDraftSession.flush(),true);assert.equal(p1.querySelector('textarea').value,'');assert.equal(p1.querySelector('.sw-chat-draft-versions').hidden,false);
-  first.app.chatCleanup();const reopened=setup(),p2=reopened.makeElement('div');reopened.app.mountConversation(p2,target,{showHeader:false,notify(){}});await reopened.app.chatDraftSession.ready;
+  first.app.chatCleanup();const reopened=setup(),p2=reopened.makeElement('div');reopened.mountOwnedConversation(p2,target,{showHeader:false,notify(){}});await reopened.app.chatDraftSession.ready;
   assert.equal(p2.querySelector('textarea').value,'');assert.equal(p2.querySelector('.sw-chat-draft-versions').hidden,false);assert.equal(sent.length,0);
   p2.querySelector('.sw-chat-draft-versions').emit('click');const dialog=reopened.dialogs.at(-1),row=dialog.body.querySelector('.sw-stack').children[0];
   assert.equal(row.querySelector('p').textContent,'Unsent from old tab');assert.equal(row.querySelector('small').textContent,'Текст из старой вкладки');row.querySelector('button').emit('click');
@@ -3040,7 +3197,7 @@ test('modern cross-tab writes stay a single draft while an independently edited 
   const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},old=chatState.createChatDraftStore(storage),sent=[];
   const first=fixture(),second=fixture();for(const f of [first,second]){f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;}
   const target={kind:'community',id:'room_modern_live',draftKey:'room_modern_live',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);throw Error('Unexpected send');}};
-  const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
+  const p1=first.makeElement('div'),p2=second.makeElement('div');first.mountOwnedConversation(p1,target,{showHeader:false,notify(){}});second.mountOwnedConversation(p2,target,{showHeader:false,notify(){}});await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
   const key='soty.chat.draft.v1:account-A:room_modern_live',modernKey='soty.chat.draft.v3:account-A:room_modern_live',input=p1.querySelector('textarea');input.value='Modern text';input.emit('input');second.app.chatDrafts.storageChanged(modernKey,storage.getItem(modernKey));
   await first.app.chatDraftSession.flush();await second.app.chatDraftSession.refresh();assert.deepEqual(second.app.chatDraftSession.read().heads.map(head=>head.text),['Modern text']);
   old.edit('account-A','room_modern_live','Old tab text');first.app.chatDrafts.storageChanged(key,storage.getItem(key));await first.app.chatDraftSession.flush();
@@ -3053,11 +3210,11 @@ test('a modern cache write before a delayed old-tab event cannot erase the old t
   const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},old=chatState.createChatDraftStore(storage);
   const target={kind:'community',id:'room_delayed_old',draftKey:'room_delayed_old',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected send');}};
   const setup=()=>{const f=fixture();f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;return f;};
-  const first=setup(),p1=first.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});await first.app.chatDraftSession.ready;
+  const first=setup(),p1=first.makeElement('div');first.mountOwnedConversation(p1,target,{showHeader:false,notify(){}});await first.app.chatDraftSession.ready;
   const key='soty.chat.draft.v1:account-A:room_delayed_old';old.edit('account-A','room_delayed_old','Old text before event');
   first.app.chatDrafts.setAttachments('account-A','room_delayed_old',[]);const input=p1.querySelector('textarea');input.value='Newer modern text';input.emit('input');await first.app.chatDraftSession.flush();
   assert.equal(JSON.parse(storage.getItem(key)).text,'Old text before event');first.app.chatCleanup();
-  const reopened=setup(),p2=reopened.makeElement('div');reopened.app.mountConversation(p2,target,{showHeader:false,notify(){}});await reopened.app.chatDraftSession.ready;
+  const reopened=setup(),p2=reopened.makeElement('div');reopened.mountOwnedConversation(p2,target,{showHeader:false,notify(){}});await reopened.app.chatDraftSession.ready;
   assert.equal(p2.querySelector('textarea').value,'Newer modern text');assert.deepEqual(reopened.app.chatDraftSession.read().heads.map(head=>head.text).sort(),['Newer modern text','Old text before event']);
   assert.equal(p2.querySelector('.sw-chat-draft-versions').hidden,false);reopened.app.chatCleanup();
 });
@@ -3066,7 +3223,7 @@ test('an old-tab recovery that cannot reach storage stays downloadable and block
   const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},old=chatState.createChatDraftStore(storage);
   f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};
   const target={kind:'community',id:'room_old_failure',draftKey:'room_old_failure',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected send');}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;f.draftDisk.setFailure(true);
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;f.draftDisk.setFailure(true);
   const key='soty.chat.draft.v1:account-A:room_old_failure';old.edit('account-A','room_old_failure','Recover this old text');f.app.chatDrafts.storageChanged(key,storage.getItem(key));
   assert.equal(await f.app.chatDraftSession.flush(),false);assert.equal(f.app.screenHasUnsavedChanges(),true);
   assert.match(parent.querySelector('.sw-chat-draft-status').textContent,/Скачайте/u);
@@ -3079,7 +3236,7 @@ test('storage refusal keeps a typed draft visible and sending works after storag
   f.app.chatDrafts=chatState.createChatDraftStore(storage,()=> 'intent_storage_recovery');f.app.preferences={motion:false};f.draftDisk.setFailure(true);
   Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});
   const target={kind:'community',id:'room_idb_failure',draftKey:'room_idb_failure',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);return {message:{messageId:'recovered',clientId:args.clientId,seq:1,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await assert.rejects(f.app.chatDraftSession.ready);
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await assert.rejects(f.app.chatDraftSession.ready);
   const input=parent.querySelector('textarea');input.value='Written during failure';input.emit('input');assert.equal(await f.app.chatDraftSession.flush(),false);
   assert.equal(input.value,'Written during failure');assert.equal(parent.querySelector('.sw-chat-draft-status').hidden,false);assert.equal(parent.querySelector('.sw-chat-draft-status').textContent,'Черновик пока только в открытом приложении');
   const download=parent.querySelectorAll('button').find(button=>button.textContent==='Скачать черновик');assert.equal(download.hidden,false);
@@ -3092,11 +3249,11 @@ test('an account switch keeps an unsaved draft private and restores it when its 
   const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
   f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};
   const target={kind:'community',id:'room_accounts',draftKey:'room_accounts',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected request');}};
-  const a=f.makeElement('div');f.app.mountConversation(a,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;f.draftDisk.setFailure(true);
+  const a=f.makeElement('div');f.mountOwnedConversation(a,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;f.draftDisk.setFailure(true);
   const input=a.querySelector('textarea');input.value='Private for A';input.emit('input');assert.equal(await f.app.chatDraftSession.flush(),false);
-  f.app.transitionAccount('account-B');const b=f.makeElement('div');f.app.mountConversation(b,target,{showHeader:false,notify(){}});await assert.rejects(f.app.chatDraftSession.ready);
+  f.app.transitionAccount('account-B');const b=f.makeElement('div');f.mountOwnedConversation(b,target,{showHeader:false,notify(){}});await assert.rejects(f.app.chatDraftSession.ready);
   assert.equal(b.querySelector('textarea').value,'');assert.equal([...f.app.chatDraftSessions].some(session=>session.scope.accountId==='account-A'&&session.read().value.text==='Private for A'),true);
-  f.app.transitionAccount('account-A');const again=f.makeElement('div');f.app.mountConversation(again,target,{showHeader:false,notify(){}});
+  f.app.transitionAccount('account-A');const again=f.makeElement('div');f.mountOwnedConversation(again,target,{showHeader:false,notify(){}});
   assert.equal(again.querySelector('textarea').value,'Private for A');f.draftDisk.setFailure(false);assert.equal(await f.app.chatDraftSession.flush(),true);f.app.chatCleanup();
 });
 
@@ -3105,7 +3262,7 @@ test('old storage cannot silently revive a discarded or acknowledged draft in th
   const oldTab=chatState.createChatDraftStore(storage),f=fixture();oldTab.edit('account-A','room_legacy','Legacy text');
   f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;
   const target={kind:'community',id:'room_legacy',draftKey:'room_legacy',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected request');}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
   await disk.draftWrite('account-A:room_legacy:',{baseId:null,id:'other_legacy',writer:'tab_other',text:'Other version',replyTo:null});await f.app.chatDraftSession.refresh();
   const heads=f.app.chatDraftSession.read().heads,chosen=heads.find(head=>head.text==='Legacy text');assert.equal(await f.app.chatDraftSession.select(heads.map(head=>head.id),chosen.id),true);
   oldTab.edit('account-A','room_legacy','Other version');f.app.chatDrafts.storageChanged('soty.chat.draft.v1:account-A:room_legacy');
@@ -3113,7 +3270,7 @@ test('old storage cannot silently revive a discarded or acknowledged draft in th
   oldTab.edit('account-A','room_legacy','Legacy text');f.app.chatDrafts.storageChanged('soty.chat.draft.v1:account-A:room_legacy');assert.equal(parent.querySelector('textarea').value,'');
   f.app.chatCleanup();
   const reopened=fixture();reopened.app.chatDrafts=chatState.createChatDraftStore(storage);reopened.app.preferences={motion:false};reopened.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;
-  let release;disk.hold(new Promise(resolve=>{release=resolve;}));const again=reopened.makeElement('div');reopened.app.mountConversation(again,target,{showHeader:false,notify(){}});
+  let release;disk.hold(new Promise(resolve=>{release=resolve;}));const again=reopened.makeElement('div');reopened.mountOwnedConversation(again,target,{showHeader:false,notify(){}});
   assert.equal(again.querySelector('textarea').value,'');assert.equal(again.querySelector('textarea').disabled,true);
   disk.hold(null);release();await reopened.app.chatDraftSession.ready;await turn();assert.equal(again.querySelector('textarea').value,'');
   assert.equal(reopened.app.chatDraftSession.read().heads.length,0);assert.equal(again.querySelector('.sw-chat-draft-versions').hidden,true);
@@ -3128,10 +3285,10 @@ test('the chat list reads authoritative drafts instead of stale writes from an o
   await f.draftDisk.draftInitialize('account-A:room_preview:',{text:'Old',replyTo:null},'legacy_001');
   await f.draftDisk.draftWrite('account-A:room_preview:',{baseId:'legacy_001',id:'chosen_001',writer:'tab_new',text:'Chosen',replyTo:null});
   f.app.renderMessages();for(let i=0;i<8;i++)await turn();
-  let preview=f.app.main.querySelector('.sw-conversation-preview');assert.equal(preview.children.at(-1).textContent,'Chosen');
+  let preview=appSurface(f).querySelector('.sw-conversation-preview');assert.equal(preview.children.at(-1).textContent,'Chosen');
   await f.draftDisk.draftAcknowledge('account-A:room_preview:','chosen_001');oldTab.edit('account-A','room_preview','Stale again');
   f.app.chatDrafts.storageChanged('soty.chat.draft.v1:account-A:room_preview');for(let i=0;i<8;i++)await turn();
-  preview=f.app.main.querySelector('.sw-conversation-preview');assert.equal(preview.textContent,'2 participants');
+  preview=appSurface(f).querySelector('.sw-conversation-preview');assert.equal(preview.textContent,'2 participants');
   assert.equal(oldTab.read('account-A','room_preview').text,'Stale again');f.app.chatCleanup();
 });
 
@@ -3139,7 +3296,7 @@ test('navigation waits for the chat draft flush and a failed flush retains the t
   const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
   f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};
   const target={kind:'community',id:'room_navigation',draftKey:'room_navigation',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected request');}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
   let release;f.draftDisk.hold(new Promise(resolve=>{release=resolve;}));const input=parent.querySelector('textarea');input.value='Keep before leaving';input.emit('input');let navigated=false;f.app.afterNoteSaved(()=>{navigated=true;});
   await turn();assert.equal(navigated,false);assert.equal(f.app.screenHasUnsavedChanges(),true);f.draftDisk.hold(null);release();for(let i=0;i<20&&!navigated;i++)await turn();assert.equal(navigated,true,JSON.stringify({state:f.app.chatDraftSession.read(),toast:f.app.lastToast,pending:f.app.noteActionPending}));
   f.draftDisk.setFailure(true);input.value='Keep after failure';input.emit('input');await f.app.chatDraftSession.flush();navigated=false;f.app.afterNoteSaved(()=>{navigated=true;});await turn();await turn();
@@ -3151,10 +3308,195 @@ test('an old chat ACK cannot erase a new identical text typed while it was in fl
   const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},gate=deferred(),sent=[];
   f.app.chatDrafts=chatState.createChatDraftStore(storage,()=> 'intent_in_flight');f.app.preferences={motion:false};Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});
   const target={kind:'community',id:'room_identical',draftKey:'room_identical',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);return gate.promise;}};
-  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
   const input=parent.querySelector('textarea');input.value='Same';input.emit('input');await f.app.chatDraftSession.flush();const old=f.app.chatDraftSession.read().selectedId;
   parent.querySelector('.sw-composer').requestSubmit();for(let i=0;i<20&&sent.length===0;i++)await turn();assert.equal(sent.length,1);
   input.value='Changed';input.emit('input');input.value='Same';input.emit('input');await f.app.chatDraftSession.flush();assert.notEqual(f.app.chatDraftSession.read().selectedId,old);
   gate.resolve({message:{messageId:'message_first',clientId:'intent_in_flight',seq:1,text:'Same',author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}});for(let i=0;i<20;i++)await turn();
   assert.equal(input.value,'Same');assert.equal(f.app.chatDraftSession.read().value.text,'Same');assert.equal(f.app.chatDraftSession.read().heads.length,1);f.app.chatCleanup();
+});
+
+
+function retainedMainFixture(t){
+  const f=fixture(),calls=[],captured=[],field={element:f.makeElement('section','retained-test-field'),ready:Promise.resolve(),flushes:0,disposed:0,
+    runtimeEpoch:0,readRuntimeEpoch(){return this.runtimeEpoch;},hasUnconfirmedWork:()=>false,setMode(){},attachHeaderSearch(){},async flush(){this.flushes++;},hasUnsavedChanges:()=>false,dispose(){this.disposed++;},watchEntities:()=>[],async refresh(){}};
+  f.app.unifiedField=field;f.app.main.append(field.element);f.app.root.append(f.app.main);f.app.main.scrollTop=23;
+  field.element.cloneNode=()=>f.makeElement('section','retained-test-field');
+  f.app.preferences={view:'mine'};f.app.homeQuery='';f.app.query='';f.app.unifiedFieldFilter='all';f.app.unifiedFieldFilters={mine:'all',world:'all'};
+  f.app.renderCurrent=f.Controller.prototype.renderCurrent;
+  f.app.persist=()=>{};f.app.communityOpenTicket=0;f.app.chatDrafts={hasVolatile:()=>false};f.app.formEdits={hasUnsavedChanges:()=>false};
+  const confirmations=[];f.app.dialog=(title,onClose)=>{const dialog={title,element:f.makeElement('dialog'),body:f.makeElement('div'),close(){if(!this.element.open)return;this.element.open=false;f.app.dialogs.delete(this);onClose?.({interrupted:false});}};confirmations.push(dialog);f.app.dialogs.add(dialog);return dialog;};
+  const model={entry:args=>({appId:args.appId,domainId:stageDomainId,origin:'https://runtime.example',path:args.path??'/'})};entryTransport(f,model,calls);
+  const mount=f.ports['./app-stage'].mountAppStage;f.ports['./app-stage'].mountAppStage=(host,options)=>{captured.push(options);return mount(host,options);};
+  t.after(()=>{f.app.retainedMainApps?.clear();f.app.cleanScreen();});
+  return{...f,field,calls,captured,model,confirmations,open:(appId=stageAppId,path)=>f.app.openApplication({appId,name:'Independent '+appId},path?appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({appId,domainId:stageDomainId,path})):undefined)};
+}
+
+test('retained main actual controller keeps SAME field, unknown Source window/input and caret through A→canvas→B→A',async t=>{
+  const f=retainedMainFixture(t),second='app-'+ '2'.repeat(32),field=f.field;
+  await f.open();assert.equal(f.app.unifiedField,field,'main open must not destroy the actual field');assert.equal(field.disposed,0);
+  const stage=f.app.appStage,host=appSurface(f),frame=host.querySelector('iframe'),window=frame.contentWindow;
+  window.editor={value:'Unfinished ordinary input',selectionStart:4,selectionEnd:11,scrollTop:73};const editor=window.editor;
+  assert.equal(stage.hasUnconfirmedWork(),true);const back=host.querySelectorAll('button').find(node=>node.textContent==='Полотно');assert.equal(back.textContent,'Полотно');back.emit('click');await turn();
+  assert.equal(f.app.unifiedField,field);assert.equal(field.disposed,0);assert.equal(field.flushes,0,'Back must not save hidden field or Source work');
+  assert.equal(host.querySelector('iframe'),frame,'Back retains the actual Source document');assert.equal(f.app.appStage,null);assert.equal(host.inert,true);
+  await f.open(second);const b=f.app.appStage;appSurface(f).querySelectorAll('button').find(node=>node.textContent==='Полотно').emit('click');await turn();await f.open();
+  assert.equal(f.app.appStage,stage);assert.equal(appSurface(f),host);assert.equal(host.querySelector('iframe'),frame);assert.equal(frame.contentWindow,window);
+  assert.equal(window.editor,editor);assert.deepEqual(editor,{value:'Unfinished ordinary input',selectionStart:4,selectionEnd:11,scrollTop:73});
+  assert.equal(f.app.unifiedField,field);assert.equal(f.calls.filter(row=>row.op==='apps.launch').length,2);assert.ok(b.entry());
+});
+
+test('retained main actual controller gates late UI callbacks but keeps hidden owners in watch/reset/flush and purges all on account loss',async t=>{
+  const f=retainedMainFixture(t);await f.open();const first=f.app.appStage,a=f.app.retainedMainApps.active();
+  f.captured[0].onBack();await turn();await f.open('app-'+ '3'.repeat(32));const b=f.app.retainedMainApps.active(),hash=f.location.hash;
+  f.captured[0].onNavigate(appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({appId:stageAppId,domainId:stageDomainId,path:'/late'})));
+  f.captured[0].onBack();assert.equal(f.location.hash,hash);assert.equal(f.app.appStage,b.stage);
+  let invalidated=0,renewed=0,flushed=0;for(const row of[a,b]){row.stage.invalidateLive=async()=>{invalidated++;};row.stage.renewHostSession=async()=>{renewed++;return true;};row.stage.flush=async()=>{flushed++;};}
+  f.field.watchEntities=()=>Array.from({length:256},(_,i)=>({kind:'person',id:'p'+i}));const watched=f.app.liveWatch();
+  assert.ok(watched.some(row=>row.id===a.appId));assert.ok(watched.some(row=>row.id===b.appId));assert.equal(watched.length,256);
+  f.app.api={async request(op){assert.equal(op,'world.profile.get');return{profile:f.app.profile};}};f.app.refreshSocialInbox=async()=>{};
+  await f.app.invalidateLive({reset:true});assert.equal(invalidated,2);assert.equal(renewed,2);await f.app.flushScreen();assert.equal(flushed,2);
+  f.app.transitionAccount('account-B');assert.equal(f.app.retainedMainApps.all().length,0);assert.equal(f.app.appStage,null);assert.equal(a.host.isConnected,false);assert.equal(b.host.isConnected,false);assert.equal(first.entry(),null);
+});
+
+test('retained main Close cancel/save failure and late save after Back preserve the correct physical owner',async t=>{
+  const f=retainedMainFixture(t);await f.open();const owner=f.app.retainedMainApps.active(),stage=owner.stage,frame=owner.host.querySelector('iframe');
+  await f.app.closeMainApplication(owner,{isCurrent:()=>true,confirmUnknown:async()=>false});assert.ok(f.app.retainedMainApps.has(owner));assert.equal(owner.host.querySelector('iframe'),frame);
+  stage.hasUnconfirmedWork=()=>false;stage.flush=async()=>{throw Error('own_save_rejected');};
+  await f.app.closeMainApplication(owner,{isCurrent:()=>true,confirmUnknown:async()=>true});assert.ok(f.app.retainedMainApps.has(owner));assert.match(f.app.lastToast,/не подтверждено/);
+  const held=deferred();stage.flush=()=>held.promise;const closing=f.app.closeMainApplication(owner,{isCurrent:()=>true,confirmUnknown:async()=>true});
+  f.captured[0].onBack();held.resolve();await closing;assert.ok(f.app.retainedMainApps.has(owner));assert.equal(owner.host.querySelector('iframe'),frame);
+});
+
+test('retained main controller refuses a ninth live owner, frees exactly one by explicit Close and never evicts siblings',async t=>{
+  const f=retainedMainFixture(t),frames=[];
+  for(let i=1;i<=8;i++){await f.open('app-'+String(i).repeat(32));frames.push(appSurface(f).querySelector('iframe'));}
+  const pool=f.app.retainedMainApps;assert.equal(pool.all().length,8);await f.open('app-'+ '9'.repeat(32));assert.equal(pool.all().length,8);assert.equal(f.calls.filter(row=>row.op==='apps.launch').length,8);
+  assert.ok(pool.all().every((owner,index)=>owner.host.querySelector('iframe')===frames[index]));
+  const owner=pool.active();await f.app.closeMainApplication(owner,{isCurrent:()=>true,confirmUnknown:async()=>true});assert.equal(pool.all().length,7);
+  await f.open('app-'+ '9'.repeat(32));assert.equal(pool.all().length,8);assert.equal(f.calls.filter(row=>row.op==='apps.launch').length,9);
+  assert.ok(pool.all().slice(0,7).every((row,index)=>row.host.querySelector('iframe')===frames[index]));
+});
+
+test('retained main actual controller keeps explicit different entries and invitation attempts distinct',async t=>{
+  const f=retainedMainFixture(t);await f.open(stageAppId,'/one');const first=f.app.appStage;await f.open(stageAppId,'/two');assert.notEqual(f.app.appStage,first);assert.equal(first.entry().path,'/one');
+  const pool=f.app.retainedMainApps,invitation={...appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({appId:stageAppId,domainId:stageDomainId,path:'/one'})),takeInvitation(){return null;}};
+  assert.equal(pool.find(invitation),null);assert.equal(pool.all().length,2);
+});
+
+
+test('retained main profile panel remains accessible; actual account mutation guard cancels unknown work by default',async t=>{
+  const f=retainedMainFixture(t);await f.open();let opened=0;f.app.options.openAccount=async()=>{opened++;};
+  assert.equal(await f.app.openProfilesSafely(),true);assert.equal(opened,1);const guarded=f.app.prepareAccountChange();await turn();
+  const dialog=f.confirmations[0];assert.ok(dialog);dialog.body.querySelectorAll('button').find(node=>node.textContent==='Остаться').emit('click');
+  assert.equal(await guarded,false);assert.equal(dialog.element.open,false);assert.equal(f.app.deskAccount,'account-A');assert.equal(f.app.retainedMainApps.all().length,1);
+});
+test('retained main mutation guard confirms unknown only after cleanup and rejects known save failure',async t=>{
+  const f=retainedMainFixture(t);await f.open();const owner=f.app.retainedMainApps.active(),guarded=f.app.prepareAccountChange();await turn();
+  const dialog=f.confirmations[0];dialog.body.querySelectorAll('button').find(node=>node.textContent==='Переключить без сохранения').emit('click');
+  assert.equal(await guarded,true);assert.equal(dialog.element.open,false);assert.equal(f.app.deskAccount,'account-A','Host preparation never switches an identity');assert.ok(f.app.retainedMainApps.has(owner));
+  owner.stage.hasUnconfirmedWork=()=>false;owner.stage.flush=async()=>{throw Error('save_failed');};assert.equal(await f.app.prepareAccountChange(),false);assert.equal(f.app.deskAccount,'account-A');assert.ok(f.app.retainedMainApps.has(owner));
+});
+test('retained main mutation guard rejects a new field owner during the confirmation and forced account loss scrubs all',async t=>{
+  const f=retainedMainFixture(t);await f.open();const guarded=f.app.prepareAccountChange();await turn();f.field.runtimeEpoch++;
+  f.confirmations[0].body.querySelectorAll('button').find(node=>node.textContent==='Переключить без сохранения').emit('click');assert.equal(await guarded,false);
+  const next=f.app.prepareAccountChange();await turn();f.app.transitionAccount('account-B');assert.equal(await next,false);assert.equal(f.app.retainedMainApps.all().length,0);
+});
+test('retained main active repeat reuses SAME owner without spending a slot or creating a second launch',async t=>{
+  const f=retainedMainFixture(t);await f.open();const stage=f.app.appStage,frame=appSurface(f).querySelector('iframe');await f.open();
+  assert.equal(f.app.appStage,stage);assert.equal(appSurface(f).querySelector('iframe'),frame);assert.equal(f.app.retainedMainApps.all().length,1);assert.equal(f.calls.filter(row=>row.op==='apps.launch').length,1);
+  assert.ok(f.calls.some(row=>row.op==='apps.session.context'),'Reuse must have a full-scope current lease witness');
+});
+test('retained main same-URL policy change denies the old scope before launching the fresh version',async t=>{
+  const f=retainedMainFixture(t);let epoch=1;f.model.launchMetadata=()=>({launchBinding:{...stageBinding,policyEpoch:epoch}});
+  await f.open();const old=f.app.retainedMainApps.active(),frame=old.host.querySelector('iframe');f.captured[0].onBack();await turn();epoch=2;await f.open();
+  assert.notEqual(f.app.appStage,old.stage);assert.equal(old.host.isConnected,false);assert.notEqual(appSurface(f).querySelector('iframe'),frame);assert.equal(f.app.retainedMainApps.all().length,1);assert.equal(f.calls.filter(row=>row.op==='apps.launch').length,2);
+});
+test('retained main a delayed A resume cannot present or navigate after a newer B opening',async t=>{
+  const f=retainedMainFixture(t);await f.open();f.captured[0].onBack();await turn();const held=deferred(),request=f.app.api.request;let waiting=false;
+  f.app.api.request=(op,args)=>op==='apps.session.context'&&args.appId===stageAppId?(waiting=true,held.promise.then(()=>request(op,args))):request(op,args);
+  const opening=f.open();for(let i=0;i<20&&!waiting;i++)await turn();assert.equal(waiting,true);await f.open('app-'+ '5'.repeat(32));const b=f.app.appStage,hash=f.location.hash;
+  held.resolve();await opening;assert.equal(f.app.appStage,b);assert.equal(f.location.hash,hash);assert.equal(f.app.retainedMainApps.all().length,2);
+});
+test('retained main reactivation returns to the latest non-app caller while keeping the same Source',async t=>{
+  const f=retainedMainFixture(t);f.app.activeRoute='#world';f.location.hash='#world';f.app.view='world';await f.open();const stage=f.app.appStage;
+  f.captured[0].onBack();await turn();assert.equal(f.app.view,'world');f.app.navigateReady('mine');await f.open();assert.equal(f.app.appStage,stage);
+  f.captured[0].onBack();await turn();assert.equal(f.app.view,'mine');assert.match(f.location.hash,/^#mine/u);
+});
+test('retained main community opening hides only main presentation while its own lookup is pending',async t=>{
+  const f=retainedMainFixture(t);await f.open();const owner=f.app.retainedMainApps.active(),frame=owner.host.querySelector('iframe'),held=deferred();
+  f.field.openCommunity=()=>held.promise;const opening=f.app.openGroup('own-group','chat');assert.equal(f.app.retainedMainApps.active(),null);assert.equal(f.app.unifiedField,f.field);assert.equal(owner.host.querySelector('iframe'),frame);
+  held.reject(Error('own_offline'));await opening;assert.equal(f.field.disposed,0);
+});
+test('retained main a new same-owner open cancels its older held Close intent',async t=>{
+  const f=retainedMainFixture(t);await f.open();const owner=f.app.retainedMainApps.active(),held=deferred();owner.stage.hasUnconfirmedWork=()=>false;owner.stage.flush=()=>held.promise;
+  const closing=f.app.closeMainApplication(owner,{isCurrent:()=>true,confirmUnknown:async()=>true});await f.open();held.resolve();await closing;
+  assert.equal(f.app.appStage,owner.stage);assert.equal(f.app.retainedMainApps.all().length,1);
+});
+test('retained main actual Stage renews its hidden ordinary lease without restoring the global route or Source iframe',async t=>{
+  const f=await hostSessionStage(t,{retained:true}),frame=f.app.main.querySelector('iframe'),window=frame.contentWindow;f.hide();
+  const renewing=f.stage.renewHostSession('reset');await turn();const carrier=f.app.main.querySelector('.sa-host-session-carrier');assert.ok(carrier,'Hidden owned lifetime must still read/renew its full bound lease');
+  f.verify();f.wakeup(carrier);assert.equal(await renewing,true);assert.equal(f.location.hash,'#mine');assert.equal(f.app.main.querySelector('iframe'),frame);assert.equal(frame.contentWindow,window);assert.equal(f.launches(),1);
+});
+
+test('retained main real launcher-derived scoped captures resume by stable slot/handle/pin rather than DTO identity',async t=>{
+  const f=retainedMainFixture(t);f.model.runtimeProfile='soty.selected-human-embed.v2';f.model.sourceProfile=HIVE_SELECTED_SOURCE;
+  await f.open();const stage=f.app.appStage,owner=f.app.retainedMainApps.active(),frame=owner.host.querySelector('iframe');f.captured[0].onBack();await turn();await f.open();
+  assert.equal(f.app.appStage,stage);assert.equal(owner.host.querySelector('iframe'),frame);assert.equal(f.calls.filter(row=>row.op==='apps.launch').length,1);assert.ok(f.calls.some(row=>row.op==='apps.scoped.context'));
+});
+test('retained main central guard rejects a Source document load while its unknown confirmation is open',async t=>{
+  const f=retainedMainFixture(t);await f.open();const frame=appSurface(f).querySelector('iframe'),query=f.app.root.querySelectorAll.bind(f.app.root);
+  f.app.root.querySelectorAll=selector=>selector==='.sa-runtime iframe'?[frame]:query(selector);
+  const guarded=f.app.prepareAccountChange();await turn();frame.emit('load');
+  f.confirmations[0].body.querySelectorAll('button').find(node=>node.textContent==='Переключить без сохранения').emit('click');assert.equal(await guarded,false);assert.equal(f.app.deskAccount,'account-A');
+});
+
+test('retained main a valid admitting lease re-presents the same pending boot without another launch or Source-ready claim',async t=>{
+  const f=retainedMainFixture(t);f.model.contextState='admitting';await f.open();const stage=f.app.appStage,frame=appSurface(f).querySelector('iframe');assert.ok(frame);
+  f.captured[0].onBack();await turn();await f.open();assert.equal(f.app.appStage,stage);assert.equal(appSurface(f).querySelector('iframe'),frame);assert.equal(f.calls.filter(row=>row.op==='apps.launch').length,1);
+  assert.equal(f.calls.some(row=>row.op==='apps.session.renew'||row.op==='apps.session.confirm'),false);assert.equal(appSurface(f).querySelector('.sa-runtime').getAttribute('aria-busy'),'true');
+});
+
+
+test('former capability app uses the actual catalog alias without creating an app runtime or changing the route', async () => {
+  const f = fixture(), opened = [], navigations = [];
+  const capability = f.workspacePreferences.capabilities.find(value => value.id === 'internet');
+  assert.ok(capability?.legacyAppIds?.length, 'use the real current product catalog');
+  f.app.openCapability = id => opened.push(id);
+  f.app.navigate = (...args) => navigations.push(args);
+  const beforeRoute = f.app.activeRoute;
+  await f.app.openApplication({ appId: capability.legacyAppIds[0], name: 'Former saved entry', status: 'offline' });
+  assert.deepEqual(opened, [capability.id]); assert.deepEqual(navigations, []);
+  assert.equal(f.app.activeRoute, beforeRoute); assert.equal(f.app.appStage, null);
+  assert.equal(f.app.mainRuntimeOwners().all().length, 0); assert.equal(f.requests.length, 0);
+});
+
+test('an explicit presentation for a catalog legacy app preserves the original app-stage intent instead of redirecting', async t => {
+  const f = fixture(), opened = [], mounted = [];
+  t.after(() => { f.app.mainRuntimeOwners().clear(); f.app.cleanScreen(); });
+  const capability = f.workspacePreferences.capabilities.find(value => value.id === 'internet');
+  assert.ok(capability?.legacyAppIds?.length);
+  const appId = capability.legacyAppIds[0];
+  const intent = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId }, undefined, { panel: 'discussion' }));
+  assert.ok(intent?.presentation);
+  f.app.openCapability = id => opened.push(id);
+  const mount = f.ports['./app-stage'].mountAppStage;
+  f.ports['./app-stage'].mountAppStage = (host, options) => { mounted.push(options); return mount(host, options); };
+  // Exercise the real WorldApplication and stage. This local fixture does not
+  // issue a service grant; unavailable transport must not change the routing decision.
+  await f.app.openApplication({ appId, name: 'Former saved entry', status: 'offline' }, intent);
+  assert.deepEqual(opened, []); assert.equal(mounted.length, 1);
+  assert.equal(mounted[0].intent, intent); assert.equal(mounted[0].app.appId, appId);
+  assert.equal(mounted[0].accountId, 'account-A'); assert.equal(mounted[0].isCurrent(), true);
+});
+
+test('catalog compatibility never opens a capability after the owner is destroyed or absent', async () => {
+  for (const retired of ['destroyed', 'account']) {
+    const f = fixture(), opened = [], capability = f.workspacePreferences.capabilities.find(value => value.id === 'internet');
+    assert.ok(capability?.legacyAppIds?.length);
+    f.app.openCapability = id => opened.push(id);
+    if (retired === 'destroyed') f.app.destroyed = true; else f.app.deskAccount = null;
+    await f.app.openApplication({ appId: capability.legacyAppIds[0], name: 'Former saved entry', status: 'offline' });
+    assert.deepEqual(opened, []); assert.equal(f.requests.length, 0);
+  }
 });

@@ -16,9 +16,19 @@ import { createNotesService } from "../modules/notes/server/index.mjs";
 import { createAppsService } from "../modules/apps/server/index.mjs";
 import { createAppJobsExtension } from "./apps-jobs.js";
 import { createAutomaticAppRegistration } from "./automatic-app-registration.js";
+import { createPlatformLive } from './platform-live.js';
+import { createReferralsHost } from './referrals-host.js';
+import { createReferralCapabilities } from './referral-capabilities.js';
+import { createInvitationsService } from '../modules/invitations/server.mjs';
+import { createInvitationTargetAdapter } from '../modules/invitations/target-adapter.mjs';
+import { createInvitationReferralSource, applyInvitationReferral } from './invitation-referrals.js';
+import { attachInvitationPreview } from './invitation-preview.js';
+import { createMaterialsService } from '../modules/materials/server/index.mjs';
+import { createMaterialsExtension } from './materials-host.js';
 import { createCapabilitiesService, BUILTIN_CAPABILITIES, AccessError } from "../modules/capabilities/server/index.mjs";
 import { hasSingleHostHeader, legacyAppFrameSource, validateNamedAppZone } from './app-domain-policy.mjs';
 import { attachCapabilitiesDiscovery, validateDiscoveryOrigin } from './capabilities-discovery.js';
+import {capabilityMcpToolCatalog} from './capabilities-mcp-tools.js';
 import { attachCapabilitiesActions, validateCapabilityAudience } from './capabilities-actions.js';
 import { buildCapabilitiesOpenApi } from './capabilities-openapi.js';
 import { startNativeRecovery } from './capabilities-recovery.js';
@@ -38,7 +48,23 @@ import { validateHumanIdentityRenewalLimits } from './universal-configuration.js
 import { approvedEmbedProfile } from '../modules/apps/scoped-embed/profile-dispatch.mjs';
 import { attachHumanIdentity } from './human-identity.js';
 import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
-import { attachExternalCapabilities } from './external-capabilities.js';
+import { attachExternalCapabilities,createExternalCapabilityOperations } from './external-capabilities.js';
+import { singleHeader } from './capabilities-ingress.js';
+import { createAppAgentDirectory } from '../modules/app-agent-directory/server/index.mjs';
+import { createAppAgentDirectoryAuthority } from './app-agent-directory-authority.js';
+import { createAppAgentDirectoryTransport } from './app-agent-directory-transport.js';
+import { createAppModuleCatalog, MONITORING_MODULE } from './app-agent-directory-modules.js';
+import {createMonitoringModule} from './monitoring-module.js';
+import {createMonitoringCollectors,readMonitoringConfiguration} from './monitoring-collectors.js';
+import {composeConnectExtensions} from './connect-extensions.js';
+import {createTransitAccess,loadTransitAccessConfiguration} from './transit-access.js';
+import { createAppAgentDirectoryMcpTools } from './app-agent-directory-mcp.js';
+import { attachAppAgentDirectory } from './app-agent-directory.js';
+import { createCanvasObjectsHost } from './canvas-objects-host.js';
+import { createCanvasWidgetsService } from '../modules/canvas-widgets/server.mjs';
+import { createCanvasVaultService } from '../modules/canvas-vault/server.mjs';
+import { createCanvasPagesService } from '../modules/canvas-pages/server.mjs';
+import { attachCanvasPagesHttp } from './canvas-pages-http.js';
 import { createAppFeedbackCapabilities } from './app-feedback-capabilities.js';
 import { captureUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
 import { fenceClosingHttpSocket } from './http-closing-socket.mjs';
@@ -73,9 +99,15 @@ export function createHttpApp(distDir, options = {}) {
 }
 
 function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, humanIdentityDeviceConsentMigration = false, humanIdentityRenewalLimits, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowWorld7Migration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, accountAi, agentSourceAccess, managedReviewsSource, nativeVoice, voiceOrb, notifications, localExecutorCurrent = false } = {}, nativeSources) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowFrameContinuityMigration = false, allowAudienceMigration = false, allowWorld7Migration = false, allowInvitations2Migration = false, allowSelfIpTargets = env.SOTY_SELF_IP_TARGETS_ENABLED === '1',allowNativeVaultMigration=env.SOTY_NATIVE_VAULT_ENABLED==='1',allowCanvasPageSelectionMigration=env.SOTY_CANVAS_PAGE_SELECTION_ENABLED==='1', scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, accountAi, agentSourceAccess, managedReviewsSource, nativeVoice, voiceOrb, notifications, referralEvents, monitoring:monitoringOptions, localExecutorCurrent = false } = {}, nativeSources) {
+  const monitoringConfiguration=readMonitoringConfiguration(env,monitoringOptions);
   if (typeof allowAudienceMigration !== 'boolean') throw new AccessError('apps_audience_migration_configuration_invalid');
   if (typeof allowWorld7Migration !== 'boolean') throw new AccessError('world_attachment_migration_configuration_invalid');
+  if (typeof allowInvitations2Migration !== 'boolean') throw new AccessError('invitation_configuration_invalid');
+  if (typeof allowSelfIpTargets !== 'boolean') throw new AccessError('apps_endpoint_configuration_invalid');
+  if (typeof allowFrameContinuityMigration !== 'boolean') throw new AccessError('apps_frame_continuity_configuration_invalid');
+  if(typeof allowNativeVaultMigration!=='boolean')throw new AccessError('vault_configuration_invalid');
+  if(typeof allowCanvasPageSelectionMigration!=='boolean')throw new AccessError('canvas_page_configuration_invalid');
   if (typeof localExecutorCurrent !== 'boolean') throw new AccessError('local_executor_configuration_invalid');
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
@@ -85,20 +117,34 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   const universalEnabled = universalAppsEnabled && !forcedLegacyMode;
   allowScopedEmbedMigration = universalEnabled && allowScopedEmbedMigration;
   allowSelectedResourceMigration = universalEnabled && allowSelectedResourceMigration;
+  allowFrameContinuityMigration = universalEnabled && allowFrameContinuityMigration;
   scopedEmbedRegistryConfigured = universalEnabled && scopedEmbedRegistryConfigured;
   scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice, push,
-    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess, accountAiService, automaticApps;
+    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess, accountAiService, automaticApps, referrals, invitations, materials, appDirectory,canvasObjects,canvasWidgets,canvasVault,canvasPages,pageHttp,monitoring,monitoringCollectors,transitAccess;
+  const platformLive=createPlatformLive({actorActive:actor=>connect?.isActorActive(actor)===true,
+    canSee(actor,ref){
+      if(ref.kind==='object')return canvasObjects?.project({actor,objectIds:[ref.id]}).items[0]?.available===true;
+      const result=ref.kind==='app'?apps.execute({op:'apps.directory.resolve',actor,args:{expectedAccountId:actor.accountId,appIds:[ref.id]}})
+        :world.execute({op:'world.directory.resolve',actor,args:{expectedAccountId:actor.accountId,entities:[ref]}});
+      return result.items[0]?.available===true;
+    }});
+  const publishPlatformChange=change=>{const result=platformLive.publish(change);pageHttp?.invalidate();return result;};
   const appFeedback = universalEnabled ? createAppFeedbackCapabilities({ capabilities: () => capabilities,
     connect: () => connect, apps: () => apps, feedback: () => universal.feedback }) : null;
   const preparedAgent = universalEnabled ? createPreparedAgentManifest({ capabilities: () => capabilities, connect: () => connect, apps: () => apps }) : null;
+  const referralCapabilities=universalEnabled?createReferralCapabilities({capabilities:()=>capabilities,connect:()=>connect,apps:()=>apps,referrals:()=>referrals}):null;
   const appCapabilityGuards = Object.freeze({
-    beforeCall(request) { appFeedback?.beforeCall(request); preparedAgent?.beforeCall(request); },
-    recheck(request) { appFeedback?.recheck(request); preparedAgent?.recheck(request); },
+    beforeCall(request) { appFeedback?.beforeCall(request); preparedAgent?.beforeCall(request); referralCapabilities?.beforeCall(request);monitoring?.capabilities.beforeCall(request); },
+    recheck(request) { appFeedback?.recheck(request); preparedAgent?.recheck(request); referralCapabilities?.recheck(request);monitoring?.capabilities.recheck(request); },
   });
   const coverDecoder = createCoverDecoder(), registeredCoverOperations = new Set();
+  const verifyCanvasObjectAuthority=(context,consume)=>{
+    if(!canvasObjects)throw new AccessError('canvas_object_authority_required');
+    return canvasObjects.withObjectAuthority(context,proof=>consume({providerId:proof.providerId,ownerId:proof.ownerId,ref:proof.ref,right:proof.right}));
+  };
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
   const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate, domainProfile });
@@ -125,6 +171,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.disable("x-powered-by");
   if (env.SOTY_TRUST_PROXY) app.set('trust proxy', env.SOTY_TRUST_PROXY.split(',').map(value => value.trim()).filter(Boolean));
   app.use(fenceClosingHttpSocket);
+  app.use((req,res,next)=>monitoringCollectors?monitoringCollectors.middleware(req,res,next):next());
   app.use((req, res, next) => {
     if (!hasSingleHostHeader(req)) { res.status(400).set('Cache-Control', 'no-store').end(); return; }
     if (app.locals.appsService?.handleRequest(req, res)) return;
@@ -182,9 +229,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       try { pending.push(Promise.resolve(action()).catch(() => {})); }
       catch { /* Preserve the startup failure. */ }
     };
-    close(() => automaticApps?.close()); close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
+    close(() => monitoringCollectors?.close());close(() => platformLive.close()); close(() => automaticApps?.close()); close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [push, orbVoice, voice, personal, accountAiService, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [monitoring,push, orbVoice, voice, personal, accountAiService,transitAccess, sourceAccess, humanCalls, human, universal, managedReviews, reviews, pageHttp,canvasPages,canvasObjects,canvasVault,canvasWidgets,appDirectory,apps, capabilities, materials, invitations, referrals, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -192,6 +239,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     if (error && (typeof error === 'object' || typeof error === 'function')) rejectedStarts.set(error, cleanup);
   };
   try {
+    transitAccess=createTransitAccess({configuration:loadTransitAccessConfiguration(env,{dataDir}),getConnect:()=>connect});
     if (accountAi) {
       accountAiService = createAccountAiService({ configuration: accountAi, getConnect: () => connect,
         admitNewWork: () => Boolean(connectors && !connectors.store.maintenance()),
@@ -221,35 +269,51 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       ...(notifications?.sendNotification ? { sendNotification: notifications.sendNotification } : {}),
       ...(notifications?.clock ? { clock: notifications.clock } : {}) });
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty',
+      onChange:change=>publishPlatformChange(change),
       allowWorld7Migration,
       withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback),
       profileCoverDecoder: coverDecoder, profileCoverRegistered: operation => registeredCoverOperations.has(operation) });
     humanCalls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: shellOrigins });
     notes = createNotesService({ databasePath: path.join(dataDir || path.resolve('data'), 'notes', 'notes.sqlite'), projectId: 'soty',
+      allowVaultMigration:allowNativeVaultMigration,verifyVaultCipherReceipt:(receipt,callback)=>canvasVault.withCipherReceiptAuthority(receipt,callback),readVaultSource:request=>canvasVault.readConvertedSource(request),
+      onChange(change){publishPlatformChange({accountIds:[change.accountId]});canvasObjects?.notifySourceChanged({providerId:'soty.notes',ownerId:change.accountId,ref:change.noteId});},
+      verifyCanvasObjectAuthority,
       verifyNativeContext: (token, mode) => {
         if (!capabilities?.nativeNotes) throw new AccessError('native_unavailable');
         return capabilities.nativeNotes.verifyContext(token, mode);
       } });
+    materials=createMaterialsService({databasePath:path.join(dataDir||path.resolve('data'),'materials','materials.sqlite'),projectId:'soty',verifyObjectAuthority:verifyCanvasObjectAuthority,
+      allowVaultMigration:allowNativeVaultMigration,verifyVaultCipherReceipt:(receipt,callback)=>canvasVault.withCipherReceiptAuthority(receipt,callback),readVaultSource:request=>canvasVault.readConvertedSource(request),
+      onVaultChange(change){publishPlatformChange({accountIds:[change.ownerId]});canvasObjects?.notifySourceChanged({providerId:'soty.materials',ownerId:change.ownerId,ref:change.materialId});}});
     const currentOwnedJob = job => {
       const actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
       if (!connect?.isActorActive(actor)) return false;
       const current = apps?.resolveOwnedDevice(actor, job.deviceId, job.requestedConnectorId);
       return current?.linkId === job.linkId;
     };
-    connectors = attachConnectorApi(app, { dataDir, gonka, accountAi: accountAiService, storeOptions: {
+    const previousInferenceObserver=gonka?.onEvent??(env.SOTY_GONKA_LOG_METRICS==='1'?event=>process.stdout.write(JSON.stringify(event)+'\n'):null);
+    connectors = attachConnectorApi(app, { dataDir, gonka:{...gonka,onEvent(event){try{previousInferenceObserver?.(event);}catch{/* Observers never interrupt inference. */}monitoringCollectors?.inference(event);}}, accountAi: accountAiService, storeOptions: {
       automaticJobActive: currentOwnedJob,
       ...(accountAiService || localExecutorCurrent || env.SOTY_LOCAL_EXECUTOR_CURRENT === '1' ? {
         ...(accountAiService ? { legacyModelSponsorEligible: binding => apps?.isUnownedConnector({ linkId: binding.linkId, hostDeviceId: binding.deviceId, connectorId: binding.connectorId }) === true } : {}),
         ownedJobActive: currentOwnedJob,
       } : {}),
     } });
+    referrals=createReferralsHost({dataDir:dataDir||path.resolve('data'),connect:()=>connect,apps:()=>apps,
+      readTrustedEvent:createInvitationReferralSource({invitations:()=>invitations,upstream:referralEvents?.readTrustedEvent})});
+    monitoring=createMonitoringModule({dataDir,...monitoringConfiguration,connect:()=>connect,apps:()=>apps,capabilities:()=>capabilities,
+      publication:request=>(universal?.appsExtension??apps).execute(request),beforeCollectionChange:scope=>{if(!monitoringCollectors)throw new AccessError('monitoring_unavailable');monitoringCollectors.flushScope(scope);},
+      collectorStatus:scope=>monitoringCollectors?.status(scope)??{running:false,lastSuccessAt:null,lastFailureAt:null,failures:0,supportedMetricIds:[]}});
+    monitoringCollectors=createMonitoringCollectors({module:monitoring,mode:monitoringConfiguration.storageMode,
+      liveStatus:()=>platformLive.stats(),callStatus:()=>humanCalls?.status(),pushStatus:()=>push?.status(),
+      connectorStatus:()=>apps?.hostRuntimeStats(),capabilityStatus:()=>capabilities?.invocations.aggregateStatus()});
     capabilities = createCapabilitiesService({
       databasePath: path.join(dataDir || path.resolve('data'), 'capabilities', 'capabilities.sqlite'),
       projectId: 'soty', actorActive: actor => connect?.isActorActive(actor) === true,
       catalog: [...BUILTIN_CAPABILITIES.map(entry => ({ ...entry,
-        executionEnabled: entry.capabilityId === 'notes.createDraft' && entry.version === 1 && nativeNotesEnabled })),...externalEntries.map(entry=>entry.catalog), ...(appFeedback?.catalog ?? []), ...(preparedAgent?.catalog ?? [])],
-      externalAdapters: [...composeExternalApplications(externalEntries.filter(entry=>!entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}), ...(appFeedback?.effects ?? [])],
-      readonlyQueries: [...composeExternalApplications(externalEntries.filter(entry=>entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}), ...(appFeedback?.queries ?? []), ...(preparedAgent?.queries ?? [])],
+        executionEnabled: entry.capabilityId === 'notes.createDraft' && entry.version === 1 && nativeNotesEnabled })),...externalEntries.map(entry=>entry.catalog), ...(appFeedback?.catalog ?? []), ...(preparedAgent?.catalog ?? []),...(referralCapabilities?.catalog??[]),...monitoring.capabilities.catalog],
+      externalAdapters: [...composeExternalApplications(externalEntries.filter(entry=>!entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}), ...(appFeedback?.effects ?? []),...(referralCapabilities?.effects??[]),...monitoring.capabilities.effects],
+      readonlyQueries: [...composeExternalApplications(externalEntries.filter(entry=>entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}), ...(appFeedback?.queries ?? []), ...(preparedAgent?.queries ?? []),...(referralCapabilities?.queries??[]),...monitoring.capabilities.queries],
       externalGuidance: externalEntries.flatMap(entry=>entry.guidance),
       nativeNotes: { notes: notes.native, withAuthorityFence: action => {
         if (!connect) throw new AccessError('native_unavailable');
@@ -269,9 +333,17 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     const rootWorkspaceSubject = humanProfile?.enabled ? createRootWorkspaceSubjectAuthority({ profile: humanProfile, scopedProfiles: scopedEmbedProfiles,
       withActorAuthorityFence: (actor, callback) => connect.withActorAuthorityFence(actor, callback) }) : undefined;
     apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
+    onChange(change){publishPlatformChange(change);if(change.ref?.kind==='app')canvasWidgets?.notifyAppChanged({appId:change.ref.id});},
+    onRuntimeRequest:({response,appId})=>monitoringCollectors?.tagAppResponse(response,appId),
+    // Existing floating windows retain their original Apps admission during
+    // migration. Every known canonical instance keeps its exact Source pin.
+    checkWidgetLaunch:request=>canvasWidgets?.hasInstance(request.widgetId)?canvasWidgets.checkLaunch(request):true,
+    checkWidgetRuntime:request=>canvasVault?.checkWidgetRuntime(request)??true,
+    resolveWidgetRuntime:widgetId=>canvasWidgets?.runtimeRouting(widgetId)??null,
     namedCanonical: universalEnabled,
+    invitationAccess:{hasAccess:request=>invitations?.hasAccess(request)??false,appIds:accountId=>invitations?.appIds(accountId)??[]},
     readAppGuide: universalEnabled ? input => universal?.registration.readGuide(input) : undefined,
-    allowScopedEmbedMigration,allowSelectedResourceMigration,allowAudienceMigration,scopedEmbedProfiles,coverDecoder,
+    allowScopedEmbedMigration,allowSelectedResourceMigration,allowFrameContinuityMigration,allowAudienceMigration,allowSelfIpTargets,scopedEmbedProfiles,coverDecoder,
     withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return request.rootProfileDigest === undefined ? human.withSubjectAuthority(request,callback) : rootWorkspaceSubject(request,callback);}:undefined,
     signSourceAuthority: humanProfile?.enabled ? createSourceAuthoritySigner({ profile: humanProfile, scopedProfiles: scopedEmbedProfiles }) : undefined,
     signRelayIdentity: humanProfile?.enabled ? createRelayIdentitySigner({ profile: humanProfile }) : undefined,
@@ -303,6 +375,44 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     autoRegistrationArchive: (actor, jobId, requireFeedbackPending) => automaticApps?.archive(actor, jobId, requireFeedbackPending) ?? Promise.resolve({ ok: false, error: 'app-archive-unavailable' }),
     autoRegistrationArchiveReceipt: (actor, jobId) => automaticApps?.archiveReceipt(actor, jobId) ?? Promise.resolve({ ok: false, error: 'app-archive-unavailable' }) });
   try {
+    canvasWidgets=createCanvasWidgetsService({databasePath:path.join(dataDir||path.resolve('data'),'canvas','widgets.sqlite'),projectId:'soty',
+      actorActive:actor=>connect?.isActorActive(actor)===true,withActorAuthorityFence:(actor,callback)=>connect.withActorAuthorityFence(actor,callback),
+      withAppSourceAuthority:(request,callback)=>apps.withWidgetSourceAuthority(request,callback),
+      onChange(change){publishPlatformChange({accountIds:[change.ownerId]});canvasObjects?.notifySourceChanged({providerId:'soty.apps',ref:change.widgetId,ownerId:change.ownerId});}});
+    canvasObjects=createCanvasObjectsHost({dataDir:dataDir||path.resolve('data'),connect:()=>connect,world:()=>world,notes:()=>notes,materials:()=>materials,widgets:()=>canvasWidgets,vault:()=>canvasVault,allowFormat2Migration:allowCanvasPageSelectionMigration,
+      onChange:change=>publishPlatformChange({ref:{kind:'object',id:change.objectId},accountIds:change.accountIds,publicTransition:change.publicTransition})});
+    canvasVault=createCanvasVaultService({databasePath:path.join(dataDir||path.resolve('data'),'canvas','vault.sqlite'),projectId:'soty',
+      allowFormat2Migration:allowNativeVaultMigration,nativeProviders:[{providerId:'soty.notes',...notes.vault},{providerId:'soty.materials',...materials.vault}],
+      // A placement cannot promise a lock until the runtime can retire tickets,
+      // active HTTP and streams too. Encrypted native content is independent.
+      placementProviders:typeof apps.invalidateWidget==='function'?['soty.apps']:[],
+      actorActive:actor=>connect?.isActorActive(actor)===true,withActorAuthorityFence:(actor,callback)=>connect.withActorAuthorityFence(actor,callback),
+      withProtectionTarget:(request,callback)=>canvasObjects.withProtectionTarget(request,callback),withObjectAuthority:(context,callback)=>canvasObjects.withObjectAuthority(context,callback),
+      withRuntimeTarget:(request,callback)=>canvasObjects.withRuntimeProtectionTarget(request,callback),
+      onChange(change){canvasObjects.notifySourceChanged({providerId:'soty.vault',ownerId:change.ownerId,ref:change.vaultId});if(change.nativeBinding)canvasObjects.notifySourceChanged({...change.nativeBinding,ownerId:change.ownerId});if(change.objectId)publishPlatformChange({ref:{kind:'object',id:change.objectId},accountIds:[change.ownerId],publicTransition:false});},
+      onInvalidate(change){if(change.widgetId)apps.invalidateWidget?.({widgetId:change.widgetId,...(change.accountId?{accountId:change.accountId}:{}),...(change.deviceId?{deviceId:change.deviceId}:{})});publishPlatformChange({ref:{kind:'object',id:change.objectId},...(change.accountId?{accountIds:[change.accountId]}:{}),publicTransition:false});}});
+    canvasObjects.registerProvider(canvasVault.provider);
+    canvasPages=createCanvasPagesService({databasePath:path.join(dataDir||path.resolve('data'),'canvas','pages.sqlite'),projectId:'soty',allowFormat2Migration:allowCanvasPageSelectionMigration,
+      actorActive:actor=>connect?.isActorActive(actor)===true,withActorAuthorityFence:(actor,callback)=>connect.withActorAuthorityFence(actor,callback),
+      withCanvasSource:(request,callback)=>world.withCanvasSource(request,callback),objects:canvasObjects,
+      withLegacyAppAuthority:(request,callback)=>apps.withPublicCanvasAuthority(request,callback),onChange:()=>pageHttp?.invalidate()});
+    canvasObjects.registerPageSelectionAuthority({verifyContext:(context,callback)=>canvasPages.withSelectionAuthority(context,callback),nativeProviders:['soty.notes','soty.materials','soty.vault']});
+    const transport=createAppAgentDirectoryTransport({service:()=>capabilities,origin:admittedCapabilityAudience,appFeedback:appCapabilityGuards,
+      resolveBinding({authority,capability}){
+        return externalEntries.find(entry=>entry.readonly&&entry.appId===authority.appId
+          &&entry.target.revision===authority.target.revision&&entry.target.digest===authority.target.digest
+          &&entry.contract.capabilityId===capability.id&&entry.contract.version===capability.version)?.contract??null;
+      }});
+    appDirectory=createAppAgentDirectory({databasePath:path.join(dataDir||path.resolve('data'),'app-agent-directory','metadata.sqlite'),projectId:'soty',transport,
+      ...createAppAgentDirectoryAuthority({apps:()=>apps,connect:()=>connect,capabilities:()=>capabilities})});
+    invitations=createInvitationsService({databasePath:path.join(dataDir||path.resolve('data'),'invitations','invitations.sqlite'),
+      actorActive:actor=>connect?.isActorActive(actor)===true,allowMigration2:allowInvitations2Migration,
+      ...createInvitationTargetAdapter({apps,world}),
+      onAccessChanged(change){
+        try{for(const accountId of change.accountIds)apps.invalidateAccess({accountId});}
+        finally{publishPlatformChange({ref:change.target,accountIds:change.accountIds,authorityChanged:true});}
+      },
+      onAdmission({claimId,target}){if(target.kind==='app')applyInvitationReferral({referrals,claimId});}});
     if (universalEnabled) universal = createUniversalApps({ dataDir, apps, reviews, actorActive: actor => connect?.isActorActive(actor) === true });
     if (humanProfile?.enabled) human = createHumanIdentityService({ databasePath: path.join(dataDir || path.resolve('data'), 'human-identity', 'identity.sqlite'),
       profile: humanProfile, actorActive: actor => connect?.isActorActive(actor) === true,
@@ -313,8 +423,14 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   }
   catch (error) { failedStart(error); throw error; }
   app.locals.appsService = apps;
+  app.locals.platformLive = platformLive;
   app.locals.universalApps = universal;
   app.locals.humanIdentityService = human;
+  app.get('/api/apps/runtime-capabilities',(_req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    try{const value=JSON.stringify(apps.runtimeCapabilities());if(Buffer.byteLength(value,'utf8')>4096)throw new Error('apps_runtime_capabilities_too_large');res.type('json').send(value);}
+    catch{res.status(503).json({ok:false,code:'apps_runtime_capabilities_unavailable'});}
+  });
   app.get('/api/apps/catalog', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('Access-Control-Allow-Origin', '*');
     try { res.json(apps.publicCatalog()); } catch { res.status(503).json({ ok: false, code: 'apps_catalog_unavailable' }); }
@@ -329,25 +445,64 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.locals.pushService = push;
   app.locals.humanCalls = humanCalls;
   app.locals.notesService = notes;
+  app.locals.materialsService = materials;
+  app.locals.canvasObjectsService=canvasObjects;
+  app.locals.canvasWidgetsService=canvasWidgets;
+  app.locals.canvasVaultService=canvasVault;
+  app.locals.canvasPagesService=canvasPages;
+  pageHttp=attachCanvasPagesHttp(app,{pages:canvasPages,notes:()=>notes,materials:()=>materials,vault:()=>canvasVault});
+  app.locals.canvasPagesHttp=pageHttp;
+  app.locals.referralsService = referrals;
+  app.locals.invitationsService = invitations;
+  attachInvitationPreview(app,{invitations});
+  app.locals.appAgentDirectory=appDirectory;
   // Host-only service handle, like notesService/appsService; never part of an agent tool or HTTP DTO.
   app.locals.connectorService = connectors;
   app.locals.capabilitiesService = capabilities;
+  app.locals.monitoringModule=monitoring;app.locals.monitoringCollectors=monitoringCollectors;
   app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
     appFeedbackReady: () => Boolean(!servicesCleanup && mcp && connect && universal?.feedback && appFeedback?.catalog.length === 7
       && appFeedback.catalog.every(entry => capabilities.external?.contracts.some(contract => contract.capabilityId === entry.capabilityId && contract.version === entry.version))),
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
   app.locals.externalCapabilities = attachExternalCapabilities(app,{service:capabilities,origin:admittedCapabilityAudience,appFeedback:appCapabilityGuards});
+  const moduleEntry=(id,title,contract,operations,providerKinds=[])=>({id,version:1,title,description:title,kind:'service',contract,documentation:'/agents/app-platform.md',readiness:'available',operations:[...operations],providerKinds});
+  const moduleCatalog=createAppModuleCatalog({entries:()=>[
+    MONITORING_MODULE,
+    moduleEntry('soty.notes','Записки','soty.notes.v1',notes.operations,['canvas.note']),
+    moduleEntry('soty.materials','Фотографии, звук и видео','soty.material.chunks.v1',materials.operations,['canvas.image','canvas.audio','canvas.video']),
+    moduleEntry('soty.canvas-objects','Универсальные объекты полотна','soty.canvas-object.v1',canvasObjects.extension.operations),
+    moduleEntry('soty.canvas-vault','Объекты под паролем','soty.canvas-vault.v1',canvasVault.operations,['canvas.vault']),
+    moduleEntry('soty.canvas-pages','Публичное полотно','soty.canvas-page.v1',pageHttp.extension.operations),
+    moduleEntry('soty.invitations','Приглашения и получатели','soty.invitations.v2',invitations.operations),
+    moduleEntry('soty.referrals','Реферальная система','soty.referrals.v1',referrals.operations),
+    ...(universal?.feedback?[moduleEntry('soty.feedback','Обратная связь приложения','soty.feedback.v1',universal.feedback.operations)]:[]),
+    moduleEntry('soty.canvas-widget','Окна приложений на полотне','soty.canvas-widget.v1',canvasWidgets.operations,['canvas.widget']),
+  ]});
+  app.locals.appModuleCatalog=moduleCatalog;
+  const directoryAuthentication=createExternalCapabilityOperations({service:capabilities,origin:admittedCapabilityAudience});
+  attachAppAgentDirectory(app,{directory:appDirectory,moduleCatalog,origin:admittedDiscoveryOrigin,
+    authenticate:req=>directoryAuthentication.authenticate({authorization:singleHeader(req,'authorization'),audience:admittedCapabilityAudience})});
+  const directoryMcp=createAppAgentDirectoryMcpTools({directory:appDirectory,moduleCatalog});
   attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
+    mcpTools:capabilityMcpToolCatalog({externalTools:directoryAuthentication.tools,directoryMcp}),
     openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience), externalConfigured: Boolean(capabilities.external), guidanceConfigured: Boolean(capabilities.externalGuidance),queryConfigured:capabilities.external?.queryConfigured===true }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     const coverExtensions = [world.profileCoverExtension, apps.coverExtension].filter(Boolean);
     const preparedApps = createPreparedAppsExtension({ store: connectors.store, apps, universal,
       connect: { isActorActive: actor => connect?.isActorActive(actor) === true, withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback) } });
-    const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, preparedApps, ...(preparedAgent ? [preparedAgent.extension] : []), notes, capabilities, humanCalls, push,
+    const materialsExtension=createMaterialsExtension({materials,connect:()=>connect,onChange(change){publishPlatformChange({accountIds:change.accountIds});canvasObjects?.notifySourceChanged(change.source);}});
+    const vaultExtension={operations:canvasVault.operations,challengeStorage:canvasVault.challengeStorage,maxResultBytes:2*1024*1024,async executeAsync(request){const result=await canvasVault.execute(request);connect.withActorAuthorityFence(request.actor,()=>true);return result;}};
+    const endpointAndTransit=composeConnectExtensions([universal?.endpointRegistrationExtension??apps.endpointRegistrationExtension,transitAccess]);
+    const extensions = [platformLive,world, universal?.appsExtension ?? apps, endpointAndTransit, apps.sourcePreparationExtension, appJobs, preparedApps, ...(preparedAgent ? [preparedAgent.extension] : []), canvasObjects.extension,canvasWidgets,vaultExtension,pageHttp.extension,appDirectory,materialsExtension,invitations,referrals,notes, monitoring.composeExtension(capabilities), humanCalls, push,
       ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), ...(accountAiService ? [accountAiService] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
     app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions,
+      onContactsChanged(change){
+        try{for(const accountId of change.accountIds)apps.invalidateAccess({accountId});}
+        finally{publishPlatformChange(change);}
+      },
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
+    if(canvasVault.storageIdentity().schemaVersion===2)canvasVault.reconcileConversions();
     automaticApps = createAutomaticAppRegistration({ store: connectors.store, apps, universal, connect });
     connectors.setAutomaticAppRegistration(automaticApps);
     void automaticApps.recover().catch(() => {});
@@ -359,33 +514,38 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     // MCP reads/replays use the existing keyless authority resolver even when
     // authorization-server issuance is off. Its adapter precedes the OAuth
     // fallback namespace guard and does not enable native execution.
-    app.locals.capabilitiesMcp = mcp = attachCapabilitiesMcp(app, { service: capabilities, origin: admittedCapabilityAudience, appFeedback: appCapabilityGuards });
+    app.locals.capabilitiesMcp = mcp = attachCapabilitiesMcp(app, { service: capabilities, origin: admittedCapabilityAudience, appFeedback: appCapabilityGuards,directoryMcp });
     app.locals.oauthStatus = attachCapabilitiesOAuth(app, { profile: oauthProfile, service: capabilities, distDir });
     app.locals.humanIdentityStatus = attachHumanIdentity(app, { profile: humanProfile, service: human, distDir });
     unsubscribeRevocations = connect.subscribeRevocations(event => {
-      apps.invalidateAccess(event); connectors.store.recheckModelAuthorizations();
+      apps.invalidateAccess(event); connectors.store.recheckModelAuthorizations();platformLive.recheck();pageHttp?.invalidate();
     });
     accountAiService?.start();
     // Timers start only after actual Connect and provider admission. Disabled
     // issuance still permits bounded keyless cleanup and committed recovery.
-    nativeRecovery = notes.schemaVersion === 2 && [2, 3].includes(capabilities.schemaVersion)
+    nativeRecovery = [2,3].includes(notes.schemaVersion) && [2, 3].includes(capabilities.schemaVersion)
       ? startNativeRecovery({ coordinator: capabilities.nativeNotes }) : null;
     oauthCleanup = oauthProfile && capabilities.schemaVersion === 3
       ? startOAuthCleanup({ oauth: capabilities.oauth }) : null;
     push.attach({ subscribeMessages: listener => world.subscribeMessages(listener) });
+    monitoringCollectors.start();
   } catch (error) { failedStart(error); throw error; }
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.oauthCleanup = oauthCleanup;
   app.locals.personalAgent = personal; app.locals.nativeVoice=voice; app.locals.voiceOrb = orbVoice;
   app.locals.accountAi = accountAiService;
-  app.locals.captureUniversalPreparedness = () => captureUniversalPreparedness({
+  app.locals.captureUniversalPreparedness = () => {
+    const monitoringState=monitoring?.storageIdentity();
+    return captureUniversalPreparedness({
     compiledLegacyMode: forcedLegacyMode, universalConfigured: Boolean(universal), reviewsConfigured: Boolean(reviews && universal?.reviews),
     humanProfile, humanHttpEnabled: app.locals.humanIdentityStatus.enabled,
     selectedProfiles: scopedEmbedProfiles, selectedMigrationConfigured: allowScopedEmbedMigration,
       ...(allowSelectedResourceMigration||scopedEmbedProfiles.some(profile=>profile.schema==='soty.selected-human-embed.v2')?{selectedResourceMigrationConfigured:allowSelectedResourceMigration}:{}),
     selectedRegistryConfigured: scopedEmbedRegistryConfigured,
     ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
-  });
+    ...(monitoringState?{monitoring:{mode:monitoringState.mode,schemaVersion:monitoringState.schemaVersion,installed:typeof monitoringState.registryId==='string'}}:{}),
+    });
+  };
   let servicesCleanup;
   app.locals.closeServices = () => {
     if (servicesCleanup) return servicesCleanup;
@@ -394,12 +554,24 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     const cleanup = async () => {
       let failed = false;
       const attempt = async action => { try { await action(); } catch { failed = true; } };
+      await attempt(()=>monitoringCollectors?.close());
       if (nativeSources.enabled) await attempt(() => nativeSources.close());
+      await attempt(() => pageHttp?.close());
+      await attempt(() => canvasPages?.close());
+      await attempt(() => platformLive.close());
       await attempt(() => automaticApps?.close());
+      await attempt(() => canvasObjects?.close());
+      await attempt(() => canvasVault?.close());
+      await attempt(() => canvasWidgets?.close());
+      await attempt(() => appDirectory?.close());
+      await attempt(() => materials?.close());
+      await attempt(() => invitations?.close());
+      await attempt(() => referrals?.close());
       await attempt(() => push.close());
       await attempt(() => orbVoice.close());
       await attempt(() => personal.close());
       await attempt(() => accountAiService?.close());
+      await attempt(()=>transitAccess?.close());
       await attempt(() => sourceAccess.close());
       await attempt(() => voice.close());
       await attempt(() => humanCalls.close());
@@ -414,6 +586,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       await attempt(() => world.close());
       await attempt(() => notes.close());
       await attempt(() => capabilities.close());
+      await attempt(() => monitoring?.close());
       await attempt(() => connect.close());
       await attempt(() => connectors.store.close());
       if (failed) throw Object.assign(new Error('root_services_cleanup_failed'), { code: 'root_services_cleanup_failed' });

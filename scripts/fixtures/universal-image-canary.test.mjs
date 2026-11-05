@@ -8,7 +8,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { CANARY_BASE,CANARY_SOURCE,CANARY_REVISION,OLD_IMAGE,CANARY_BASELINE_IMAGE,CANARY_FEATURE_IMAGE,CANARY_LABEL,checkedCanaryOptions,parseControllerArgs,
   childConfiguration,checkedImage,checkedOwnedContainer,parseNativeTap,canaryHarnessManifest,canaryHarnessDigest } from './universal-image-canary.mjs';
 import { sealCanaryPayload,openCanaryPayload,CANARY_EVIDENCE_QUERIES,snapshotCanaryTree,createSyntheticActorSeed,hydrateSyntheticActorSeed,checkedCanaryRestoreFiles } from './universal-canary-runtime.mjs';
-import { currentStorageReaders,assertStorageCompatible } from '../../deploy/connector/storage-guard.mjs';
+import { assertStorageCompatible } from '../../deploy/connector/storage-guard.mjs';
+// The frozen synthetic runner uses a literal v8 fixture, independent of today's release envelope.
+const canaryStorageReaders = '{"version":8,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],"notes":[1,2,3],"capabilities":[1,2,3],"appRegistration":[1],"feedback":[1],"humanIdentity":[1,2,3],"connect":[3,4,5],"world":[6,7],"canvasObjects":[1,2],"canvasWidgets":[1],"canvasVault":[1,2],"canvasPages":[1,2],"materials":[1,2],"invitations":[1,2],"referrals":[1],"appAgentDirectory":[1],"universalPublication":[1],"appsEndpoint":[1]}}';
 import { createHttpApp } from '../../server/http-app.js';
 import { createRoomStore } from '../../server/room-store.js';
 import { createNotesService } from '../../modules/notes/server/index.mjs';
@@ -47,14 +49,18 @@ test('reviewed harness is a separate closed source packet; its manifest cannot m
   const changed=structuredClone(files);changed[0].sha256='9'.repeat(64);assert.notEqual(canaryHarnessDigest(canaryHarnessManifest(changed)),canaryHarnessDigest(manifest));
 });
 test('immutable image mode/revision/reader metadata and exact container ownership are checked',()=>{
-  const image={Id:featureImage,Config:{Labels:{'org.opencontainers.image.revision':CANARY_REVISION,'io.soty.universal.legacy':'0','io.soty.storage.readers':currentStorageReaders}}};
+  const image={Id:featureImage,Config:{Labels:{'org.opencontainers.image.revision':CANARY_REVISION,'io.soty.universal.legacy':'0','io.soty.storage.readers':canaryStorageReaders}}};
   assert.equal(checkedImage(image,{id:featureImage,legacy:0}),featureImage);
   assert.throws(()=>checkedImage(image,{id:featureImage,legacy:1}),fails('canary_image_pin_mismatch'));
   assert.throws(()=>checkedImage(image,{id:baselineImage,legacy:0}),fails('canary_image_pin_mismatch'));
-  const wrongReader=structuredClone(image),readers=JSON.parse(currentStorageReaders);readers.readers.humanIdentity=[1];wrongReader.Config.Labels['io.soty.storage.readers']=JSON.stringify(readers);
+  const wrongReader=structuredClone(image),readers=JSON.parse(canaryStorageReaders);readers.readers.humanIdentity=[1];wrongReader.Config.Labels['io.soty.storage.readers']=JSON.stringify(readers);
   assert.throws(()=>checkedImage(wrongReader,{id:featureImage,legacy:0}),fails('canary_human_reader2_required'));
-  const apps6=structuredClone(image),priorReaders=JSON.parse(currentStorageReaders);priorReaders.readers.apps=[1,2,3,4,5,6];apps6.Config.Labels['io.soty.storage.readers']=JSON.stringify(priorReaders);
+  const apps6=structuredClone(image),priorReaders=JSON.parse(canaryStorageReaders);priorReaders.readers.apps=[1,2,3,4,5,6];apps6.Config.Labels['io.soty.storage.readers']=JSON.stringify(priorReaders);
   assert.throws(()=>checkedImage(apps6,{id:featureImage,legacy:0}),fails('canary_apps_reader7_required'));
+  for(const mutate of [value=>{value.readers.canvasVault=[99];},value=>{value.readers.unreviewedStore=[1];},value=>{value.version=99;},value=>{delete value.readers.appsEndpoint;}]){
+    const invalid=structuredClone(image),declaration=JSON.parse(canaryStorageReaders);mutate(declaration);invalid.Config.Labels['io.soty.storage.readers']=JSON.stringify(declaration);
+    assert.throws(()=>checkedImage(invalid,{id:featureImage,legacy:0}),fails('canary_reader_metadata_invalid'),'unknown/extra/missing v8 schema stays fail closed');
+  }
   const record={id:'4'.repeat(64),name:'owned',image:featureImage,nonce,role:'feature-one'};
   const container={Id:record.id,Name:'/owned',Image:featureImage,Config:{Labels:{[CANARY_LABEL]:nonce,[CANARY_LABEL+'.role']:record.role,[CANARY_LABEL+'.revision']:CANARY_REVISION}}};
   assert.equal(checkedOwnedContainer(container,record),container);assert.throws(()=>checkedOwnedContainer({...container,Image:baselineImage},record),fails('canary_container_identity'));

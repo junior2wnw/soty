@@ -1,7 +1,7 @@
-import type { FieldDocument, FieldEntityRef } from '../../modules/field/contract.mjs';
+import type { AnyFieldDocument as FieldDocument, FieldDocument as LegacyFieldDocument, AnyFieldEntityRef as FieldEntityRef } from '../../modules/field/contract.mjs';
 import type { FieldPersistenceState, createFieldPersistence } from './field-persistence';
 export interface FieldPlacementResult { document: FieldDocument; changed: boolean; shortcutId: string; createdContext: boolean }
-export function createPersonalFieldDocument(options?: {includeBuiltins?: boolean; initialAppIds?: readonly string[]}): FieldDocument;
+export function createPersonalFieldDocument(options?: {includeBuiltins?: boolean; initialAppIds?: readonly string[]}): LegacyFieldDocument;
 export function ensureFieldEntityPlacement(document: FieldDocument, options: {entity: FieldEntityRef; contextId: string; shortcutId: string;
   initializePersonal?: boolean; includeBuiltins?: boolean; initialAppIds?: readonly string[]}): FieldPlacementResult;
 export interface AppFieldPlacementSnapshot {

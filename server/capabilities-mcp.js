@@ -92,7 +92,7 @@ function checkedSdkFailure(response, buffer, body, headers) {
 
 /** Maintained SDK codec/dispatch, with a finite buffering and authority gate.
  * The Web Request is an identity key, never a serialized actor container. */
-export function attachCapabilitiesMcp(app, { service, origin = '', limits, appFeedback } = {}) {
+export function attachCapabilitiesMcp(app, { service, origin = '', limits, appFeedback,directoryMcp } = {}) {
   requireValue(app && typeof app.use === 'function', 'capability_configuration_invalid');
   requireValue(validateDiscoveryOrigin({ discoveryOrigin: origin, shellOrigins: origin ? [origin] : [] }) === origin,
     'capability_configuration_invalid');
@@ -109,7 +109,7 @@ export function attachCapabilitiesMcp(app, { service, origin = '', limits, appFe
     context.server = server;
     // SDK errors remain controlled protocol results; never log request data.
     server.onerror = () => {};
-    const tools = createMcpTools({ service, operations, context, appFeedback });
+    const tools = createMcpTools({ service, operations, context, appFeedback,directoryMcp });
     server.setRequestHandler('tools/list', request => tools.list(request.params));
     server.setRequestHandler('tools/call', async request => server.projectCallToolResult(
       await tools.call(request.params), tools.outputSchema(request.params?.name)));
@@ -140,7 +140,7 @@ export function attachCapabilitiesMcp(app, { service, origin = '', limits, appFe
       const admitted = await lease.read(); body = admitted.body;
       lease.current(); authenticate(); revision(headers, body);
       webRequest = new Request(`${origin}/mcp`, { method: 'POST', headers, body: admitted.text, signal: lease.signal });
-      context = { authenticate, current: lease.current, privateRead: null, externalRead:null, origin, server: null };
+      context = { authenticate, current: lease.current, privateRead: null, externalRead:null,directoryRead:null, origin, server: null };
       contexts.set(webRequest, context);
       const response = await sdk.fetch(webRequest, { parsedBody: body });
       lease.current();
@@ -153,6 +153,7 @@ export function attachCapabilitiesMcp(app, { service, origin = '', limits, appFe
       const actor = authenticate();
       if (context.privateRead) operations.read({ actor, ...context.privateRead });
       if(context.externalRead)externalOperations.recheck({actor,...context.externalRead});
+      if(context.directoryRead)directoryMcp.recheck({actor,...context.directoryRead});
       res.statusCode = response.status;
       const type = response.headers.get('content-type');
       if (type) res.setHeader('Content-Type', type);

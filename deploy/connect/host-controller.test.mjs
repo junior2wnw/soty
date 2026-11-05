@@ -10,6 +10,7 @@ import { HostController, candidateConfig, moduleTree, validateConfig, production
 import { createRelease, recoverRelease } from '../../modules/connect/update/index.mjs';
 import { storageReaderLabel, currentStorageReaders } from '../connector/storage-guard.mjs';
 import { readStorageFormat } from '../connector/storage-probe.mjs';
+import { currentObservation } from '../connector/test-support/current-storage-observation.mjs';
 import { createHistoricalAppsV2 } from '../connector/apps-v2.fixture.mjs';
 import { createHistoricalAppsV3 } from '../connector/apps-v3.fixture.mjs';
 import { createHistoricalAppsV4 } from '../connector/apps-v4.fixture.mjs';
@@ -25,8 +26,7 @@ const pair = generateKeyPairSync('ed25519');
 // Every fresh host START uses the current independent probe, including explicit
 // empty stores. Historical image labels and persisted receipts stay historical.
 function storageFormat(overrides = {}) {
-  return { ok: true, schema: 'soty.storage-format.v7', rooms: 1, apps: 'empty', notes: 'empty', capabilities: 'empty',
-    appRegistration: 'empty', feedback: 'empty', humanIdentity: 'empty', connect: 'empty', world: 'empty', ...overrides };
+  return currentObservation({ rooms: 1, ...overrides });
 }
 function historicalV3StartReceipt(value) {
   const { containerId, image, mountSha256, rooms, apps, notes, capabilities } = value;
@@ -351,7 +351,7 @@ for (const previous of [2, 3, 4, 5]) test(`real Apps v${previous} to v6 migratio
     probes.push({ verb, id: runtime.Id, migrated: Boolean(migratedBytes) }); return probe(verb, runtime, ...rest);
   };
   await assert.rejects(f.create().run());
-  assert.deepEqual(await readStorageFormat(dataDir), { ok: true, schema: 'soty.storage-format.v7', rooms: 'empty', apps: 6, notes: 'empty', capabilities: 'empty', appRegistration: 'empty', feedback: 'empty', humanIdentity: 'empty', connect: 'empty', world: 'empty' });
+  assert.deepEqual(await readStorageFormat(dataDir), currentObservation({ apps: 6 }));
   const old = await f.engine.inspect(id(1));
   assert.equal(old.State.Running, false); assert.equal(old.HostConfig.RestartPolicy.Name, 'no');
   assert.ok(!f.engine.events.includes('start:' + id(1)));
@@ -384,7 +384,7 @@ test('first v3 activation refuses the actual old v2 image before creating a cand
   assert.equal((await f.readState()).transaction, null);
 });
 
-for (const store of ['notes', 'capabilities']) for (const version of [store === 'capabilities' ? 4 : 3, 2]) test(`controller checks fresh ${store}${version} compatibility before stopping ${version === 2 ? 'reader1' : 'the writer'}`, async () => {
+for (const store of ['notes', 'capabilities']) for (const version of [4, 2]) test(`controller checks fresh ${store}${version} compatibility before stopping ${version === 2 ? 'reader1' : 'the writer'}`, async () => {
   const f = await fixture();
   if (version === 2) f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = '{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1],"capabilities":[1]}}';
   f.deps.storageProbe = async () => storageFormat({ [store]: version });
@@ -419,7 +419,7 @@ test('legacy v1/v2 receipts cannot settle delayed START or automatic-restart res
     const f = await fixture(); f.engine.ignore = 'start';
     await assert.rejects(f.create().run());
     const state = await f.readState(), operation = state.transaction.operation;
-    assert.equal(operation.storageGuard.schema, 'soty.storage-start.v7'); assert.equal(operation.storageGuard.world, 'empty');
+    assert.equal(operation.storageGuard.schema, 'soty.storage-start.v8'); assert.equal(operation.storageGuard.world, 'empty');
     operation.storageGuard = historicalV3StartReceipt(operation.storageGuard);
     assert.equal(operation.kind, 'start'); assert.equal(operation.storageGuard.schema, 'soty.storage-start.v3');
     operation.storageGuard.schema = `soty.storage-start.v${version}`;
@@ -444,7 +444,7 @@ test('recovered v3 START receipt rechecks current Apps format and never repeats 
   const f = await fixture(); f.engine.ignore = 'start';
   await assert.rejects(f.create().run());
   const state = await f.readState(), operation = state.transaction.operation;
-  assert.equal(operation.storageGuard.schema, 'soty.storage-start.v7'); assert.equal(operation.storageGuard.world, 'empty');
+  assert.equal(operation.storageGuard.schema, 'soty.storage-start.v8'); assert.equal(operation.storageGuard.world, 'empty');
   operation.storageGuard = historicalV3StartReceipt(operation.storageGuard);
   assert.equal(operation.storageGuard.schema, 'soty.storage-start.v3'); assert.equal(operation.storageGuard.apps, 'empty');
   await atomicState(path.join(f.config.stateDir, 'host-state.json'), state);

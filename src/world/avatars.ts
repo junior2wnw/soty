@@ -9,7 +9,8 @@ export class AvatarHydrator {
   private readonly api: WorldApi;
   private readonly roots = new Set<HTMLElement>();
   private readonly cache = new Map<string, string | null>();
-  private readonly queue = new Map<string, Set<HTMLElement>>();
+  private readonly queue = new Map<string,{id:string;communityId:string|undefined;nodes:Set<HTMLElement>}>();
+  private readonly nodeKeys=new WeakMap<HTMLElement,string>();
   private readonly observer: IntersectionObserver;
   private readonly mutations: MutationObserver;
   private communityId: string | undefined;
@@ -24,20 +25,20 @@ export class AvatarHydrator {
       for (const entry of entries) if (entry.isIntersecting) { this.observer.unobserve(entry.target); this.enqueue(entry.target as HTMLElement); }
     }, { rootMargin: '60px' });
     this.mutations = new MutationObserver(records => {
-      for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLElement) this.scan(node);
+      for (const record of records){if(record.type==='attributes'&&record.target instanceof HTMLElement)this.scan(record.target);for (const node of record.addedNodes) if (node instanceof HTMLElement) this.scan(node);}
     });
     this.observe(root);
   }
 
   observe(root: HTMLElement): void {
-    this.roots.add(root); this.mutations.observe(root, { childList: true, subtree: true }); this.scan(root);
+    this.roots.add(root); this.watch(root); this.scan(root);
   }
 
   setContext(communityId?: string): void {
     this.communityId = communityId; this.generation++; this.cache.clear(); this.queue.clear(); this.loading = false;
     if (this.timer) clearTimeout(this.timer); this.timer = null;
     this.observer.disconnect(); this.mutations.disconnect();
-    for (const root of this.roots) if (root.isConnected) { root.querySelectorAll<HTMLElement>('.sw-avatar[data-profile-id]').forEach(node => node.replaceChildren(el('span', '', node.dataset.avatarLabel ?? 'С'))); this.mutations.observe(root, { childList: true, subtree: true }); this.scan(root); } else this.roots.delete(root);
+    for (const root of this.roots) if (root.isConnected) { root.querySelectorAll<HTMLElement>('.sw-avatar[data-profile-id]').forEach(node => node.replaceChildren(el('span', '', node.dataset.avatarLabel ?? 'С'))); this.watch(root); this.scan(root); } else this.roots.delete(root);
   }
 
   destroy(): void {
@@ -46,15 +47,24 @@ export class AvatarHydrator {
   }
 
   private scan(root: HTMLElement): void {
-    if (root.matches('.sw-avatar[data-profile-id]')) this.observer.observe(root);
-    root.querySelectorAll<HTMLElement>('.sw-avatar[data-profile-id]').forEach(node => this.observer.observe(node));
+    const observe=(node:HTMLElement)=>{const key=this.cacheKey(node);if(this.nodeKeys.get(node)!==key){node.replaceChildren(el('span','',node.dataset.avatarLabel??'С'));this.nodeKeys.set(node,key);}this.observer.observe(node);};
+    if (root.matches('.sw-avatar[data-profile-id]')) observe(root);
+    root.querySelectorAll<HTMLElement>('.sw-avatar[data-profile-id]').forEach(observe);
   }
+  private watch(root:HTMLElement):void{this.mutations.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['data-avatar-community','data-profile-id','data-avatar-revision']});}
+
+  private context(node:HTMLElement):string|undefined {
+    const scoped=node.closest<HTMLElement>('[data-avatar-community]')?.dataset.avatarCommunity;
+    return scoped&&/^[A-Za-z0-9_-]{3,160}$/u.test(scoped)?scoped:this.communityId;
+  }
+
+  private cacheKey(node:HTMLElement):string{return JSON.stringify([this.context(node)??null,node.dataset.profileId,node.dataset.avatarRevision]);}
 
   private enqueue(node: HTMLElement): void {
     const id = node.dataset.profileId; if (!id || !node.isConnected) return;
-    const key = `${id}:${node.dataset.avatarRevision}`;
+    const communityId=this.context(node),key=this.cacheKey(node);
     if (this.cache.has(key)) { this.apply(node, this.cache.get(key) ?? null); return; }
-    const queued = this.queue.get(id) ?? new Set<HTMLElement>(); queued.add(node); this.queue.set(id, queued);
+    const requestKey=JSON.stringify([communityId??null,id]),queued=this.queue.get(requestKey)??{id,communityId,nodes:new Set<HTMLElement>()};queued.nodes.add(node);this.queue.set(requestKey,queued);
     if (!this.timer && !this.loading) this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, 30);
   }
 
@@ -67,15 +77,19 @@ export class AvatarHydrator {
   private async flush(): Promise<void> {
     if (this.destroyed || this.loading || !this.queue.size) return;
     this.loading = true; const generation = this.generation;
-    const items = [...this.queue.entries()].slice(0, 24).map(([id, nodes]) => [id, [...nodes].map(node => ({ node, revision: node.dataset.avatarRevision }))] as const); items.forEach(([id]) => this.queue.delete(id));
+    // One authority context per request; the same person can appear in two rooms.
+    const communityId=this.queue.values().next().value!.communityId;
+    const items=[...this.queue.entries()].filter(([,entry])=>entry.communityId===communityId).slice(0,24).map(([key,entry])=>{
+      this.queue.delete(key);return[entry.id,[...entry.nodes].map(node=>({node,revision:node.dataset.avatarRevision}))] as const;
+    });
     try {
-      const result = await this.api.request<{ avatars: AvatarResponse[] }>('world.profile.avatars', { profileIds: items.map(([id]) => id), ...(this.communityId ? { communityId: this.communityId } : {}) });
+      const result = await this.api.request<{ avatars: AvatarResponse[] }>('world.profile.avatars', { profileIds: items.map(([id]) => id), ...(communityId ? { communityId } : {}) });
       if (this.destroyed || generation !== this.generation) return;
       for (const [id, nodes] of items) {
         const avatar = result.avatars.find(value => value.profileId === id);
         for (const { node, revision } of nodes) {
-          if (node.dataset.profileId !== id || node.dataset.avatarRevision !== revision) continue;
-          this.cache.set(`${id}:${revision}`, avatar?.avatarUrl ?? null);
+          if (!node.isConnected||node.dataset.profileId !== id || node.dataset.avatarRevision !== revision||this.context(node)!==communityId) continue;
+          this.cache.set(this.cacheKey(node), avatar?.avatarUrl ?? null);
           if (this.cache.size > 256) this.cache.delete(this.cache.keys().next().value!);
           if (avatar?.avatarUrl) this.apply(node, avatar.avatarUrl); else node.replaceChildren(el('span', '', node.dataset.avatarLabel ?? 'С'));
         }

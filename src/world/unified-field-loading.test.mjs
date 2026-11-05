@@ -7,6 +7,7 @@ import ts from 'typescript';
 import { createFieldPersistence } from './field-persistence.ts';
 import { fieldEntityKey,validateFieldDocument } from '../../modules/field/contract.mjs';
 import { createPersonalFieldDocument } from './app-field-placement.mjs';
+import {coverageTestSource,installCoverageTestPorts} from './unified-field-coverage-test-ports.mjs';
 
 // Execute the complete production ready IIFE, cache subscription/mount and
 // dispose. Persistence/validation are real; paint and directory requests are
@@ -22,7 +23,7 @@ const initialSnapshot=screen.body.statements.find(node=>ts.isIfStatement(node)&&
 const returned=screen.body.statements.find(ts.isReturnStatement).expression;
 const dispose=returned.properties.find(node=>ts.isMethodDeclaration(node)&&node.name.getText(parsed)==='dispose');
 const ready=variable(screen.body.statements,'ready');assert.ok(ready&&subscribe&&dispose&&initialSnapshot,'genuine full lifecycle must exist');
-const compiled=ts.transpileModule([print(variable(parsed.statements,'BUILTINS')),print(variable(screen.body.statements,'initialMineTask')),...functions.map(print),print(subscribe),print(initialSnapshot),print(ready),
+const compiled=ts.transpileModule([coverageTestSource(screen.body.statements,parsed,printer),print(variable(parsed.statements,'BUILTINS')),print(variable(screen.body.statements,'initialMineTask')),...functions.map(print),print(subscribe),print(initialSnapshot),print(ready),
   'exports.api = { ready, changeMode, mountEngine, '+print(dispose)+' };'].join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
 const turn=()=>new Promise(done=>setImmediate(done));
@@ -43,7 +44,11 @@ function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000,lateStar
     api:{async request(op,args){calls.push(op);assert.equal(op,'world.field.get');assert.equal(args.expectedAccountId,'owner');await remote.promise;return structuredClone(base);}}});
   const metadata=new Map(),loading={hidden:false},element={dataset:{ready:'loading'},remove(){}},abort=new AbortController();
   const environment={exports:{},crypto,disposed:false,mode,filter:'all',filtersByMode:{mine:'all',search:'all'},options:{accountId:'owner',isCurrent:owned,onMessage(){}},
+    liveApps:[],liveProjection:{update:()=>({contexts:[],shortcuts:[]})},refreshLiveApps:async()=>{},
     engine:null,state:null,metadata,fieldEntityKey,persistence,current:()=>!environment.disposed&&owned(),
+    fieldGlass:null,mountFieldGlass:()=>({dispose(){}}),
+    canvasContent:{createObject:()=>null,objectKey:()=>null,dispose(){}},
+    createObject:()=>null,objectKey:()=>null,focusedCommunityId:null,
     allMetadata:()=>[...metadata.values()],updateChrome(){},updateStatus(){},updateMineFilter(){},closeList(){},closePreview(){},route(){},
     empty:{hidden:true},mineResolvedGeneration:-1,mineFilterAdmitted:false,firstResolve:false,element,loading,
     activate(){},inspect(){},updateSummary(){},searchScene:()=>({}),searchPlacement:{contextEntity:()=>null},openPreview(){},
@@ -58,7 +63,7 @@ function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000,lateStar
       snapshot:()=>document,update(value){if(value.document)document=value.document;},hasUnsavedChanges:()=>false,
       cancel(){},destroy(){fieldPaint.resolve();}};fields.push(field);return field;},
   };
-  vm.createContext(environment);if(!lateStart)vm.runInContext(compiled,environment);
+  installCoverageTestPorts(environment);vm.createContext(environment);if(!lateStart)vm.runInContext(compiled,environment);
   // Static builtins are metadata only until the validated document places one.
   for(const id of ['notes','chess','assistant'])metadata.set(fieldEntityKey({kind:'builtin',id}),{entity:{kind:'builtin',id},title:id,source:'builtin'});
   t.after(async()=>{environment.exports.api?.dispose();remote.resolve();directory.resolve();paint.resolve();await environment.exports.api?.ready;persistence.dispose();});

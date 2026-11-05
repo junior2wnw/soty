@@ -17,6 +17,7 @@ import { createPublicationRegistry } from '../server/publications.mjs';
 import { createSourceRegistry } from '../server/sources.mjs';
 import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
 import { HIVE_SELECTED_SOURCE } from '../scoped-embed/resource-route-adapters.mjs';
+import {canonical as scopedCanonical,hash as scopedHash} from '../scoped-embed/profile.mjs';
 
 // Actual Apps DDL/SourceRegistry/Publication/ScopedAdmission, all in OWN synthetic SQLite.
 // Constructor-owned actor/channel fixture ports are not Native or public-body authority.
@@ -176,7 +177,7 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     const prepared = await f.prepare(), intent = f.intent(prepared);
     if (rootWorkspace) Object.assign(intent, { launchPolicy: 'anyone', listed: true, exposureAck: {
       scope: 'authenticated-workspace', targetRevision: f.target.revision, targetDigest: f.target.digest, profile: f.target.profile } });
-    f.promote(intent); const before = f.rows();
+    f.promote(intent); const before = f.rows();let expectedContinuity=before.app_frame_continuity;
     const outsider = Object.freeze({ accountId: 'new-ungranted-person', deviceId: 'new-person-browser' });
     const reader = Object.freeze({ accountId: 'synthetic_reader', deviceId: 'reader-browser' });
     const actors = [f.owner, reader, outsider]; let humanSubjects = [], forwardedRequests = 0;
@@ -339,7 +340,7 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       assert.equal(forwardedRequests, 0, 'anonymous requests never reach Native or acquire a Source proof');
       // A browser shares one cookie jar between same-origin main/widget frames.
       // Interleave both POSTs before either GET; separate jars hide this race.
-      const jar = new Map();
+      const jar = new Map(),openedAt=clock;
       const browser = (path, { body, headers = {}, cookie } = {}) => new Promise((done, reject) => {
         const bytes = body === undefined ? null : Buffer.from(JSON.stringify(body));
         const req = request({ hostname: '127.0.0.1', port: server.address().port, path,
@@ -394,7 +395,7 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       assert.equal((await read(mainBoot.body.frame)).status,200,'closing replaced main cannot retire its new family head');
       // The last ordinary/base cookie belongs to a subsequently closed widget.
       const lastWidget=call({instanceId:'widget-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'});
-      assert.equal((await boot(lastWidget)).status,200);
+      const lastWidgetBoot=await boot(lastWidget);assert.equal(lastWidgetBoot.status,200);
       service.execute({op:'apps.scoped.close',actor:f.owner,args:{appId:f.appId,handle:lastWidget.scopedCloseHandle}});
       const closedOwnerBase=jar.get('__Host-soty_app_session'),outsideBoot=await boot(outside);
       assert.equal(outsideBoot.status,200);
@@ -439,11 +440,31 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       assert.equal((await read(fresh.body.frame)).body.instanceId,'main');
       renewal.dispose();const afterRenewal=seen.length;
 
-      const next=await boot(call({instanceId:'main'}));assert.equal(next.status,200);active=false;
+      const nextLaunch=call({instanceId:'main'}),next=await boot(nextLaunch);assert.equal(next.status,200);active=false;
       assert.ok([401,403].includes((await read(next.body.frame)).status));assert.equal(seen.length,afterRenewal,'revoked actor never reaches Native');
+      // Audit every passive row produced by the six legitimate cookie boots;
+      // the original complete business-registry snapshot remains byte-exact.
+      const rows=f.rows().app_frame_continuity,hostId=rows[0]?.host_id;assert.match(hostId,/^[A-Za-z0-9_-]{43}$/u);
+      const expectedRow=(issued,handle,actor,instance,path,revision,state,at)=>{
+        const scope={profileDigest:f.admissions.require(f.target).digest,policyEpoch:2,
+          entry:{domainId:preferred.domainId,origin:preferred.origin,pathDigest:scopedHash(path)},
+          target:f.profile.target,sourceProfile:pin,resourceDigest:scopedHash(f.profile.resource),
+          humanDigest:scopedHash({issuer:f.profile.issuer,clientId:f.profile.clientId,subject:'subject-'+actor.accountId,clientGeneration:1,clientProfileDigest:'c'.repeat(64)}),
+          rootInstanceId:instance};
+        return Object.assign(Object.create(null),{frame_id:issued.body.frame,account_id:actor.accountId,device_id:actor.deviceId,app_id:f.appId,
+          binding_json:scopedCanonical(scope),binding_digest:scopedHash(scope),lease_hash:scopedHash(handle),host_id:hostId,revision,state,expires_at:at+86400000,updated_at:at});
+      };
+      expectedContinuity=[
+        expectedRow(mainBoot,renewed.scopedCloseHandle,f.owner,'main',navigation,3,'closed',openedAt),
+        expectedRow(widgetBoot,widget.scopedCloseHandle,f.owner,'widget-12345678-1234-1234-1234-123456789abc','/embed',2,'closed',openedAt),
+        expectedRow(lastWidgetBoot,lastWidget.scopedCloseHandle,f.owner,'widget-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','/embed',2,'closed',openedAt),
+        expectedRow(outsideBoot,outside.scopedCloseHandle,outsider,'main','/embed',1,'open',openedAt),
+        expectedRow(fresh,binding.handle,f.owner,'main','/embed',2,'open',clock),
+        expectedRow(next,nextLaunch.scopedCloseHandle,f.owner,'main','/embed',1,'open',clock),
+      ];
     } else assert.throws(() => call({ path: '/' }), { code: 'app_scoped_admission_required' });
     active = false; assert.throws(() => call({ path: '/' }), { code: 'apps_authentication_required' });
-    assert.deepEqual(f.rows(), before, 'no preference, target, admission or publication mutation');
+    assert.deepEqual(f.rows(), {...before,app_frame_continuity:expectedContinuity}, 'no preference, target, admission or publication mutation; every passive runtime row matches its exact boot/renew/close ledger');
   });
 });
 

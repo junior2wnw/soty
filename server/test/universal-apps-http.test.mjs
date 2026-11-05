@@ -203,7 +203,8 @@ for (const withGuidance of [false, true]) test(`real signed Apps/Connect authori
   const expectedApplicationTools = ['apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query',
     ...(withGuidance ? ['apps_guidance_list', 'apps_guidance_get'] : [])];
   const expectedMcpTools = ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get',
-    'apps_diagnose', 'apps_auth_guide', ...expectedApplicationTools];
+    'apps_diagnose', 'apps_auth_guide', ...expectedApplicationTools,
+    'app_directory_search','app_directory_get','app_directory_modules','app_directory_query'];
   assert.equal(documentResponse.status, 200);
   assert.deepEqual(document['x-soty-mcp'].tools, expectedMcpTools);
   assert.equal(document.paths['/api/capabilities/v1/app-actions/invoke'].post.operationId, 'apps_invoke');

@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import {createWorldInvitationPort} from './invitation-port.mjs';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +11,7 @@ import { COMMUNITY_OPERATIONS, communityOperation } from './communities.mjs';
 import { CHAT_OPERATIONS, chatOperation } from './chat.mjs';
 import { AVATAR_OPERATIONS, avatarOperation } from './avatars.mjs';
 import { DIRECTORY_OPERATIONS, directoryMatches, directoryOperation } from './directory.mjs';
-import { FIELD_OPERATIONS, fieldOperation, migrateField } from './field.mjs';
+import { FIELD_OPERATIONS, fieldOperation, migrateField, readCanvasFieldSource } from './field.mjs';
 import { DIRECT_OPERATIONS, DIRECT_READ_OPERATIONS, directOperation } from './direct.mjs';
 import { ATTACHMENT_OPERATIONS, ATTACHMENT_READ_OPERATIONS, attachmentOperation } from './attachments.mjs';
 import { createCoverStore } from '../../cover-art/server/index.mjs';
@@ -25,6 +26,8 @@ const READ_OPERATIONS = new Set(['world.profile.get', 'world.profile.view', 'wor
   'world.field.get', ...DIRECT_READ_OPERATIONS,
   ...ATTACHMENT_READ_OPERATIONS,
   'world.community.get', 'world.community.list', 'world.membership.list', 'world.chat.list', 'world.profile.avatar.read', 'world.profile.avatars']);
+// These durable changes affect the pair. Pinned/muted preferences remain private.
+const DIRECT_PAIR_CHANGES = new Set(['world.direct.open','world.direct.chat.send','world.direct.chat.read','world.direct.chat.remove']);
 export const WORLD_PROFILE_COVER_OPERATIONS = Object.freeze(['world.profile.cover.status', 'world.profile.cover.prepare',
   'world.profile.cover.prepareFromVersion', 'world.profile.cover.commit', 'world.profile.cover.restore', 'world.profile.cover.remove',
   'world.profile.cover.read', 'world.profile.cover.versions', 'world.profile.cover.cancel']);
@@ -47,7 +50,8 @@ function outsideModule(file) {
 
 /** Trusted service boundary only. Mount as a Connect extension after proof/device/account verification.
  * Do not expose execute directly as an HTTP handler and do not construct actor from request arguments. */
-export function createWorldService({ databasePath, projectId, clock = Date.now, withCurrentContacts, allowAudienceMigration = false, allowWorld6Migration = false, allowWorld7Migration = false, profileCoverDecoder, profileCoverRegistered = () => false } = {}) {
+export function createWorldService({ databasePath, projectId, clock = Date.now, withCurrentContacts, allowAudienceMigration = false, allowWorld6Migration = false, allowWorld7Migration = false, profileCoverDecoder, profileCoverRegistered = () => false, onChange = () => {} } = {}) {
+  assert(typeof onChange==='function','world_change_listener_invalid');
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(typeof clock === 'function', 'invalid_clock');
@@ -62,7 +66,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
     assert(outsideModule(file), 'database_must_be_outside_module');
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   }
-  const db = new DatabaseSync(file); let closed = false, authorityFenceActive = false, storageVersion;
+  const db = new DatabaseSync(file); let closed = false, authorityFenceActive = false, canvasSourceReadActive = false, storageVersion;
   try {
     const migrationNow = clock(); assert(Number.isSafeInteger(migrationNow) && migrationNow >= 0, 'invalid_clock');
     storageVersion = migrateWorld(db, projectId, { allowAudienceMigration, allowWorld6Migration, allowWorld7Migration, now: Math.max(1, migrationNow) }); migrateField(db);
@@ -93,7 +97,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
         WHERE message.id=? AND message.thread_id=? AND message.deleted_at IS NULL AND message.relationship_id=thread.relationship_id`, event.messageId, event.conversationId);
   }
   function withProfileAuthority(actor, callback) {
-    assert(!closed, 'service_closed'); assert(!authorityFenceActive && !db.isTransaction, 'world_authority_fence_nested');
+    assert(!closed, 'service_closed'); assert(!authorityFenceActive && !canvasSourceReadActive && !db.isTransaction, 'world_authority_fence_nested');
     const enter = contacts => {
       contactsFor(actor, contacts); const prior = currentContactView; currentContactView = contacts;
       try { return callback(); } finally { currentContactView = prior; }
@@ -119,6 +123,12 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
           ? { kind: 'direct', threadId: item.thread_id, peerAccountId: peer, relationshipId: item.current_relationship_id } : null;
       } finally { db.exec('COMMIT'); }
     });
+  }
+  const publiclyVisible=ref=>Boolean(ref?.kind==='person'?m.person(ref.id)?.audience==='public'
+    :ref?.kind==='community'&&m.get("SELECT 1 FROM communities WHERE id=? AND state='active' AND join_policy<>'invite'",ref.id));
+  function notifyChange(actor,ref,wasPublic=false,related=[]){
+    try{onChange({accountIds:[actor.accountId,...related].filter(Boolean),...(ref?{ref}:{}),publicTransition:wasPublic||publiclyVisible(ref)});}
+    catch{/* A failed observer cannot undo a committed World write. */}
   }
   async function profileCoverExecute({ op, args = {}, actor } = {}) {
     assert(profileCoverReady() && WORLD_PROFILE_COVER_OPERATIONS.includes(op), 'profile_cover_unavailable');
@@ -159,14 +169,33 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
     if (op === 'world.profile.cover.cancel') return profileCoverStore.cancel(actor, input);
     const prior = coverOperation; coverOperation = op;
     try {
-      if (op === 'world.profile.cover.commit') return profileCoverStore.commit(actor, input);
-      if (op === 'world.profile.cover.restore') return profileCoverStore.restore(actor, input);
-      return profileCoverStore.remove(actor, input);
+      const result=op === 'world.profile.cover.commit' ? profileCoverStore.commit(actor,input)
+        : op === 'world.profile.cover.restore' ? profileCoverStore.restore(actor,input) : profileCoverStore.remove(actor,input);
+      notifyChange(actor,{kind:'person',id:actor.accountId});return result;
     } finally { coverOperation = prior; }
   }
   const operations = new Set(WORLD_OPERATIONS);
   const service = {
     projectId, schemaVersion: storageVersion, operations, profileCoverExtension: undefined,
+    /** Trusted host only: detached canonical data, not an owner login or entity grant. */
+    withCanvasSource(request, callback) {
+      assert(!closed, 'service_closed'); exact(request, ['ownerId'], ['viewer']); identifier(request.ownerId);
+      const viewer=request.viewer??null;if(viewer){identifier(viewer.accountId);identifier(viewer.deviceId);}
+      assert(typeof callback==='function'&&!['AsyncFunction','AsyncGeneratorFunction'].includes(callback.constructor?.name),'world_canvas_callback_invalid');
+      assert(!canvasSourceReadActive&&(!db.isTransaction||authorityFenceActive),'world_authority_fence_nested');
+      const observe=contacts=>{if(viewer)contactsFor(viewer,contacts);const prior=currentContactView,ownsSnapshot=!db.isTransaction;currentContactView=contacts;canvasSourceReadActive=true;
+        try{if(ownsSnapshot)db.exec('BEGIN');const owner=m.person(request.ownerId);assert(owner,'world_canvas_owner_unavailable');
+          const field=readCanvasFieldSource(m,request.ownerId),banner=m.canViewFullProfile(owner,viewer?.accountId)
+            ?{kind:'profile',profile:{profileId:owner.account_id,displayName:owner.display_name,avatarColor:owner.avatar_color,avatarRevision:owner.avatar_revision??null}}
+            :{kind:'generic',title:'Полотно'};
+          const result=callback(Object.freeze({schema:'soty.canvas-source.v1',ownerId:request.ownerId,field,banner}));
+          if(result&&typeof result.then==='function'){Promise.resolve(result).catch(()=>{});throw new WorldError('world_canvas_callback_async');}
+          if(ownsSnapshot)db.exec('COMMIT');return result;
+        }catch(error){if(ownsSnapshot&&db.isTransaction)db.exec('ROLLBACK');throw error;}
+        finally{canvasSourceReadActive=false;currentContactView=prior;}
+      };
+      return viewer&&withCurrentContacts?withCurrentContacts(viewer,observe):observe(null);
+    },
     /** Host-only, synchronous authority boundary. Lock order is Connect -> World -> Apps.
      * Read predicates may use this connection; World operations and async work may not.
      * Only the downstream Apps transaction writes. This is not a cross-file commit. */
@@ -174,7 +203,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
       assert(!closed, 'service_closed');
       assert(typeof callback === 'function' && callback.constructor?.name !== 'AsyncFunction'
         && callback.constructor?.name !== 'AsyncGeneratorFunction', 'world_authority_callback_invalid');
-      assert(!authorityFenceActive && !db.isTransaction, 'world_authority_fence_nested');
+      assert(!authorityFenceActive && !canvasSourceReadActive && !db.isTransaction, 'world_authority_fence_nested');
       const priorTimeout = Number(db.prepare('PRAGMA busy_timeout').get().timeout);
       let began = false;
       try {
@@ -199,7 +228,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
     },
     execute({ op, args = {}, actor } = {}) {
       assert(!closed, 'service_closed'); assert(operations.has(op), 'unsupported_operation');
-      assert(!authorityFenceActive, 'world_authority_mutation_forbidden');
+      assert(!authorityFenceActive&&!canvasSourceReadActive, 'world_authority_mutation_forbidden');
       if (op === 'world.profile.avatar.set') {
         m.validateActor(actor);
         coverArguments(args, ['expectedRevision', 'avatarUrl', 'thumbnailUrl']); integer(args.expectedRevision, 1);
@@ -315,7 +344,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
       assert(!closed && typeof listener === 'function', 'invalid_listener'); subscribers.add(listener);
       return () => { subscribers.delete(listener); };
     },
-    close() { assert(!authorityFenceActive, 'world_authority_fence_active'); if (!closed) { closed = true; profileCoverStore?.dispose(); subscribers.clear(); messageSubscribers.clear(); db.close(); } },
+    close() { assert(!authorityFenceActive&&!canvasSourceReadActive, 'world_authority_fence_active'); if (!closed) { closed = true; profileCoverStore?.dispose(); subscribers.clear(); messageSubscribers.clear(); db.close(); } },
   };
   try {
     // Legacy set needs no native decode. New upload is advertised only when the
@@ -347,5 +376,29 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
     profileCoverEnabled = Boolean(profileCoverDecoder && withCurrentContacts);
     if (profileCoverEnabled) service.profileCoverExtension = Object.freeze({ operations: new Set(WORLD_PROFILE_COVER_OPERATIONS), executeAsync: profileCoverExecute });
   } catch (error) { profileCoverStore?.dispose(); db.close(); throw error; }
+  const execute=service.execute;
+  service.execute=function(request={}){
+    const {op,args={},actor}=request,mutating=!READ_OPERATIONS.has(op)&&!DIRECT_READ_OPERATIONS.includes(op);
+    const ref=typeof op==='string'&&op.startsWith('world.profile.')&&typeof actor?.accountId==='string'?{kind:'person',id:actor.accountId}
+      :typeof args.communityId==='string'?{kind:'community',id:args.communityId}:null;
+    const wasPublic=mutating&&publiclyVisible(ref);
+    const result=execute.call(service,request);
+    if(mutating){
+      let related=[args.peerAccountId,args.profileId];
+      if(DIRECT_PAIR_CHANGES.has(op)){
+        // Client-supplied thread/peer IDs never choose recipients on their own.
+        // The operation has committed under the current contact authority; read
+        // its immutable participants and exact admitted relationship afterwards.
+        const threadId=args.threadId??result?.current?.threadId;
+        const thread=typeof threadId==='string'?m.get('SELECT account_low,account_high,relationship_id FROM world_direct_threads WHERE id=?',threadId):null;
+        related=thread&&thread.relationship_id===args.expectedRelationshipId
+          &&[thread.account_low,thread.account_high].includes(actor.accountId)?[thread.account_low,thread.account_high]:[];
+      }
+      notifyChange(actor,ref||(result?.communityId?{kind:'community',id:result.communityId}:null),wasPublic,related);
+    }
+    return result;
+  };
+  service.invitations=createWorldInvitationPort({db,m,clock,withCurrentContacts,onChange:notifyChange,
+    notifyMembership(event){for(const listener of subscribers){try{listener(event);}catch{/* Membership is committed. */}}}});
   return service;
 }

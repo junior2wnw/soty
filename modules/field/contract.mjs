@@ -56,3 +56,67 @@ export function validateFieldDocument(value) {
   if (new TextEncoder().encode(JSON.stringify(document)).byteLength > FIELD_LIMITS.bytes) fail('field_limit_exceeded');
   return document;
 }
+
+export const FIELD_SCHEMA_V2 = 'soty.field.v2';
+export const FIELD_ENTITY_KINDS_V2 = Object.freeze([...FIELD_ENTITY_KINDS, 'object']);
+export const FIELD_V2_LIMITS = Object.freeze({ minExtent: 16, maxExtent: 8192 });
+export function createFieldDocumentV2() { return { schema: FIELD_SCHEMA_V2, contexts: [], shortcuts: [] }; }
+export function validateAnyFieldEntity(value) {
+  if (!exact(value, ['kind', 'id']) || !FIELD_ENTITY_KINDS_V2.includes(value.kind) || !identifier(value.id)) fail();
+  return {kind:value.kind,id:value.id};
+}
+
+/** Free anchors are object centres in context-relative world pixels. */
+export function validateFieldPlacement(value) {
+  if (exact(value, ['kind', 'slot']) && value.kind === 'hex' && Array.isArray(value.slot)
+    && value.slot.length === 2 && value.slot.every(slotCoordinate)) {
+    return { kind: 'hex', slot: value.slot.map(positiveZero) };
+  }
+  const extent = number => typeof number === 'number' && Number.isFinite(number)
+    && number >= FIELD_V2_LIMITS.minExtent && number <= FIELD_V2_LIMITS.maxExtent;
+  if (!exact(value, ['kind', 'x', 'y', 'width', 'height']) || value.kind !== 'free'
+    || !coordinate(value.x) || !coordinate(value.y) || !extent(value.width) || !extent(value.height)
+    || Math.abs(value.x) + value.width / 2 > FIELD_LIMITS.coordinate
+    || Math.abs(value.y) + value.height / 2 > FIELD_LIMITS.coordinate) fail();
+  return { kind: 'free', x: positiveZero(value.x), y: positiveZero(value.y), width: value.width, height: value.height };
+}
+
+export function validateFieldDocumentV2(value) {
+  if (!exact(value, ['schema', 'contexts', 'shortcuts']) || value.schema !== FIELD_SCHEMA_V2
+    || !Array.isArray(value.shortcuts)) fail();
+  if (value.shortcuts.length > FIELD_LIMITS.shortcuts) fail('field_limit_exceeded');
+  const contexts = validateFieldDocument({ schema: FIELD_SCHEMA, contexts: value.contexts, shortcuts: [] }).contexts;
+  const contextIds = new Set(contexts.map(context => context.contextId)), shortcutIds = new Set(), slots = new Map(), shortcuts = [];
+  for (const shortcut of value.shortcuts) {
+    if (!exact(shortcut, ['shortcutId', 'entity', 'contextId', 'placement']) || !identifier(shortcut.shortcutId)
+      || !identifier(shortcut.contextId) || !contextIds.has(shortcut.contextId) || shortcutIds.has(shortcut.shortcutId)) fail();
+    const entity = validateAnyFieldEntity(shortcut.entity), placement = validateFieldPlacement(shortcut.placement);
+    if (placement.kind === 'hex') {
+      let occupied = slots.get(shortcut.contextId);
+      if (!occupied) { occupied = new Set(); slots.set(shortcut.contextId, occupied); }
+      const key = placement.slot.join(','); if (occupied.has(key)) fail(); occupied.add(key);
+    }
+    shortcutIds.add(shortcut.shortcutId);
+    shortcuts.push({ shortcutId: shortcut.shortcutId, entity, contextId: shortcut.contextId, placement });
+  }
+  const document = { schema: FIELD_SCHEMA_V2, contexts, shortcuts };
+  if (new TextEncoder().encode(JSON.stringify(document)).byteLength > FIELD_LIMITS.bytes) fail('field_limit_exceeded');
+  return document;
+}
+
+export function validateAnyFieldDocument(value) {
+  return value?.schema === FIELD_SCHEMA_V2 ? validateFieldDocumentV2(value) : validateFieldDocument(value);
+}
+
+/** Explicit user-action migration; reads never convert a persisted document. */
+export function convertFieldDocumentToV2(value) {
+  const document = validateAnyFieldDocument(value);
+  if (document.schema === FIELD_SCHEMA_V2) return document;
+  return { schema: FIELD_SCHEMA_V2, contexts: document.contexts,
+    shortcuts: document.shortcuts.map(({ slot, ...shortcut }) => ({ ...shortcut, placement: { kind: 'hex', slot } })) };
+}
+
+/** For validated shortcuts only. Renderers still own hex-to-pixel metrics. */
+export function fieldShortcutPlacement(shortcut) {
+  return validateFieldPlacement(shortcut.placement ?? { kind: 'hex', slot: shortcut.slot });
+}

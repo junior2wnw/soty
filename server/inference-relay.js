@@ -85,12 +85,14 @@ export function createInferenceRelay({
       let timer = setTimeout(() => deadline.abort(failure("model-upstream-timeout", 504)), requestTimeoutMs);
       timer.unref?.();
       let startedOutput = false;
+      let completed = false, firstOutputMs = null;
       let attempts = 0;
       let lastError = failure("model-upstream-unavailable", 503);
       res.setHeader("X-Soty-Request-Id", requestId);
       const onFirstOutput = () => {
         if (startedOutput) return;
         startedOutput = true;
+        firstOutputMs = Math.max(0, performance.now() - started);
         if (body.stream === true) {
           clearTimeout(timer);
           timer = setTimeout(() => deadline.abort(failure("model-upstream-timeout", 504)), streamTimeoutMs);
@@ -102,7 +104,7 @@ export function createInferenceRelay({
           await raceProviders({ states, body, res, signal: requestSignal, fetchImpl, firstTokenTimeoutMs,
             idleTimeoutMs, internalStream, normalizeTools, onFirstOutput, emit, requestId, started,
             failureThreshold, cooldownMs, emptyToolFallback, assertCurrent });
-          return;
+          completed = true; return;
         }
         for (const state of states) {
           if (requestSignal.aborted) throw abortError(requestSignal);
@@ -122,7 +124,7 @@ export function createInferenceRelay({
             state.failures = 0; state.cooldownUntil = 0;
             emit({ event: "inference_complete", requestId, provider: state.name, attempts,
               ...metrics, durationMs: Math.round(performance.now() - started) });
-            return;
+            completed = true; return;
           } catch (error) {
             if (signal.aborted || res.destroyed) throw abortError(signal.aborted ? signal : requestSignal);
             lastError = error?.publicCode ? error : failure("model-upstream-unavailable");
@@ -149,6 +151,8 @@ export function createInferenceRelay({
         throw lastError;
       } finally {
         clearTimeout(timer);
+        emit({event:'inference_request_finished',outcome:completed?'succeeded':requestSignal.aborted&&requestSignal.reason?.publicCode!=='model-upstream-timeout'||res.destroyed?'cancelled':'failed',
+          durationMs:Math.max(0,performance.now()-started),firstOutputMs});
       }
     }
   };

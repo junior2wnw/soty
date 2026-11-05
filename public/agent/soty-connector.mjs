@@ -2448,6 +2448,7 @@ const localAppsSchema = 'soty.apps-channel.v1';
 const localAppsChunkBytes = 48 * 1024;
 const localAppsFrameBytes = 72 * 1024;
 const localAppsProfile = 'soty.relay-restricted.v1';
+const localAppsSelfIpProfile = 'soty.relay-self-ip.v1';
 const localAppsSelectedProfile = 'soty.selected-human-embed.v1';
 const localAppsSelected = value => [localAppsSelectedProfile,'soty.selected-human-embed.v2'].includes(value);
 const localAppsEncoder = new TextEncoder();
@@ -2463,7 +2464,7 @@ const localAppsPins = target => ({ appId: target.appId, revision: target.revisio
 // Dependency injection is preserved for the immutable single-file release.
 // Every asynchronous operation owns its actual connection and binding object.
 function createLocalAppsRuntime(deps, options = {}) {
-  const state = { running: false, context: null, retry: null, interval: null };
+  const state = { running: false, context: null, retry: null, interval: null, inventoryInterval: null, generation: 0 };
   const now = deps.now || Date.now;
   const scoped = options.scopedFactory;
   const blocked = [...new Set([49424, ...(options.blockedPorts || [])])];
@@ -2471,7 +2472,8 @@ function createLocalAppsRuntime(deps, options = {}) {
   const current = context => state.running && state.context === context && !context.closed;
   const connected = context => current(context) && context.connected && context.ws.readyState === 1;
   const streamCurrent = stream => connected(stream.context) && !stream.closed
-    && stream.context.streams.get(stream.id) === stream && stream.context.bindings.get(stream.appId) === stream.binding;
+    && stream.context.streams.get(stream.id) === stream && stream.context.bindings.get(stream.appId) === stream.binding
+    && localAppsEndpointCurrent(deps, stream.binding.target);
   function send(context, frame) {
     if (!current(context) || context.ws.readyState !== 1) return false;
     try {
@@ -2530,9 +2532,21 @@ function createLocalAppsRuntime(deps, options = {}) {
   }
   function connect() {
     if (!state.running) return;
-    let url, identity, authToken, ws;
+    if (typeof deps.fetch === 'function' && typeof deps.networkInterfaces === 'function') {
+      const generation = ++state.generation;
+      void readAppsRuntimeCapabilities(deps, option('serverUrl')).then(capability => {
+        if (state.running && state.generation === generation) connectToChannel(capability);
+      });
+      return;
+    }
+    connectToChannel(null);
+  }
+  function connectToChannel(capability) {
+    if (!state.running) return;
+    let url, identity, authToken, ws, serverUrl;
     try {
       const base = new URL(option('serverUrl'));
+      serverUrl = base.href;
       localAppsCheck(base.protocol === 'https:' || (base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)), 'apps_server_requires_https');
       url = new URL('/api/apps/channel', base); url.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
       const value = option('identity');
@@ -2544,7 +2558,9 @@ function createLocalAppsRuntime(deps, options = {}) {
     const context = { ws, identity, key: [identity.linkId, identity.hostDeviceId, identity.connectorId].join('|'),
       closed: false, connected: false, version: 0, channelId: null, bindings: new Map(), configs: new Map(), streams: new Map(),
       probes: new Map(), probeQueue: new Map(), probeScheduled: false, preparations: new Map(), preparing: 0, asyncWrites: 0,
-      claimCode: '', claimExpiresAt: 0, claimAcknowledged: false, claimPending: null, authorityRequests:new Map() };
+      claimCode: '', claimExpiresAt: 0, claimAcknowledged: false, claimPending: null, authorityRequests:new Map(),
+      serverUrl, capabilityPending: capability === null && typeof deps.fetch === 'function' && typeof deps.networkInterfaces === 'function', capabilityRead: false,
+      selfIpEnabled: capability?.runtimeProfiles?.includes(localAppsSelfIpProfile) === true, inventory: null };
     state.context = context;
     context.authTimer = setTimeout(() => disconnect(context), 5000); context.authTimer.unref?.();
     ws.addEventListener('open', () => {
@@ -2554,7 +2570,7 @@ function createLocalAppsRuntime(deps, options = {}) {
           ...(typeof options.preparedBrowse === 'function' ? { preparedBrowse: true } : {}),
           ...(typeof options.preparedInspect === 'function' ? { preparedInspect: true } : {}),
           ...(typeof options.preparedManifest === 'function' ? { preparedManifest: true } : {}),
-          ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
+          ...(scoped?.profiles?.length || context.selfIpEnabled ? {runtimeProfiles:[localAppsProfile,...(scoped?.profiles ?? []),...(context.selfIpEnabled ? [localAppsSelfIpProfile] : [])]}:{}) } });
       authToken = undefined;
     });
     ws.addEventListener('message', event => {
@@ -2570,6 +2586,28 @@ function createLocalAppsRuntime(deps, options = {}) {
     });
     ws.addEventListener('error', () => {});
     ws.addEventListener('close', () => disconnect(context, false));
+  }
+  // A transient HTTP failure may precede a successful WebSocket reconnect.
+  // Keep loopback usable, then retry on the existing 20-second probe lifecycle.
+  // Capabilities do not grant access: an upgrade authenticates a new channel and
+  // Root sends/ACKs its current exact bindings again.
+  function refreshCapabilities(context) {
+    const scopeCurrent = () => {
+      try {
+        const identity = option('identity');
+        return new URL(option('serverUrl')).href === context.serverUrl
+          && ['linkId', 'hostDeviceId', 'connectorId'].every(key => identity?.[key] === context.identity[key]);
+      } catch { return false; }
+    };
+    if (!connected(context) || !context.capabilityPending || context.capabilityRead || !scopeCurrent()) return;
+    const generation = state.generation; context.capabilityRead = true;
+    void readAppsRuntimeCapabilities(deps, context.serverUrl).then(capability => {
+      if (!connected(context) || state.generation !== generation || !scopeCurrent()) return;
+      context.capabilityPending = capability === null;
+      if (!capability?.runtimeProfiles.includes(localAppsSelfIpProfile)) return;
+      disconnect(context); clearTimeout(state.retry);
+      if (state.running && state.generation === generation && scopeCurrent()) { state.generation++; connectToChannel(capability); }
+    }).finally(() => { context.capabilityRead = false; }).catch(() => {});
   }
   async function claim() {
     const context = state.context;
@@ -2601,19 +2639,27 @@ function createLocalAppsRuntime(deps, options = {}) {
     localAppsCheck(context.version === 2 && frame.channelId === context.channelId, 'apps_bad_binding_channel');
   }
   function target(context, value) {
-    localAppsExact(value, ['appId', 'revision', 'digest', 'ownerAccountId', 'port', 'entryPath', 'profile']);
+    localAppsExact(value, ['appId', 'revision', 'digest', 'ownerAccountId', 'port', 'entryPath', 'profile', 'schema', 'endpoint']);
     localAppsCheck(localAppsId(value.appId) && Number.isSafeInteger(value.revision) && value.revision >= 1
       && typeof value.digest === 'string' && /^[a-f0-9]{64}$/u.test(value.digest) && localAppsText(value.ownerAccountId)
       && Number.isSafeInteger(value.port) && typeof value.entryPath === 'string'
       && typeof value.profile === 'string' && value.profile.length > 0 && value.profile.length <= 128, 'apps_bad_target');
+    const endpoint = value.profile === localAppsSelfIpProfile ? localAppsEndpoint(value.endpoint) : undefined;
+    localAppsCheck(endpoint ? value.schema === 'soty.runtime-target.v2' : value.endpoint === undefined && value.schema === undefined, 'apps_bad_target');
     const normalized = Object.freeze({ appId: value.appId, revision: value.revision, digest: value.digest,
-      ownerAccountId: value.ownerAccountId, port: value.port, entryPath: value.entryPath, profile: value.profile });
-    localAppsCheck(deps.digest(JSON.stringify(['soty.runtime-target.v1', normalized.appId, normalized.revision,
-      normalized.ownerAccountId, context.key, normalized.port, normalized.entryPath, normalized.profile])) === normalized.digest, 'apps_target_digest_mismatch');
+      ownerAccountId: value.ownerAccountId, port: value.port, entryPath: value.entryPath, profile: value.profile,
+      ...(endpoint ? { schema: 'soty.runtime-target.v2', endpoint } : {}) });
+    const tuple = endpoint ? ['soty.runtime-target.v2', normalized.appId, normalized.revision, normalized.ownerAccountId, context.key, normalized.profile,
+      endpoint.scheme, endpoint.scope, endpoint.family, endpoint.address, normalized.port, normalized.entryPath]
+      : ['soty.runtime-target.v1', normalized.appId, normalized.revision, normalized.ownerAccountId, context.key, normalized.port, normalized.entryPath, normalized.profile];
+    localAppsCheck(deps.digest(JSON.stringify(tuple)) === normalized.digest, 'apps_target_digest_mismatch');
     return normalized;
   }
   function policyError(value) {
-    if (value.profile !== localAppsProfile && !(localAppsSelected(value.profile) && scoped?.accepts(value))) return 'unsupported_profile';
+    if (value.profile === localAppsSelfIpProfile) {
+      if (!state.context?.selfIpEnabled) return 'unsupported_profile';
+      if (!localAppsEndpointCurrent(deps, value)) return 'apps_endpoint_interface_unavailable';
+    } else if (value.profile !== localAppsProfile && !(localAppsSelected(value.profile) && scoped?.accepts(value))) return 'unsupported_profile';
     try { localAppsPort(value.port, blocked); } catch { return 'invalid_app_port'; }
     try { localAppsHttpPath(value.entryPath, value.port); } catch { return 'invalid_app_path'; }
     return null;
@@ -2735,6 +2781,7 @@ function createLocalAppsRuntime(deps, options = {}) {
         localAppsCheck((frame.bindingVersion === undefined || frame.bindingVersion === 1) && frame.channelId === undefined, 'apps_bad_negotiation'); context.version = 1;
       }
       context.connected = true; clearTimeout(context.authTimer);
+      refreshInventory(context);
       if(context.version===2)scoped?.connect(request=>readScopedAuthority(context,request),context.identity);
       return;
     }
@@ -2801,7 +2848,8 @@ function createLocalAppsRuntime(deps, options = {}) {
     } catch (error) { closeStream(stream, error.code || 'app_upstream_failed'); }
   }
   function probeTarget(target) {
-    if(!localAppsSelected(target.profile))return startLocalAppProbe(deps,{port:target.port,entryPath:target.entryPath,blockedPorts:blocked});
+    if(!localAppsSelected(target.profile))return startLocalAppProbe(deps,{port:target.port,entryPath:target.entryPath,blockedPorts:blocked,
+      ...(target.profile === localAppsSelfIpProfile ? { endpoint: target.endpoint } : {})});
     const controller=new AbortController();
     return {promise:scoped.probe(target,controller.signal).catch(()=>({state:'unreachable',httpStatus:null})),cancel:()=>controller.abort()};
   }
@@ -2874,8 +2922,10 @@ function createLocalAppsRuntime(deps, options = {}) {
       context.streams.set(stream.id, stream);
       stream.timer = setTimeout(() => closeStream(stream, 'app_response_timeout'), 30_000); stream.timer.unref?.();
       localAppsCheck(streamCurrent(stream), 'app_stream_closed');
-      const request = deps.httpRequest({ hostname: '127.0.0.1', port: binding.port, path, method: frame.method, headers, agent: false });
+      const hostname = localAppsEndpointHost(deps, binding.target), origin = `http://${hostname}:${binding.port}`;
+      const request = deps.httpRequest({ hostname, family: 4, port: binding.port, path, method: frame.method, headers, agent: false });
       stream.request = request;
+      if (binding.target?.endpoint) localAppsCheckSocket(request, hostname);
       request.on('error', () => {
         if (!streamCurrent(stream)) return;
         observation(context, binding, { state: 'unreachable', httpStatus: null }); closeStream(stream, 'app_stopped');
@@ -2885,11 +2935,12 @@ function createLocalAppsRuntime(deps, options = {}) {
         if (stream.kind === 'ws') { response.destroy(); closeStream(stream, 'app_upgrade_failed'); return; }
         stream.response = response;
         try {
+          if (binding.target?.endpoint) localAppsCheck(response.socket?.remoteAddress === hostname && localAppsEndpointCurrent(deps, binding.target), 'apps_endpoint_interface_unavailable');
           localAppsCheck(Number.isInteger(response.statusCode) && response.statusCode >= 200 && response.statusCode <= 599, 'app_bad_head');
           const responseHeaders = localAppsHeaders(response.headers, 'response'); let location;
           if (response.headers.location) {
-            const next = new URL(response.headers.location, `http://127.0.0.1:${binding.port}${path}`);
-            localAppsCheck(next.origin === `http://127.0.0.1:${binding.port}`, 'app_external_redirect');
+            const next = new URL(response.headers.location, `${origin}${path}`);
+            localAppsCheck(next.origin === origin && !next.username && !next.password, 'app_external_redirect');
             location = context.version === 2 ? localAppsRuntimePath(next.pathname + next.search + next.hash) : localAppsPath(next.pathname + next.search + next.hash);
           }
           stream.head = true; idle(stream);
@@ -2908,6 +2959,7 @@ function createLocalAppsRuntime(deps, options = {}) {
       });
       request.on('upgrade', (response, socket, head) => {
         if (!streamCurrent(stream)) { socket.destroy(); return; }
+        if (binding.target?.endpoint && socket.remoteAddress !== hostname) { socket.destroy(); closeStream(stream, 'apps_endpoint_interface_unavailable'); return; }
         if (stream.kind !== 'ws' || response.statusCode !== 101) { socket.destroy(); closeStream(stream, 'app_upgrade_failed'); return; }
         stream.socket = socket; stream.head = true; idle(stream);
         socket.on('error', () => closeStream(stream, 'app_upstream_failed'));
@@ -2952,14 +3004,80 @@ function createLocalAppsRuntime(deps, options = {}) {
       state.running = true; connect();
       state.interval = setInterval(() => {
         const context = state.context; if (!context || !connected(context)) return;
+        refreshCapabilities(context);
         for (const binding of context.bindings.values()) queueProbe(context, binding);
       }, 20_000); state.interval.unref?.();
+      state.inventoryInterval = setInterval(() => { const context = state.context; if (context && connected(context)) refreshInventory(context); }, 5000);
+      state.inventoryInterval.unref?.();
     },
-    stop() { state.running = false; clearTimeout(state.retry); clearInterval(state.interval); if (state.context) disconnect(state.context); },
+    stop() { state.running = false; state.generation++; clearTimeout(state.retry); clearInterval(state.interval); clearInterval(state.inventoryInterval); if (state.context) disconnect(state.context); },
     claim,
     status() { const context = state.context; return { connected: Boolean(context && connected(context)),
       apps: context?.bindings.size ?? 0, streams: context?.streams.size ?? 0 }; },
   };
+
+  function refreshInventory(context) {
+    if (!context.selfIpEnabled || context.version !== 2 || !connected(context)) return;
+    const addresses = localAppsSelfAddresses(deps).map(address => ({ family: 'IPv4', address }));
+    const previous = context.inventory, changed = !previous || JSON.stringify(addresses) !== JSON.stringify(previous.addresses);
+    const revision = (previous?.revision ?? 0) + (changed ? 1 : 0);
+    const inventory = changed ? { schema: 'soty.connector-self-addresses.v1', revision, addresses,
+      digest: deps.digest(JSON.stringify(['soty.connector-self-addresses.v1', context.key, context.channelId, revision, addresses.map(item => item.address)])) } : previous;
+    context.inventory = inventory;
+    for (const [id, binding] of context.bindings) if (!localAppsEndpointCurrent(deps, binding.target)) removeBinding(context, id, 'apps_endpoint_interface_unavailable');
+    send(context, { type: 'self-addresses', channelId: context.channelId, inventory });
+  }
+}
+
+async function readAppsRuntimeCapabilities(deps, serverUrl) {
+  try {
+    const base = new URL(serverUrl);
+    localAppsCheck(base.protocol === 'https:' || base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname), 'apps_server_requires_https');
+    const response = await deps.fetch(new URL('/api/apps/runtime-capabilities', base).href,
+      { redirect: 'error', signal: AbortSignal.timeout(2000), headers: { accept: 'application/json' } });
+    localAppsCheck(response.status === 200 && /application\/json/iu.test(response.headers.get('content-type') ?? ''), 'apps_capabilities_unavailable');
+    const reader = response.body.getReader(), parts = []; let length = 0;
+    try { for (;;) { const { done, value } = await reader.read(); if (done) break; length += value.byteLength; localAppsCheck(length <= 4096); parts.push(value); } }
+    finally { await reader.cancel().catch(() => {}); }
+    const bytes = new Uint8Array(length); let offset = 0; for (const part of parts) { bytes.set(part, offset); offset += part.length; }
+    const value = JSON.parse(new TextDecoder().decode(bytes));
+    localAppsExact(value, ['schema', 'channelSchema', 'targetBindingVersions', 'runtimeProfiles', 'selfIpTargetSchema']);
+    localAppsCheck(value.schema === 'soty.apps-runtime-capabilities.v1' && value.channelSchema === localAppsSchema
+      && Array.isArray(value.targetBindingVersions) && value.targetBindingVersions.includes(2) && value.targetBindingVersions.length <= 8
+      && Array.isArray(value.runtimeProfiles) && value.runtimeProfiles.length <= 8
+      && value.runtimeProfiles.every(item => typeof item === 'string')
+      && value.selfIpTargetSchema === 'soty.runtime-target.v2', 'apps_capabilities_unavailable');
+    return value;
+  } catch { return null; } // Old Root stays on the existing loopback protocol.
+}
+
+function localAppsIPv4(value) {
+  if (typeof value !== 'string' || !/^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$/u.test(value)) return false;
+  const parts = value.split('.').map(Number), [a, b] = parts;
+  return parts.every(item => item <= 255) && a !== 0 && a !== 127 && a < 224 && !(a === 169 && b === 254);
+}
+function localAppsEndpoint(value) {
+  localAppsExact(value, ['scope', 'scheme', 'family', 'address']);
+  localAppsCheck(Object.keys(value).length === 4 && value.scope === 'connector-self' && value.scheme === 'http' && value.family === 'IPv4' && localAppsIPv4(value.address), 'apps_bad_target');
+  return Object.freeze({ scope: value.scope, scheme: value.scheme, family: value.family, address: value.address });
+}
+function localAppsSelfAddresses(deps) {
+  try {
+    const addresses = Object.values(deps.networkInterfaces()).flat().filter(item => item && item.family === 'IPv4' && !item.internal && localAppsIPv4(item.address)).map(item => item.address);
+    return [...new Set(addresses)].sort().slice(0, 32);
+  } catch { return []; }
+}
+function localAppsEndpointCurrent(deps, target) { return target?.profile !== localAppsSelfIpProfile || localAppsSelfAddresses(deps).includes(target.endpoint?.address); }
+function localAppsEndpointHost(deps, target) {
+  if (target?.profile !== localAppsSelfIpProfile) return '127.0.0.1';
+  const endpoint = localAppsEndpoint(target.endpoint);
+  localAppsCheck(localAppsEndpointCurrent(deps, target), 'apps_endpoint_interface_unavailable'); return endpoint.address;
+}
+function localAppsCheckSocket(request, hostname) {
+  request.on('socket', socket => {
+    const check = () => { if (socket.remoteAddress !== hostname) request.destroy(localAppsFail('apps_endpoint_interface_unavailable')); };
+    if (socket.connecting) socket.once('connect', check); else check();
+  });
 }
 
 function normalizeLocalAppManifest(value, blockedPorts = []) {
@@ -3011,8 +3129,9 @@ function probeLocalApp(deps, { port, entryPath = '/', blockedPorts = [] }) {
   try { return startLocalAppProbe(deps, { port, entryPath, blockedPorts }).promise.then(result => result.state === 'responding'); }
   catch { return Promise.resolve(false); }
 }
-function startLocalAppProbe(deps, { port, entryPath, blockedPorts }) {
+function startLocalAppProbe(deps, { port, entryPath, blockedPorts, endpoint }) {
   const validatedPort = localAppsPort(port, blockedPorts), path = localAppsHttpPath(entryPath, validatedPort);
+  const target = endpoint ? { profile: localAppsSelfIpProfile, endpoint: localAppsEndpoint(endpoint) } : null;
   let request, timer, settled = false, resolveResult;
   const promise = new Promise(resolve => { resolveResult = resolve; });
   const finish = httpStatus => {
@@ -3023,9 +3142,18 @@ function startLocalAppProbe(deps, { port, entryPath, blockedPorts }) {
     resolveResult({ state: valid && httpStatus < 500 ? 'responding' : 'unreachable', httpStatus: valid ? httpStatus : null });
   };
   try {
-    request = deps.httpRequest({ hostname: '127.0.0.1', port: validatedPort, path, method: 'HEAD', agent: false });
+    const hostname = localAppsEndpointHost(deps, target), origin = `http://${hostname}:${validatedPort}`;
+    request = deps.httpRequest({ hostname, family: 4, port: validatedPort, path, method: 'HEAD', agent: false });
+    if (endpoint) localAppsCheckSocket(request, hostname);
     timer = setTimeout(() => finish(null), 3000); timer.unref?.();
-    request.on('response', response => { const status = response.statusCode; response.destroy(); finish(status); });
+    request.on('response', response => {
+      let status = response.statusCode;
+      if (endpoint) try {
+        localAppsCheck(response.socket?.remoteAddress === hostname && localAppsEndpointCurrent(deps, target), 'apps_endpoint_interface_unavailable');
+        if (response.headers.location) { const next = new URL(response.headers.location, origin + path); localAppsCheck(next.origin === origin && !next.username && !next.password, 'app_external_redirect'); }
+      } catch { status = null; }
+      response.destroy(); finish(status);
+    });
     request.on('error', () => finish(null)); request.end();
   } catch { finish(null); }
   return { promise, cancel: () => finish(null) };
@@ -3333,7 +3461,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.16";
+const connectorVersion = "1.4.18";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -3418,7 +3546,7 @@ const localApps = createLocalAppsRuntime({
   randomSecret: () => randomBytes(32).toString('base64url'),
   digest: value => createHash('sha256').update(value).digest('hex'),
   createWebSocket: url => new globalThis.WebSocket(url),
-  httpRequest, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64'),
+  httpRequest, networkInterfaces, fetch: (...args) => globalThis.fetch(...args), encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64'),
 }, { serverUrl: () => relayBaseUrl, token: () => connectorToken,
   identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port],scopedFactory,
   preparedBrowse: request => preparedProjects.list(request), preparedInspect: request => preparedProjects.inspect(request),

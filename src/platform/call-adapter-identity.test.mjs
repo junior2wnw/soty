@@ -1,5 +1,6 @@
 import * as connectionIntents from './connection-intent.mjs';
 import * as nativeVoiceDescriptor from './native-voice-descriptor.mjs';
+import {createPlatformLiveTestPort} from './test-support/platform-live-port.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -16,7 +17,8 @@ const view = (accountId = 'A', deviceId = 'D') => ({ schema: 'connect.local-view
   pendingRecovery: null, recoveryPrepared: false, notificationError: null });
 
 async function compiled(path, ports = {}, extras = {}) {
-  const source = await readFile(new URL(path, import.meta.url), 'utf8');
+  const source = await readFile(path === './world-adapter.ts' && process.env.SOTY_HUMAN_ADAPTER_TEST_SOURCE
+    ? process.env.SOTY_HUMAN_ADAPTER_TEST_SOURCE : new URL(path, import.meta.url), 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   const module = { exports: {} };
   vm.runInNewContext(code, { module, exports: module.exports, require: name => ports[name], queueMicrotask, ...extras });
@@ -91,6 +93,7 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
   const subscribers = new Set(), pageListeners = new Map(), mounts = [], order = [];
   let current = failBootstrap ? view(null, null) : view(), resets = 0;
   let authorizations = 0, captures = 0, connections = 0, sessionCloses = 0, createdOwner;
+  let participants = Object.freeze([]);
   const ownerJoinTargets = [];
   const heldOwnerJoinResult = deferred(); let holdNextOwnerJoinResult = holdFirstOwnerJoinResult;
   const heldIncomingRead = deferred(); let holdNextIncomingRead = holdIncomingRead, incomingReads = 0, declineCalls = [];
@@ -105,6 +108,7 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
   const adapter = await compiled('./world-adapter.ts', {
     './notifications-client.mjs': { createNotificationsController() { return { async refresh() {}, dispose() {} }; } },
     './native-voice-descriptor.mjs': nativeVoiceDescriptor,
+    './platform-live-client.mjs':createPlatformLiveTestPort(),
     './connection-intent.mjs': connectionIntents,
     './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); if (!state.accountId) throw startupError; return { state, intent: null }; } },
     '../core/connect-client': { accountClient: client, observeAccount }, './call-identity': binding,
@@ -114,7 +118,7 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
     '../sync': { createHumanCallPorts: () => ({ host: { authorize() { authorizations++; return {}; } },
       media: { acquire() { captures++; throw new Error('unexpected capture'); } },
       transport: { join() { connections++; return { close() { sessionCloses++; }, preparePublication() {} }; } },
-      snapshot: () => ({ connection: connections ? 'admitted' : 'idle', peers: 0, playbackBlocked: false, turnConfigured: false }),
+      snapshot: () => ({ connection: connections ? 'admitted' : 'idle', peers: 0, participants, playbackBlocked: false, turnConfigured: false }),
       subscribe: () => () => {}, async resumeListening() {},
       async inbox(accountId) { incomingReads++; if (holdNextIncomingRead) { holdNextIncomingRead = false; return heldIncomingRead.promise; } return { invitation: incomingInvitation }; },
       async decline(accountId, invite) { declineCalls.push({ accountId, callId: invite.callId, epoch: invite.epoch }); return { declined: true }; } }) },
@@ -151,6 +155,7 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
     dispatch(type, persisted) { for (const callback of [...(pageListeners.get(type) ?? [])]) callback({ persisted }); },
     authorizations: () => authorizations, captures: () => captures, resets: () => resets,
     connections: () => connections, sessionCloses: () => sessionCloses, createdOwner: () => createdOwner,
+    setTransportParticipants(rows) { participants=Object.freeze(rows.map(row=>Object.freeze({...row}))); },
     ownerJoinTargets: () => ownerJoinTargets, releaseHeldOwnerJoinResult: () => heldOwnerJoinResult.resolve(),
     incomingReads: () => incomingReads, declineCalls: () => declineCalls, releaseIncomingRead(value) { heldIncomingRead.resolve(value); } };
 }
@@ -244,6 +249,25 @@ test('a late successful join result cannot relabel a newer same-room call genera
   assert.deepEqual(f.ownerJoinTargets(), [{ roomId: 'R', mode: 'group' }, { roomId: 'R', mode: 'group' }]);
   assert.equal(call.snapshot().targetLabel, 'Новое имя', 'the old result cannot overwrite the newer same-room scope label');
   f.dispatch('pagehide', false);
+});
+
+test('World voice roster is fenced by the original active account/device and call lifetime', async () => {
+  const f=await worldFixture();await f.adapter.startWorld({isConnected:true});await tick();
+  const a=f.mounts[0].options.humanCalls, rows=(accountId,deviceId)=>[
+    {accountId,deviceId,label:'Current self',microphone:false,isSelf:true},
+    {accountId:'peer',deviceId:'peer-device',label:'Bound participant',microphone:true,isSelf:false}];
+  f.setTransportParticipants(rows('A','D'));assert.equal(a.snapshot().participants.length,0,'idle cannot expose held transport metadata');
+  assert.equal((await a.join({roomId:'R',mode:'group'})).ok,true);
+  assert.equal(a.snapshot().participants.length,2);assert.equal(a.snapshot().participants[0].accountId,'A');
+  assert.ok(Object.isFrozen(a.snapshot().participants));a.end();
+  assert.equal(a.snapshot().participants.length,0,'ended call scrubs even if a test transport holds its old roster');
+  f.emit(view('B','DB'));await tick();const b=f.mounts.at(-1).options.humanCalls;
+  assert.equal(a.snapshot().participants.length,0);assert.equal(b.snapshot().participants.length,0);
+  assert.equal((await b.join({roomId:'R',mode:'group'})).ok,true);
+  assert.equal(b.snapshot().participants.length,0,'A transport metadata cannot become B room metadata');
+  f.setTransportParticipants(rows('B','DB'));assert.equal(b.snapshot().participants.length,2);
+  assert.equal(b.snapshot().participants[0].accountId,'B');assert.equal(a.snapshot().participants.length,0);
+  f.dispatch('pagehide',false);assert.equal(b.snapshot().participants.length,0);assert.equal(f.captures(),0);
 });
 
 test('incoming Accept passes the exact call intent through the lifecycle without treating its label as authority', async () => {

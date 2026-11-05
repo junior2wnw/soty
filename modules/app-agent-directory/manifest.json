@@ -1,0 +1,12 @@
+{
+  "schema": "soty.app-agent-directory.module.v1",
+  "id": "soty.app-agent-directory",
+  "version": 1,
+  "entry": "server/index.mjs",
+  "contract": "soty.app-agent.v1",
+  "registry": "existing AppsService; opt-in metadata extension only",
+  "publicOperations": ["apps.agentDescriptor.get", "apps.agentDescriptor.put"],
+  "agentTools": ["app_directory_search", "app_directory_get", "app_directory_modules", "app_directory_query"],
+  "rights": {"configure": "current app owner", "discover": "current Apps visibility and explicit owner opt-in", "execute": "separate current grant and trusted host readonly adapter"},
+  "executionFromJson": false
+}

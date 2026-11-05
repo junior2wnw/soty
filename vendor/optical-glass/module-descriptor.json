@@ -1,0 +1,40 @@
+{
+  "schema": "soty.local-ui-module.v1",
+  "id": "soty.optical-glass",
+  "name": "Volumetric Glass UI",
+  "version": "1.4.0",
+  "localRevision": "soty-core-3",
+  "kind": "ui-library",
+  "sourceRepository": "https://github.com/junior2wnw/liquid-glass-lab",
+  "sourceCommit": "a8aa5d1389f5c86e5d1129912fa92daa8d0229de",
+  "sourceAtCommit": "https://github.com/junior2wnw/liquid-glass-lab/tree/a8aa5d1389f5c86e5d1129912fa92daa8d0229de",
+  "runtime": "src/liquid-glass.js",
+  "adapter": "../../src/world/field-glass.ts",
+  "documentation": [
+    "INTEGRATION.md",
+    "PATCHES.md",
+    "docs/LIQUID_GLASS.md",
+    "docs/UI_KIT.md"
+  ],
+  "providedCapabilities": [
+    "ui.optical-surfaces.webgl2",
+    "ui.shape.signed-distance-field",
+    "ui.native-dom-preservation",
+    "ui.material.working",
+    "ui.accessibility.static-fallback",
+    "ui.native-visibility"
+  ],
+  "frameworkDependencies": [],
+  "applicationDataAccess": false,
+  "discoveryDoesNotGrantAuthority": true,
+  "publicationPerformed": false,
+  "npmInstallationVerified": false,
+  "subsetOnly": false,
+  "publishablePackage": false,
+  "license": null,
+  "licenseQualification": "No upstream license declaration was found. Local use was explicitly authorized by the owner; this snapshot is not a redistribution grant.",
+  "uiLayerRevision": "soty-universal-working-ui-6",
+  "uiRuntime": "src/ui-kit.js",
+  "uiStyles": "src/ui-kit.css",
+  "uiAdapter": "../../src/world/shell-glass.ts"
+}

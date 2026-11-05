@@ -5,7 +5,8 @@
 export const currentObservation = stores => ({
   ok: true, rooms: 'empty', apps: 'empty', notes: 'empty', capabilities: 'empty',
   appRegistration: 'empty', feedback: 'empty', humanIdentity: 'empty', connect: 'empty', world: 'empty',
-  ...stores, schema: 'soty.storage-format.v7',
+  canvasObjects:'empty',canvasWidgets:'empty',canvasVault:'empty',canvasPages:'empty',materials:'empty',invitations:'empty',referrals:'empty',appAgentDirectory:'empty',universalPublication:'empty',appsEndpoint:'empty',appsFrameContinuity:'empty',monitoring:'empty',
+  ...stores, schema: 'soty.storage-format.v10',
 });
 
 // Exact pre-World current image declaration from the captured v6 Source. Tests

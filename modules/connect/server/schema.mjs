@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 export const READER_EPOCH = 2;
 const SCHEMA_LINEAGE = 'connect.sqlite.local.v1';
 
@@ -93,6 +93,22 @@ export const MIGRATIONS = [
     CREATE TABLE platform_invitation_receipts (account_id TEXT NOT NULL REFERENCES accounts(id), request_id TEXT NOT NULL, operation TEXT NOT NULL, digest TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(account_id,request_id));
     UPDATE connect_meta SET value='2' WHERE key='min_reader';
   `,
+  `
+    CREATE TABLE credential_methods (
+      account_id TEXT NOT NULL REFERENCES accounts(id), kind TEXT NOT NULL CHECK(kind IN('password','phrase')),
+      id TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL CHECK(enabled IN(0,1)), revision INTEGER NOT NULL,
+      login TEXT, lookup TEXT, salt TEXT, verifier TEXT, wrapped_key TEXT,
+      request_id TEXT NOT NULL, digest TEXT NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY(account_id,kind)
+    );
+    CREATE UNIQUE INDEX credential_lookup ON credential_methods(kind,lookup) WHERE enabled=1;
+    CREATE TABLE credential_logins (
+      device_id TEXT PRIMARY KEY REFERENCES installations(id), credential_id TEXT NOT NULL,
+      account_id TEXT NOT NULL REFERENCES accounts(id), kind TEXT NOT NULL, lookup TEXT NOT NULL,
+      digest TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE credential_security (id INTEGER PRIMARY KEY CHECK(id=1), decoy_key TEXT NOT NULL);
+  `,
 ];
 
 const REQUIRED_COLUMNS = {
@@ -122,6 +138,11 @@ function validateLayout(db, understoodVersion) {
     required.platform_invitations = 'id issuer_id token_hash created_at expires_at revoked_at redeemed_at redeemed_account_id';
     required.platform_invitation_receipts = 'account_id request_id operation digest result_json';
   }
+  if (understoodVersion >= 5) {
+    required.credential_methods = 'account_id kind id enabled revision login lookup salt verifier wrapped_key request_id digest updated_at';
+    required.credential_logins = 'device_id credential_id account_id kind lookup digest result_json created_at';
+    required.credential_security = 'id decoy_key';
+  }
   for (const [table, fields] of Object.entries(required)) {
     const columns = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name));
     if (!fields.split(' ').every((field) => columns.has(field))) throw new Error('connect_schema_layout_invalid');
@@ -129,6 +150,17 @@ function validateLayout(db, understoodVersion) {
   for (const [table, name] of [['cards', 'cards_active_account'], ['relationships', 'relationships_active_pair'], ['recovery_methods', 'recovery_active_account'], ['recovery_methods', 'recovery_pending_account']]) {
     const index = db.prepare(`PRAGMA index_list(${table})`).all().find((item) => item.name === name);
     if (!index || index.unique !== 1 || index.partial !== 1) throw new Error('connect_schema_layout_invalid');
+  }
+  if (understoodVersion >= 5) {
+    const indexes = db.prepare('PRAGMA index_list(credential_methods)').all();
+    const lookup = indexes.find(item => item.name === 'credential_lookup');
+    if (!lookup || lookup.unique !== 1 || lookup.partial !== 1
+        || db.prepare('PRAGMA index_info(credential_lookup)').all().map(column => column.name).join(',') !== 'kind,lookup'
+        || db.prepare("SELECT sql FROM sqlite_schema WHERE type='index' AND name='credential_lookup'").get()?.sql.replace(/\s+/gu, ' ').trim()
+          !== 'CREATE UNIQUE INDEX credential_lookup ON credential_methods(kind,lookup) WHERE enabled=1'
+        || !indexes.some(item => item.unique === 1 && item.partial === 0 && db.prepare('SELECT name FROM pragma_index_info(?) ORDER BY seqno').all(item.name).map(column => column.name).join(',') === 'id')) {
+      throw new Error('connect_schema_layout_invalid');
+    }
   }
 }
 

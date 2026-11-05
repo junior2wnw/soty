@@ -1,0 +1,207 @@
+{
+  "package": "volumetric-glass-ui",
+  "version": "1.4.0",
+  "repository": "https://github.com/junior2wnw/liquid-glass-lab",
+  "sourceRoot": "D:\\регионЖилье",
+  "commit": "a8aa5d1389f5c86e5d1129912fa92daa8d0229de",
+  "license": null,
+  "licenseQualification": "No LICENSE/LICENCE/COPYING/NOTICE file or package license field was found. User-authorized local use only; no MIT claim.",
+  "capturedAtUtc": "2026-11-04T02:54:53.420516+05:00",
+  "sourceWorkingTreeVerified": "clean at a8aa5d1389f5c86e5d1129912fa92daa8d0229de",
+  "subsetQualification": "All runtime exports and packaged files from the pinned upstream package are present, with the previously recorded SDF-boundary patch preserved. Local types, adapter and module descriptor remain separate additions. This does not establish an external npm release or a license grant.",
+  "localRevision": "soty-core-3",
+  "patches": [
+    {
+      "id": "soty-sdf-boundary-1",
+      "path": "src/liquid-glass.js",
+      "baseSha256": "57760bc88cd0ad6c3cf5abfcbfeb2bc72e847cd8154d0b1c22951423da545b4e",
+      "resultSha256": "d53297fe30c4f9b73c2d7277aec20e01d144d31055b10d2df9b91c8045011fcf",
+      "description": "Continue custom-shape SDF beyond atlas bounds and include transparent canvas exterior in chamfer distance; insufficient alone for the visible ghost."
+    },
+    {
+      "id": "soty-sdf-boundary-2",
+      "path": "src/liquid-glass.js",
+      "baseSha256": "d53297fe30c4f9b73c2d7277aec20e01d144d31055b10d2df9b91c8045011fcf",
+      "resultSha256": "98631ec01ae4bc8f8cbc7c4037b34ae8472b800b50ba647854e967f13957bdda",
+      "description": "Clamp custom SDF atlas UV to edge texel centres so LINEAR filtering cannot blend the packed transparent gutter. See PATCHES.md and actual GPU negative-control frames."
+    },
+    {
+      "id": "glass-native-visibility-1",
+      "path": "src/liquid-glass.js",
+      "baseSha256": "98631ec01ae4bc8f8cbc7c4037b34ae8472b800b50ba647854e967f13957bdda",
+      "resultSha256": "8304ee1472a1a056f3c8df319c3a5334bf66da8e91ab4128399da6c99e09ab7c",
+      "sourcePatch": "D:\\глава\\ПРОЕКТЫ\\glass-ui-soty-20261104\\output\\playwright\\details-visibility-only.patch",
+      "description": "Skip actual nonpaintable DOM targets per frame, including closed details/content-visibility. Preserves both previous SDF fixes; native controls/data remain untouched.",
+      "lineEndings": "Preserved LF: git apply on this Windows checkout converted to CRLF; existing exact SDF mutation controls detected it, source LF restored rather than weakening controls"
+    },
+    {
+      "id": "glass-working-action-list-1",
+      "path": "src/ui-kit.css",
+      "baseSha256": "d23f53ebe6c8ac85c097bb686ab78efb8423b1bbd3094a586a63fdce38d3b937",
+      "resultSha256": "72a3a9aac9f5152c48c5b6ef956a356c587973f657c4edc7009c5ad99ca7bf6d",
+      "description": "Shared Glass action list with native flat44px rows; own native modal provides the strong glass plate. Same appended hunk applied to isolated library without overwriting its differing existing prefix.",
+      "isolatedLibraryPatch": {
+        "root": "D:\\глава\\ПРОЕКТЫ\\glass-ui-soty-20261104",
+        "beforeSha256": "ab8276bc1bb4f760fa6ba0d716da1b6d6865b5181af64c3be81c41d9477494e6",
+        "afterSha256": "d1cb6b546d6b608de54f4bd4a267fcb9d3fcf54931532607a75bfadb1da1c801"
+      }
+    },
+    {
+      "id": "glass-working-modal-plate-1",
+      "path": "src/ui-kit.css",
+      "baseSha256": "72a3a9aac9f5152c48c5b6ef956a356c587973f657c4edc7009c5ad99ca7bf6d",
+      "resultSha256": "f8fa7d920a1d06759fdf67befd17da4c51e81152ef64346cf084d06e3bd8671f",
+      "description": "Working overlay uses canonical dense material in optical and static modes for text over live Source content; optical lighting preserved.",
+      "isolatedLibraryPatch": {
+        "root": "D:\\глава\\ПРОЕКТЫ\\glass-ui-soty-20261104",
+        "baseSha256": "d1cb6b546d6b608de54f4bd4a267fcb9d3fcf54931532607a75bfadb1da1c801",
+        "resultSha256": "4dc2e08ecccd833ed3ac88948d32e16d8e1d9eacd9d14f7d18fc1c35690ff640"
+      }
+    }
+  ],
+  "files": [
+    {
+      "bytes": 145848,
+      "sha256": "8304ee1472a1a056f3c8df319c3a5334bf66da8e91ab4128399da6c99e09ab7c",
+      "upstreamSha256": "57760bc88cd0ad6c3cf5abfcbfeb2bc72e847cd8154d0b1c22951423da545b4e",
+      "path": "src/liquid-glass.js"
+    },
+    {
+      "bytes": 2197,
+      "sha256": "da8b3d49f92fd9a975979aebbe2e0a65559a9e4baca8f24abb89cd44a21213c5",
+      "path": "package.json",
+      "upstreamSha256": "42807cb082f5106807bdfb895ac3665bb21cffa40ef8ff19ef01d04edfb3936a"
+    },
+    {
+      "bytes": 11793,
+      "sha256": "3e8a74ea04c9c2f7a4a096a7116928dc1a5c4db21ab1412f2376b014437425f5",
+      "path": "src/site.js"
+    },
+    {
+      "bytes": 31977,
+      "sha256": "521200d76cd809b197a4c8bb3123f358abf98e9b71c533fc1423c6a53f2afa95",
+      "path": "src/ui-kit.js",
+      "upstreamSha256": "c04b668aed5dda3fafc443247871318713241f64ad59edf7e3bf0f40f4470b1a"
+    },
+    {
+      "bytes": 39355,
+      "sha256": "f8fa7d920a1d06759fdf67befd17da4c51e81152ef64346cf084d06e3bd8671f",
+      "path": "src/ui-kit.css",
+      "upstreamSha256": "32a62c9ca68673e77b355be60a21d770e72dff1938eb8c4326bf66ff302b5ac7"
+    },
+    {
+      "bytes": 19214,
+      "sha256": "7269ce830b3bca3f549fb05489b1fd3eda5bee0a0be9e6376c0ce7ad87d87e4e",
+      "path": "src/community-presence.js"
+    },
+    {
+      "bytes": 4801,
+      "sha256": "4ff34775dfe0e90d0d1aa45e1bd940782bbfc91a5f20befd651dba72d4e3d6d0",
+      "path": "src/community-presence.css"
+    },
+    {
+      "bytes": 3624,
+      "sha256": "973cb90bac3358f049ee91c8a5a66ca924faa7311235f7867ee5fe2609a33fe1",
+      "path": "src/design-system.css"
+    },
+    {
+      "bytes": 9295,
+      "sha256": "4bdf23e25b2f8304a726edb583dcc9ac93b4b5be5cdb23459cddef4c11352f17",
+      "path": "server/community-presence-server.mjs"
+    },
+    {
+      "bytes": 12474,
+      "sha256": "96c1a5ae0bca839a07bbebcff73f845ddc3cb0790894eb4a35f67f77ff95b09d",
+      "path": "README.md"
+    },
+    {
+      "bytes": 30737,
+      "sha256": "a1696fed62d2bc67f76449c017ade71f3af49a9791163c0582179b6e172d3a31",
+      "path": "docs/LIQUID_GLASS.md"
+    },
+    {
+      "bytes": 10889,
+      "sha256": "4f544d3e3975ae05e72d5a79d60fcdcf113817855c402ad3277345d16b7b65c5",
+      "path": "docs/COMMUNITY_PRESENCE.md"
+    },
+    {
+      "bytes": 7117,
+      "sha256": "8c4f51fdbd1607e4361de23706286497fb2b7d528d7cb3517d51aed94265681c",
+      "path": "docs/PRODUCTION_GUIDE.md"
+    },
+    {
+      "bytes": 6431,
+      "sha256": "c223eaacb1615af20a11029fc58a049388334241125dfb2b5fd8d458a9800301",
+      "path": "docs/SITE_INTEGRATION.md"
+    },
+    {
+      "bytes": 39598,
+      "sha256": "537e0c9ba4cc7495870b8aaa15669eec0d0aabe77d6df340980702b49b60728a",
+      "path": "docs/UI_KIT.md",
+      "upstreamSha256": "fb3462678eba47f34590aca1bb9e60063e3031fd2b21b8aca44ef18620b7dedd"
+    },
+    {
+      "path": "examples/compact-widget/index.html",
+      "bytes": 1776,
+      "sha256": "c1c7660a19f9e0adae927c0ef0dabc89891e46a603e3d24c1871650d23e8722b"
+    },
+    {
+      "path": "examples/compact-widget/ui.css",
+      "bytes": 320,
+      "sha256": "b4ada3823f35b610ac89dbf97052dc533c8c1ef149d8f4e09f496b0bd34e6c21"
+    },
+    {
+      "path": "examples/compact-widget/ui.js",
+      "bytes": 648,
+      "sha256": "c5e0e82ab6deff440549f1b19b985bfb78e4996548db493133140becd6685872"
+    },
+    {
+      "path": "src/widget-context.js",
+      "bytes": 4990,
+      "sha256": "54a0a6532bf696fa376547d62f99bef1057112d55bc56af850e3297ae870279c"
+    },
+    {
+      "path": "src/widget-context.d.ts",
+      "bytes": 903,
+      "sha256": "d88adf6f9ded26293ea28b41e151150b900558d963f7c883e990dfedded06afc"
+    }
+  ],
+  "uiLayerRevision": "soty-universal-working-ui-6",
+  "expandedAtUtc": "2026-11-04T14:40:16.8721067Z",
+  "uiLayerPatch": {
+    "baseCommit": "a8aa5d1389f5c86e5d1129912fa92daa8d0229de",
+    "sourceWorktree": "D:\\глава\\ПРОЕКТЫ\\glass-ui-soty-20261104",
+    "sourceBranch": "codex/soty-glass-ui-20261104",
+    "qualification": "Uncommitted user-authorized universal UI extension; static/optical policy, native states, canvas opt-out and input stability; original repository unchanged",
+    "files": {
+      "src/ui-kit.js": "521200d76cd809b197a4c8bb3123f358abf98e9b71c533fc1423c6a53f2afa95",
+      "src/ui-kit.css": "ab8276bc1bb4f760fa6ba0d716da1b6d6865b5181af64c3be81c41d9477494e6",
+      "docs/UI_KIT.md": "537e0c9ba4cc7495870b8aaa15669eec0d0aabe77d6df340980702b49b60728a",
+      "examples/compact-widget/index.html": "c1c7660a19f9e0adae927c0ef0dabc89891e46a603e3d24c1871650d23e8722b",
+      "examples/compact-widget/ui.css": "b4ada3823f35b610ac89dbf97052dc533c8c1ef149d8f4e09f496b0bd34e6c21",
+      "examples/compact-widget/ui.js": "c5e0e82ab6deff440549f1b19b985bfb78e4996548db493133140becd6685872",
+      "package.json": "da8b3d49f92fd9a975979aebbe2e0a65559a9e4baca8f24abb89cd44a21213c5",
+      "src/widget-context.js": "54a0a6532bf696fa376547d62f99bef1057112d55bc56af850e3297ae870279c",
+      "src/widget-context.d.ts": "d88adf6f9ded26293ea28b41e151150b900558d963f7c883e990dfedded06afc"
+    },
+    "capturedAtUtc": "2026-11-04T18:48:56.355941+00:00",
+    "roleOwnership": {
+      "id": "universal-declarative-role-ownership-1",
+      "priorUiSha256": "dd686e37da4ee901463e457509084dba05c80a8fa4e85c762517497914a329bc",
+      "qualification": "Only role attribute ownership cleanup changed; existing overrides WeakMap; imperative rollback retained; core and CSS unchanged; UI source normalized to LF. No publication."
+    },
+    "widgetComposition": {
+      "id": "universal-static-widget-composition-1",
+      "priorCssBytes": 34465,
+      "priorCssSha256": "7c5047777833ecd6f9f39b59ce71dc96cfef4311f2aeb2e710561442b02fea46",
+      "qualification": "Append-only CSS slots; CSS-only static material; existing same-entry Native3assets; no new runtime/export/schema/routes; core/UIJS unchanged. Isolated browser gate is not Root Source consumer or physical Android acceptance."
+    },
+    "widgetContext": {
+      "id": "universal-widget-ui-context-1",
+      "priorCssBytes": 36679,
+      "priorCssSha256": "2f840080d7e6f1a712d9894951f8e0687f4e890c10773a7d3efe210d28737def",
+      "qualification": "UI-only two-mode channel with strict origin/window/envelope and per-load integer epoch ACK; no Source authority, SDK/app-work/core/UIJS changes. Additive CSS explicit glance/editor/actions; same iframe DOM; Source readable plate retained, decoration removed only in normal-colors glance. No publication."
+    }
+  },
+  "actionListRevision": "soty-native-action-list-1"
+}

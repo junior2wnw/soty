@@ -156,7 +156,8 @@ for (const revision of [MODERN, LEGACY]) {
       assert.equal(transport.protocolVersion, revision);
       const listed = await client.listTools(undefined, { timeout: 5000 });
       assert.deepEqual(listed.tools.map(item => item.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide',
-        'apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query']);
+        'apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query',
+        'app_directory_search', 'app_directory_get', 'app_directory_modules', 'app_directory_query']);
       const input = { title: 'SDK independent title', body: 'Independent private source text', idempotencyKey: `independent-sdk-${revision}` };
       const created = checkedSuccess(await client.callTool({ name: 'notes_create_draft', arguments: input }, { timeout: 5000 }));
       assert.equal(created.invocation.status, 'succeeded'); assert.equal(created.reused, false);
@@ -235,6 +236,8 @@ function mountFront(f, { catalog, origin = f.origin, limits, trustProxy = false 
 }
 
 test('independent wire catalog preserves private noninterference and maximal escaped registry declarations', { timeout: 20000 }, async t => {
+  const nativeWallNow = Date.now.bind(Date); let fixtureNow = nativeWallNow();
+  t.mock.method(Date, 'now', () => fixtureNow = Math.max(fixtureNow, nativeWallNow()));
   const f = await fixture(t, { enabled: false }), catalogs = catalogFixture(), transcripts = [];
   let baselineCursor;
   for (const catalog of [catalogs.baseline, catalogs.changed]) {

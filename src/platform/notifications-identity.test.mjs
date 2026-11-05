@@ -57,6 +57,7 @@ async function fixture(t,{cold=false,initiallyBlocked=false}={}){
     './connection-hub':{ensureConnectionAccount:async()=>({state:await client.getLocalState(),intent:null})},
     './connection-intent.mjs':intents,'./connection-navigation.mjs':navigation,
     './native-voice-descriptor.mjs':{createNativeVoiceDescriptor:()=>({read:async()=>null})},
+    './platform-live-client.mjs':createPlatformLiveTestPort(),
     './call-identity':{bindCallIdentity:()=>()=>{}},
     './local-apps':{createAppActions:()=>({destroy(){},resetAccount(){},connectDevice(){},agentCreate(){}})},
     '../world/app':{mountWorldApp(_root,options){const mount={options,destroyed:false};mounts.push(mount);return{
@@ -101,3 +102,4 @@ test('cold opaque entry attempts once; status and same-actor rename do not repea
   f.block(false);assert.equal(await controller.retryOpen(),true);assert.equal(f.opened.length,1);
   assert.equal(new URL(f.window.location.href).searchParams.has('notification'),false);
 });
+import {createPlatformLiveTestPort} from './test-support/platform-live-port.mjs';

@@ -11,6 +11,7 @@ import { createServer, request } from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createAppsService } from '../server/index.mjs';
 import { migrateAppsSchema, ensureInitialPublication, ensureCanonicalDomain, runtimeTargetDigest, inspectAppsSchema } from '../server/schema.mjs';
+import { migrateAppsSchema as migratePrecedingAppsSchema,inspectAppsSchema as inspectPrecedingAppsSchema } from '../../../test-fixtures/native-entry-preceding-root/modules/apps/server/schema.mjs';
 import { createPublicationRegistry } from '../server/publications.mjs';
 import { createSourceRegistry } from '../server/sources.mjs';
 import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
@@ -50,7 +51,7 @@ function precedingRootEntry() {
 function fixture(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'soty-dual-entry-')), databasePath = join(directory, 'apps.sqlite');
   const db = new DatabaseSync(databasePath); db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL');
-  migrateAppsSchema(db, { legacyTemplate: 'https://{appId}.apps.test', allowScopedEmbedMigration: true, allowSelectedResourceMigration: true });
+  (options.legacyStore?migratePrecedingAppsSchema:migrateAppsSchema)(db, { legacyTemplate: 'https://{appId}.apps.test', allowScopedEmbedMigration: true, allowSelectedResourceMigration: true });
   const owner = Object.freeze({ accountId: 'fixture_owner', deviceId: 'fixture_browser' });
   const appId = 'app-' + 'a'.repeat(32), identity = { linkId: 'fixture_link', hostDeviceId: 'fixture_host', connectorId: 'fixture_connector' };
   const connectorKey = Object.values(identity).join('|');
@@ -283,10 +284,14 @@ test('Source alias activation also works without a Native pair and does not inve
 });
 
 test('the actual preceding Root rejects the new activation field before any candidate probe or durable change', async t => {
-  const f = fixture(t, { sourceInactive: true }); publicNative(f);
+  const f = fixture(t, { sourceInactive: true, legacyStore: true }); publicNative(f);
   const old = await import(precedingRootEntry()), live = await liveRoot(t, f, old.createAppsService), before = f.rows();
   await assert.rejects(live.prepare({ nativeEntry: undefined, sourceEntryAction: activation(f) }), { code: 'unexpected_argument' });
   assert.equal(live.probes.length, 0); assert.deepEqual(f.rows(), before);
+});
+
+test('literal preceding reader refuses the new passive frame objects without changing the current store',t=>{
+ precedingRootEntry();const f=fixture(t),before=f.rows();assert.throws(()=>inspectPrecedingAppsSchema(f.db),{code:'apps_schema_unsupported'});assert.deepEqual(f.rows(),before);
 });
 
 test('pair independently probes both exact targets and needs a new whole-port ACK before one atomic v2 receipt', async t => {
@@ -649,7 +654,7 @@ test('Native stream fails closed on paired policy epoch changes, Root outage and
 });
 
 test('current reader restarts from the durable pair; actual preceding Root ingress fails closed and its v1 promotion unpairs a new reader', async t => {
-  const f = fixture(t), prepared = await f.prepare(), pairedIntent = f.intent(prepared); f.promote(pairedIntent);
+  const f = fixture(t, {legacyStore:true}), prepared = await f.prepare(), pairedIntent = f.intent(prepared); f.promote(pairedIntent);
   const current = await liveRoot(t, f); await current.ready(); await turn();
   assert.equal((await current.check()).status, 200);
   current.service.close(); current.ws.terminate();

@@ -8,9 +8,12 @@ const { createClientWithStorage } = await import(pathToFileURL(source));
 const { ConnectError, canonicalJson } = await import(new URL('./crypto.mjs', pathToFileURL(source)));
 const { validateState } = await import(new URL('./storage.mjs', pathToFileURL(source)));
 const { createConnectService } = await import(pathToFileURL(join(repo, 'modules/connect/server/index.mjs')));
+const { deriveCanonicalAppCoverage } = await import(pathToFileURL(join(repo,'src/world/canonical-app-coverage.mjs')));
+const { createCanvasObjectsService } = await import(pathToFileURL(join(repo,'modules/canvas-objects/server.mjs')));
 const projectId = 'progressive-connect-test', origin = 'https://progressive.fixture.invalid', endpoint = origin + '/rpc', scope = { projectId, endpoint };
 const reads = ['world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get', 'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list'];
-const backgroundReads = ['call.inbox', 'notifications.status', 'apps.cover.read', 'apps.discussion.inbox'];
+const backgroundReads = ['call.inbox', 'notifications.status', 'apps.cover.read', 'apps.discussion.inbox','canvas.pages.read','canvas.pages.content','canvas.pages.wait'];
+const coverageReads=['canvas.objects.get','canvas.widgets.get'];
 const effects = ['world.profile.update', 'world.field.put', 'apps.launch', 'contacts.requestAccount', 'apps.directory.search.extra', 'apps.discussion.read'];
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const turn = () => new Promise(done => setTimeout(done, 5));
@@ -30,15 +33,15 @@ async function fixture(t) {
   const state = { traffic: [], executed: [], active: 0, peak: 0, before: null, after: null };
   const service = createConnectService({ databasePath: ':memory:', projectId, allowedOrigins: [origin], extensions: [{
     // Built-in operations must keep their genuine dispatcher and exact argument contracts.
-    operations: new Set([...reads, ...backgroundReads, ...effects].filter(op => !['contacts.list', 'contacts.requestAccount'].includes(op))),
-    execute({ op, args, actor }) { state.executed.push({ op, accountId: actor.accountId, args: structuredClone(args) }); return { operation: op, args, accountId: actor.accountId, deviceId: actor.deviceId }; },
+    operations: new Set([...reads, ...backgroundReads, ...coverageReads, ...effects,'canvas.objects.create','canvas.objects.project'].filter(op => !['contacts.list', 'contacts.requestAccount'].includes(op))),
+    execute({ op, args, actor }) { state.executed.push({ op, accountId: actor.accountId, args: structuredClone(args) }); return state.result?state.result({op,args,actor}):{ operation: op, args, accountId: actor.accountId, deviceId: actor.deviceId }; },
   }], canRequestContact: () => true });
   const clients = [];
   const fetcher = async (_url, options) => {
     const body = JSON.parse(options.body); assert.equal(body.protocol, 1);
     state.traffic.push({ op: body.op, target: body.args?.operation, signed: Boolean(body.proof), challengeId: body.proof?.challengeId, publicJwk: body.proof?.publicJwk }); state.active++; state.peak = Math.max(state.peak, state.active);
     try {
-      if (state.before) await state.before(body);
+      if (state.before) await state.before(body,options);
       const result = await service.handle({ ...body, origin });
       if (state.after) await state.after(body, result);
       return new Response(JSON.stringify(result), { status: result.ok ? 200 : 400 });
@@ -51,7 +54,7 @@ async function fixture(t) {
   const merged = store.inspect(); merged.installations.push(...secondStore.inspect().installations); merged.localRevision++;
   await store.compareAndSwap(merged.localRevision - 1, merged);
   const other = client(store); state.traffic.length = 0; state.executed.length = 0; state.peak = 0;
-  return { primary, other, store, state, a: a.accountId, b: b.accountId, context: { expectedAccountId: a.accountId },
+  return { primary, other, store, state, service, a: a.accountId, b: b.accountId, context: { expectedAccountId: a.accountId },
     signingPublicJwk: store.inspect().installations.find(value => value.accountId === a.accountId).signingPublicJwk };
 }
 
@@ -131,6 +134,86 @@ test('mismatched expected account and malformed contexts dispatch no challenge',
   await assert.rejects(f.primary.extension('apps.directory.search', {}, f.context), { code: 'ACTIVE_PROFILE_CHANGED' });
   for (const context of [null, [], {}, { expectedAccountId: '' }, { expectedAccountId: f.a, extra: true }]) await assert.rejects(f.primary.extension('apps.directory.search', {}, context), { code: 'INVALID_ARGUMENT' });
   assert.equal(f.state.traffic.length, 0);
+});
+
+test('a page wait can be cancelled without blocking identity or dispatching a held read',async t=>{
+ const f=await fixture(t),entered=gate(),abort=new AbortController();
+ f.state.before=async(body,options)=>{if(body.op==='canvas.pages.wait'&&body.proof){entered.resolve();await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true}));}};
+ const pending=outcome(f.primary.extension('canvas.pages.wait',{pageId:'page_'+'a'.repeat(32),after:'a'.repeat(64)},{...f.context,signal:abort.signal}));
+ const started=await until(()=>f.state.traffic.some(row=>row.op==='canvas.pages.wait'&&row.signed));assert.equal(started,true,'the actual signed page wait must reach the transport');
+ let local=false;await f.primary.getLocalState().then(()=>{local=true;});assert.equal(local,true);abort.abort();
+ assert.equal((await pending).error?.code,'REQUEST_CANCELLED');assert.equal(f.state.executed.length,0);
+ assert.equal((await f.primary.extension('world.profile.get',{},f.context)).accountId,f.a);
+});
+
+test('cancellation context remains closed to exact read operations and rejects pre-aborted work before its challenge',async t=>{
+ const f=await fixture(t),controller=new AbortController();controller.abort();
+ await assert.rejects(f.primary.extension('canvas.pages.wait',{}, {...f.context,signal:controller.signal}),{code:'REQUEST_CANCELLED'});
+ for(const op of ['apps.launch','world.profile.update','canvas.pages.put','canvas.pages.wait.extra','canvas.objects.update','canvas.widgets.remove','canvas.objects.get.extra','canvas.widgets.get.extra','canvas.objects.list','canvas.widgets.resolve'])await assert.rejects(f.primary.extension(op,{}, {...f.context,signal:controller.signal}),{code:'INVALID_ARGUMENT'});
+ await assert.rejects(f.primary.extension('canvas.pages.wait',{}, {...f.context,signal:{aborted:false}}),{code:'INVALID_ARGUMENT'});
+ assert.equal(f.state.traffic.length,0);
+});
+
+for(const operation of coverageReads){
+ test(`coverage transport ${operation} accepts signal through the signed fetch and verified actor`,async t=>{
+  const f=await fixture(t),abort=new AbortController(),args={expectedAccountId:f.a,...(operation==='canvas.objects.get'?{objectId:'object_fixture'}:{widgetId:'widget-fixture'})};
+  const result=await f.primary.extension(operation,args,{...f.context,signal:abort.signal});
+  assert.equal(result.operation,operation);assert.equal(result.accountId,f.a);assert.deepEqual(result.args,args);
+  const signed=f.state.traffic.filter(row=>row.signed);assert.equal(signed.length,1);assert.equal(signed[0].op,operation);
+  assert.equal(canonicalJson(signed[0].publicJwk),canonicalJson(f.signingPublicJwk));assert.equal(f.state.executed[0].accountId,f.a);
+ });
+ test(`coverage ${operation} pre-abort and wrong account dispatch no challenge`,async t=>{
+  const f=await fixture(t),abort=new AbortController();abort.abort();
+  await assert.rejects(f.primary.extension(operation,{}, {...f.context,signal:abort.signal}),{code:'REQUEST_CANCELLED'});
+  await f.other.switchProfile(f.b);f.state.traffic.length=0;
+  await assert.rejects(f.primary.extension(operation,{}, {...f.context,signal:new AbortController().signal}),{code:'ACTIVE_PROFILE_CHANGED'});
+  assert.equal(f.state.traffic.length,0);assert.equal(f.state.executed.length,0);
+ });
+ test(`coverage ${operation} aborts held fetch while identity and other reads remain usable`,async t=>{
+  const f=await fixture(t),abort=new AbortController();
+  f.state.before=async(body,options)=>{if(body.op===operation&&body.proof)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true}));};
+  const pending=outcome(f.primary.extension(operation,{}, {...f.context,signal:abort.signal}));
+  assert.equal(await until(()=>f.state.traffic.some(row=>row.op===operation&&row.signed)),true,'the exact owner metadata read reaches actual fetch');
+  let local=false,profile=false;
+  const navigation=f.primary.getLocalState().then(()=>{local=true;}),read=f.primary.extension('world.profile.get',{},f.context).then(()=>{profile=true;});
+  let early;try{early=await until(()=>local&&profile);}finally{abort.abort();}
+  await Promise.all([navigation,read]);assert.equal(early,true,'metadata does not own the identity queue while fetch is held');
+  assert.equal((await pending).error?.code,'REQUEST_CANCELLED');assert.equal(f.state.executed.some(row=>row.op===operation),false);
+ });
+ for(const phase of ['challenge','response'])test(`coverage ${operation} retains the original account round-trip fence during ${phase}`,async t=>{
+  const f=await fixture(t),entered=gate(),release=gate();
+  f.state.after=async body=>{if(phase==='challenge'?body.op==='challenge'&&body.args.operation===operation:body.op===operation&&body.proof){entered.resolve();await release.promise;}};
+  const pending=outcome(f.primary.extension(operation,{}, {...f.context,signal:new AbortController().signal}));await entered.promise;
+  try{await f.other.switchProfile(f.b);await f.other.switchProfile(f.a);}finally{release.resolve();}
+  assert.equal((await pending).error?.code,'ACTIVE_PROFILE_CHANGED');assert.equal(f.state.executed.length,phase==='challenge'?0:1);
+ });
+ test(`coverage ${operation} disposal after challenge prevents a stale signature`,async t=>{
+  const f=await fixture(t),entered=gate(),release=gate();
+  f.state.after=async body=>{if(body.op==='challenge'&&body.args.operation===operation){entered.resolve();await release.promise;}};
+  const pending=outcome(f.primary.extension(operation,{}, {...f.context,signal:new AbortController().signal}));await entered.promise;
+  f.primary.dispose();release.resolve();assert.equal((await pending).error?.code,'CLIENT_DISPOSED');
+  assert.equal(f.state.traffic.some(row=>row.signed),false);assert.equal(f.state.executed.length,0);
+ });
+}
+
+test('the real signed batch projection alone supplies Native and widget representation without owner GET',async t=>{
+ const f=await fixture(t),appId='app-'+'a'.repeat(32),calls=[];
+ const objects=createCanvasObjectsService({databasePath:':memory:',projectId,
+  actorActive:actor=>f.service.isActorActive(actor),withActorAuthorityFence:(actor,callback)=>f.service.withActorAuthorityFence(actor,callback),
+  withProtectionAuthority:({object},callback)=>callback({kind:object.protection.kind,unlocked:false}),
+  providers:[{providerId:'fixture.native',ownerRepresents:[],withBindingAuthority(_request,callback){return callback({allowed:true,protection:{kind:'password',sealed:true}});},project(){calls.push('content');throw Error('locked content forbidden');}},
+   {providerId:'fixture.widget',ownerRepresents:()=>[{kind:'app',id:appId}],withBindingAuthority(_request,callback){return callback({allowed:true,protection:{kind:'none'}});},project(){calls.push('content');throw Error('hidden content forbidden');}}]});
+ t.after(()=>objects.close());f.state.result=request=>objects.execute(request);
+ const create=(providerId,locked,hidden)=>f.primary.extension('canvas.objects.create',{expectedAccountId:f.a,requestId:'create_'+providerId,
+  binding:{providerId,ref:'fixture_ref'},presentation:{mask:{shape:'hex'}},visibility:{audience:'private',accountIds:[],communityIds:[]},hidden:{owner:hidden,others:false},protection:{kind:locked?'password':'none'}},f.context);
+ const native=(await create('fixture.native',true,false)).current,widget=(await create('fixture.widget',false,true)).current;
+ f.state.traffic.length=0;f.state.executed.length=0;
+ const response=await f.primary.extension('canvas.objects.project',{expectedAccountId:f.a,objectIds:[native.objectId,widget.objectId]},f.context);
+ const document={schema:'soty.field.v2',contexts:[{contextId:'personal',title:'Mine',x:0,y:0}],shortcuts:[native,widget].map((item,index)=>({shortcutId:'fixture_'+index,entity:{kind:'object',id:item.objectId},contextId:'personal',placement:{kind:'hex',slot:[index,0]}}))};
+ const result=deriveCanonicalAppCoverage({document,representations:new Map(response.items.map(item=>[item.objectId,item.ownerRepresents]))});
+ assert.equal(result.status,'ready');assert.deepEqual([...result.appIds],[appId]);assert.deepEqual(result.unknownObjectIds,[]);
+ assert.deepEqual(f.state.executed.map(row=>row.op),['canvas.objects.project']);assert.equal(f.state.traffic.filter(row=>row.signed).length,1);assert.deepEqual(calls,[]);
+ assert.equal(response.items[0].view.state,'locked');assert.equal(response.items[1].available,false);
 });
 
 test('payload and expected-account strings are captured before queueing', async t => {

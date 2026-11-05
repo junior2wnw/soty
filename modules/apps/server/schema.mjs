@@ -7,6 +7,8 @@ import { approvedEmbedProfile } from '../scoped-embed/profile-dispatch.mjs';
 import { isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 import { AUDIENCE_FORMATS, COVER_APP_FORMATS, baseAppsSchema, audienceAppsSchema, audienceColumns, audienceDdl, audienceGuards, hasAudienceSchema, readAppAudience, readConversationAudience, audienceMatchesPolicy } from './audience.mjs';
 import { coverSchemaStatements, coverSchemaSeed, assertCoverSchema } from '../../cover-art/server/schema.mjs';
+import { SELF_IP_PROFILE, ENDPOINT_STORAGE, endpointColumns, endpointDdl, endpointGuards, endpointDigestTuple, insertRuntimeEndpoint, targetFromRow } from './endpoint-targets.mjs';
+import {FRAME_CONTINUITY_STORAGE,frameContinuityStorageVersion,frameContinuityColumns,frameContinuityDdl,hasFrameContinuitySchema,isNativeFrameContinuityBinding,isFrameContinuityEnvelope} from './frame-continuity.mjs';
 
 export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v6';
 export const APPS_SCOPED_REGISTRY_SCHEMA = 'soty.apps-registry.v7';
@@ -14,7 +16,7 @@ export const APPS_RESOURCE_REGISTRY_SCHEMA = 'soty.apps-registry.v8';
 export const SCOPED_RUNTIME_PROFILE = 'soty.selected-human-embed.v1';
 export const RESOURCE_RUNTIME_PROFILE = 'soty.selected-human-embed.v2';
 export const selectedRuntimeProfile = value => [SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE].includes(value);
-export const supportedRuntimeProfile = value => [RUNTIME_PROFILE, SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE].includes(value);
+export const supportedRuntimeProfile = value => [RUNTIME_PROFILE, SELF_IP_PROFILE, SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE].includes(value);
 const v1Schema = 'soty.apps-registry.v1';
 const v2Schema = 'soty.apps-registry.v2';
 const v3Schema = 'soty.apps-registry.v3';
@@ -26,7 +28,7 @@ export const RUNTIME_PROFILE = 'soty.relay-restricted.v1';
 export const workspacePublicEntry = profile => profile?.schema === RESOURCE_RUNTIME_PROFILE
   && isRootSignedWorkspaceSource(profile.sourceProfile);
 export function targetExposureScope(db, target) {
-  if (target.profile === RUNTIME_PROFILE) return 'whole-port';
+  if ([RUNTIME_PROFILE, SELF_IP_PROFILE].includes(target.profile)) return 'whole-port';
   const row = db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(target.app_id, target.revision);
   if (!row || row.target_digest !== target.digest) return null;
   let profile; try { profile = approvedEmbedProfile(JSON.parse(row.approved_pin_json)); } catch { return null; }
@@ -103,6 +105,10 @@ export function inspectAppsSchema(db) {
   const meta = db.prepare('PRAGMA table_info(apps_meta)').all();
   assertApps(JSON.stringify(meta.map(item => item.name)) === JSON.stringify(core.apps_meta), 'apps_schema_unsupported');
   const schema = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value;
+  const selfIp = hasEndpointSchema(db);
+  const frames = hasFrameContinuitySchema(db);
+  assertApps(objects.some(item => item.name === 'app_runtime_endpoints') === selfIp, 'apps_schema_unsupported');
+  assertApps(objects.some(item => item.name === 'app_frame_continuity') === frames, 'apps_schema_unsupported');
   const state = schema === v1Schema && [0, 1].includes(version) ? 'v1'
     : schema === v2Schema && version === 2 ? 'v2' : schema === v3Schema && version === 3 ? 'v3'
       : schema === v4Schema && version === 4 ? 'v4' : schema === v5Schema && version === 5 ? 'v5'
@@ -114,33 +120,35 @@ export function inspectAppsSchema(db) {
   const base = baseAppsSchema(state), audienceVersion = Boolean(AUDIENCE_FORMATS[audienceAppsSchema(state)]), coverVersion = Boolean(COVER_APP_FORMATS[state]);
   const modern = ['v3', 'v4', 'v5', 'v6', 'v7', 'v8'].includes(base), sourceVersion = ['v4', 'v5', 'v6', 'v7', 'v8'].includes(base), savedVersion = ['v5', 'v6', 'v7', 'v8'].includes(base);
   const expected = base === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}),
-    ...(savedVersion ? saved : {}), ...(audienceVersion ? audienceColumns : {}), ...(['v6', 'v7', 'v8'].includes(base) ? discussions : {}), ...(['v7', 'v8'].includes(base) ? scopedAdmissions : {}) };
+    ...(savedVersion ? saved : {}), ...(audienceVersion ? audienceColumns : {}), ...(selfIp ? endpointColumns : {}), ...(frames ? frameContinuityColumns : {}), ...(['v6', 'v7', 'v8'].includes(base) ? discussions : {}), ...(['v7', 'v8'].includes(base) ? scopedAdmissions : {}) };
   const sqlDefinitions = new Map([...definitions(coreDdl()), ...(base !== 'v1' ? definitions(domainDdl()) : []),
-    ...(modern ? [...definitions(publicationDdl(['v7', 'v8'].includes(base), base === 'v8')), ...definitions(targetGuards())] : []),
+    ...(modern ? [...definitions(publicationDdl(['v7', 'v8'].includes(base), base === 'v8', selfIp)), ...definitions(targetGuards())] : []),
     ...(sourceVersion ? [...definitions(sourceDdl()), ...definitions(sourceGuards())] : []),
     ...(savedVersion ? [...definitions(savedDdl()), ...definitions(savedGuards())] : []),
     ...(['v6', 'v7', 'v8'].includes(base) ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : []),
     ...(['v7', 'v8'].includes(base) ? [...definitions(scopedAdmissionDdl()), ...definitions(scopedAdmissionGuards())] : []),
     ...(audienceVersion ? [...definitions(audienceDdl()), ...definitions(audienceGuards())] : []),
-    ...(coverVersion ? definitions(coverSchemaStatements('app')) : [])]);
+    ...(coverVersion ? definitions(coverSchemaStatements('app')) : []),
+    ...(selfIp ? [...definitions(endpointDdl()), ...definitions(endpointGuards())] : []),
+    ...(frames ? definitions(frameContinuityDdl()) : [])]);
   assertApps(objects.length === sqlDefinitions.size && objects.every(item => typeof item.sql === 'string'
     && sqlDefinitions.get(item.name) === normalizedSql(item.sql)), 'apps_schema_unsupported');
   for (const [name, columns] of Object.entries(expected)) {
     const actual = db.prepare(`PRAGMA table_info(${name})`).all();
     assertApps(JSON.stringify(actual.map(item => item.name)) === JSON.stringify(columns), 'apps_schema_unsupported');
-    const primaryKeys = name === 'local_app_grants' ? ['app_id', 'kind', 'principal_id']
-      : ['app_domain_receipts', 'app_publication_receipts', 'app_source_receipts', 'app_saved_receipts'].includes(name) ? ['account_id', 'request_key']
+    const primaryKeys = name === 'app_frame_continuity' ? ['frame_id'] : name === 'local_app_grants' ? ['app_id', 'kind', 'principal_id']
+      : ['app_domain_receipts', 'app_publication_receipts', 'app_source_receipts', 'app_saved_receipts', 'app_endpoint_registration_receipts'].includes(name) ? ['account_id', 'request_key']
         : name === 'app_discussion_conversation_audiences' ? ['conversation_id']
           : ['app_audiences', 'app_discussion_head_audiences'].includes(name) ? ['app_id']
         : name === 'app_saved_entries' ? ['account_id', 'app_id'] : ['app_saved_heads', 'app_discussion_rates'].includes(name) ? ['account_id']
-          : name === 'app_scoped_embed_admissions' ? ['app_id', 'target_revision']
+          : ['app_scoped_embed_admissions', 'app_runtime_endpoints'].includes(name) ? ['app_id', 'target_revision']
           : name === 'app_discussion_changes' ? ['conversation_id', 'seq']
         : name === 'app_runtime_targets' ? ['app_id', 'revision']
           : name === 'app_publication_domains' ? ['app_id', 'domain_id']
             : [name === 'apps_meta' ? 'key' : name === 'app_devices' ? 'connector_key'
               : ['app_domain_heads', 'app_publications', 'app_source_heads', 'app_discussion_heads'].includes(name) ? 'app_id' : 'id'];
     for (const column of actual) {
-      const integer = ['revision', 'created_at', 'updated_at', 'retired_at', 'committed_revision', 'port', 'listed',
+      const integer = ['revision', 'created_at', 'updated_at', 'expires_at', 'retired_at', 'committed_revision', 'port', 'listed',
         'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'committed_epoch', 'required_binding_version', 'saved_revision', 'saved',
         'generation', 'message_count', 'body_bytes', 'conversation_count', 'rate_at', 'rate_credit', 'message_seq', 'change_seq', 'seq', 'removed_at', 'head_count', 'at', 'credit', 'target_revision'].includes(column.name)
         && !(name === 'app_domain_zones' && column.name === 'port');
@@ -182,14 +190,15 @@ function domainDdl() {
       committed_revision INTEGER NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(account_id,request_key));`;
 }
 
-function publicationDdl(scoped = false, resources = false) {
+function publicationDdl(scoped = false, resources = false, selfIp = false) {
+  const profiles = [RUNTIME_PROFILE, ...(scoped ? [SCOPED_RUNTIME_PROFILE] : []), ...(resources ? [RESOURCE_RUNTIME_PROFILE] : []), ...(selfIp ? [SELF_IP_PROFILE] : [])];
   return `CREATE UNIQUE INDEX local_apps_identity_owner ON local_apps(id,owner_account_id);
     CREATE UNIQUE INDEX app_devices_identity_owner ON app_devices(connector_key,owner_account_id);
     CREATE UNIQUE INDEX app_domains_identity_owner ON app_domains(id,app_id,owner_account_id);
     CREATE TABLE app_runtime_targets (
       app_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991),
       owner_account_id TEXT NOT NULL,connector_key TEXT NOT NULL,port INTEGER NOT NULL CHECK(port BETWEEN 1024 AND 65535),
-      entry_path TEXT NOT NULL,profile TEXT NOT NULL CHECK(${resources ? "profile IN ('soty.relay-restricted.v1','soty.selected-human-embed.v1','soty.selected-human-embed.v2')" : scoped ? "profile IN ('soty.relay-restricted.v1','soty.selected-human-embed.v1')" : "profile='soty.relay-restricted.v1'"}),digest TEXT NOT NULL,
+      entry_path TEXT NOT NULL,profile TEXT NOT NULL CHECK(${profiles.length === 1 ? `profile='${profiles[0]}'` : `profile IN (${profiles.map(value => `'${value}'`).join(',')})`}),digest TEXT NOT NULL,
       created_at INTEGER NOT NULL,PRIMARY KEY(app_id,revision),
       FOREIGN KEY(app_id,owner_account_id) REFERENCES local_apps(id,owner_account_id),
       FOREIGN KEY(connector_key,owner_account_id) REFERENCES app_devices(connector_key,owner_account_id));
@@ -450,6 +459,8 @@ function validateSavedRows(db) {
 }
 
 export function runtimeTargetDigest(value) {
+  if (value.profile === SELF_IP_PROFILE) return digest(JSON.stringify(endpointDigestTuple(value)));
+  assertApps(value.endpoint === undefined && value.schema === undefined, 'app_invalid_binding_target', 500);
   return digest(JSON.stringify(['soty.runtime-target.v1', value.appId, value.revision, value.ownerAccountId,
     value.connectorKey, value.port, value.entryPath, value.profile]));
 }
@@ -458,19 +469,24 @@ export function requiredBindingVersion(db, id) {
   const head = db.prepare('SELECT required_binding_version FROM app_source_heads WHERE app_id=?').get(id);
   assertApps(head && [1, 2].includes(head.required_binding_version), 'apps_registry_corrupt', 500);
   assertApps(head.required_binding_version === 2 || !db.prepare('SELECT 1 FROM app_runtime_targets WHERE app_id=? AND revision>1 LIMIT 1').get(id), 'apps_registry_corrupt', 500);
+  assertApps(head.required_binding_version === 2 || !db.prepare('SELECT 1 FROM app_runtime_targets WHERE app_id=? AND profile=? LIMIT 1').get(id, SELF_IP_PROFILE), 'apps_registry_corrupt', 500);
   return head.required_binding_version;
 }
 
 // Shared by initial migration and registration. Existing v4 records are only
 // validated; missing state must never be silently repaired with a weaker floor.
-export function ensureInitialPublication(db, app) {
+export function ensureInitialPublication(db, app, initialTarget) {
   assertApps(db.isTransaction === true, 'apps_transaction_required', 500);
   const port = appPort(app.port), entryPath = requestPath(app.entry_path);
   assertApps(!entryPath.startsWith('/_soty/'), 'apps_registry_corrupt', 500);
   const device = db.prepare('SELECT owner_account_id FROM app_devices WHERE connector_key=?').get(app.connector_key);
   assertApps(device?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
-  const target = { appId: app.id, revision: 1, ownerAccountId: app.owner_account_id, connectorKey: app.connector_key,
-    port, entryPath, profile: RUNTIME_PROFILE };
+  const stored = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=1').get(app.id);
+  const target = initialTarget ?? (stored?.profile === SELF_IP_PROFILE ? targetFromRow(db, stored) : { appId: app.id, revision: 1, ownerAccountId: app.owner_account_id, connectorKey: app.connector_key,
+    port, entryPath, profile: RUNTIME_PROFILE });
+  assertApps(target.appId === app.id && target.revision === 1 && target.ownerAccountId === app.owner_account_id
+    && target.connectorKey === app.connector_key && target.port === port && target.entryPath === entryPath
+    && [RUNTIME_PROFILE, SELF_IP_PROFILE].includes(target.profile), 'apps_initial_target_changed', 409);
   const targetDigest = runtimeTargetDigest(target);
   const existing = db.prepare('SELECT digest FROM app_runtime_targets WHERE app_id=? AND revision=1').get(app.id);
   const policy = db.prepare('SELECT app_id FROM app_publications WHERE app_id=?').get(app.id);
@@ -482,10 +498,11 @@ export function ensureInitialPublication(db, app) {
     requiredBindingVersion(db, app.id); return;
   }
   db.prepare('INSERT INTO app_runtime_targets VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(app.id, 1, app.owner_account_id, app.connector_key, port, entryPath, RUNTIME_PROFILE, targetDigest, app.created_at);
+    .run(app.id, 1, app.owner_account_id, app.connector_key, port, entryPath, target.profile, targetDigest, app.created_at);
+  insertRuntimeEndpoint(db, { ...target, digest: targetDigest });
   db.prepare("INSERT INTO app_publications VALUES (?,?,'restricted',0,1,1,NULL,NULL,?)")
     .run(app.id, app.owner_account_id, app.updated_at);
-  db.prepare('INSERT INTO app_source_heads VALUES (?,1)').run(app.id);
+  db.prepare('INSERT INTO app_source_heads VALUES (?,?)').run(app.id, target.profile === SELF_IP_PROFILE ? 2 : 1);
 }
 
 function validateSourceRows(db, { historical = false } = {}) {
@@ -501,8 +518,8 @@ function validateSourceRows(db, { historical = false } = {}) {
     for (const target of db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=?').iterate(app.id)) {
       count++;
       assertApps(target.owner_account_id === app.owner_account_id && Number.isSafeInteger(target.revision) && target.revision >= 1
-        && (target.profile === RUNTIME_PROFILE || scoped && target.profile === SCOPED_RUNTIME_PROFILE || resources && target.profile === RESOURCE_RUNTIME_PROFILE) && target.digest === runtimeTargetDigest({ appId: app.id, revision: target.revision,
-          ownerAccountId: app.owner_account_id, connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
+        && (target.profile === RUNTIME_PROFILE || hasEndpointSchema(db) && target.profile === SELF_IP_PROFILE || scoped && target.profile === SCOPED_RUNTIME_PROFILE || resources && target.profile === RESOURCE_RUNTIME_PROFILE)
+        && target.digest === runtimeTargetDigest(targetFromRow(db, target)), 'apps_registry_corrupt', 500);
       appPort(target.port); requestPath(target.entry_path);
       if ([SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE].includes(target.profile)) {
         const admission = db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(app.id, target.revision);
@@ -532,6 +549,8 @@ function validateSourceRows(db, { historical = false } = {}) {
   }
   if (scoped) assertApps(db.prepare('SELECT count(*) AS n FROM app_scoped_embed_admissions').get().n
     === db.prepare('SELECT count(*) AS n FROM app_runtime_targets WHERE profile IN (?,?)').get(SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE).n, 'apps_scoped_admission_corrupt', 500);
+  if (hasEndpointSchema(db)) assertApps(db.prepare('SELECT count(*) AS n FROM app_runtime_endpoints').get().n
+    === db.prepare('SELECT count(*) AS n FROM app_runtime_targets WHERE profile=?').get(SELF_IP_PROFILE).n, 'apps_endpoint_corrupt', 500);
 }
 
 function initializePublications(db) {
@@ -665,7 +684,7 @@ function migrateLegacyAndScopedAppsSchema(db, { legacyTemplate = '', now = Date.
     if (state === 'v7') { db.exec('COMMIT'); return { schema: APPS_SCOPED_REGISTRY_SCHEMA, migrated: false, legacyTemplate: legacy.legacyTemplate }; }
     assertApps(state === 'v6', 'apps_schema_unsupported');
     validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
-    const ddl = publicationDdl(true).split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
+    const ddl = publicationDdl(true, false, hasEndpointSchema(db)).split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
     assertApps(ddl, 'apps_schema_definition_invalid', 500);
     db.exec(ddl.replace('CREATE TABLE app_runtime_targets', 'CREATE TABLE scoped_runtime_targets_migration'));
     db.exec('INSERT INTO scoped_runtime_targets_migration SELECT * FROM app_runtime_targets');
@@ -713,7 +732,7 @@ function migrateBaseAppsSchema(db, options = {}) {
     if (state === 'v8') { db.exec('COMMIT'); return { schema: APPS_RESOURCE_REGISTRY_SCHEMA, migrated: false, legacyTemplate: previous.legacyTemplate }; }
     assertApps(state === 'v7', 'apps_schema_unsupported');
     validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
-    const ddl = publicationDdl(true, true).split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
+    const ddl = publicationDdl(true, true, hasEndpointSchema(db)).split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
     assertApps(ddl, 'apps_schema_definition_invalid', 500);
     db.exec(ddl.replace('CREATE TABLE app_runtime_targets', 'CREATE TABLE resource_runtime_targets_migration'));
     db.exec('INSERT INTO resource_runtime_targets_migration SELECT * FROM app_runtime_targets');
@@ -774,7 +793,7 @@ function migrateLayeredAppsBase(db, { legacyTemplate = '', allowScopedEmbedMigra
     }
     const [next, nextFormat] = Object.entries(family).find(([, item]) => item.base === base) ?? [];
     assertApps(nextFormat, 'apps_schema_unsupported');
-    const ddl = publicationDdl(true, base === 'v8').split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
+    const ddl = publicationDdl(true, base === 'v8', hasEndpointSchema(db)).split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
     assertApps(ddl, 'apps_schema_definition_invalid', 500);
     db.exec(ddl.replace('CREATE TABLE app_runtime_targets', 'CREATE TABLE layered_runtime_targets_migration'));
     db.exec('INSERT INTO layered_runtime_targets_migration SELECT * FROM app_runtime_targets');
@@ -850,7 +869,7 @@ function migrateAudienceAppsSchema(db, options = {}) {
 
 /** Explicit startup-only cover upgrade; 12/13/14 retain base6/7/8 and the
  * audience tables. New stores may request the same complete format directly. */
-export function migrateAppsSchema(db, options = {}) {
+function migrateLayerAppsSchema(db, options = {}) {
   const { allowCoverMigration = false, allowAudienceMigration = false } = options;
   assertApps(typeof allowCoverMigration === 'boolean' && typeof allowAudienceMigration === 'boolean', 'apps_cover_migration_configuration_invalid', 503);
   const previous = migrateAudienceAppsSchema(db, { ...options,
@@ -871,4 +890,74 @@ export function migrateAppsSchema(db, options = {}) {
     validateSourceRows(db); validateSavedRows(db); validateAudienceRows(db); validateDiscussionRows(db);
     db.exec('COMMIT'); return { ...previous, schema: format.marker, migrated: true };
   } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
+}
+
+export function hasEndpointSchema(db) {
+  const exists = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='apps_meta'").get();
+  if (!exists) return false;
+  const marker = db.prepare("SELECT value FROM apps_meta WHERE key='self_ip_targets'").get();
+  assertApps(!marker || marker.value === ENDPOINT_STORAGE, 'apps_schema_unsupported');
+  return Boolean(marker);
+}
+
+/** Explicit offline/startup storage capability. Its exact extra DDL causes an
+ * older reader to refuse this database before it can reinterpret an IP target
+ * as localhost. Existing target rows and v1 digests are copied byte for byte. */
+function migrateEndpointAppsSchema(db, options = {}) {
+  const { allowSelfIpTargets = false } = options;
+  assertApps(typeof allowSelfIpTargets === 'boolean', 'apps_endpoint_configuration_invalid', 503);
+  assertApps(!hasEndpointSchema(db) || allowSelfIpTargets, 'apps_endpoint_storage_capability_required', 503);
+  const previous = migrateLayerAppsSchema(db, options);
+  if (!allowSelfIpTargets || hasEndpointSchema(db)) return previous;
+  assertApps(!db.isTransaction, 'apps_endpoint_migration_required', 503);
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  db.exec('PRAGMA foreign_keys=OFF;');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const state = inspectAppsSchema(db), base = baseAppsSchema(state);
+    if (hasEndpointSchema(db)) { db.exec('COMMIT'); return previous; }
+    assertApps(['v6', 'v7', 'v8'].includes(base), 'apps_endpoint_migration_required', 503);
+    validateSourceRows(db);
+    const ddl = publicationDdl(['v7', 'v8'].includes(base), base === 'v8', true).split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
+    db.exec(ddl.replace('CREATE TABLE app_runtime_targets', 'CREATE TABLE endpoint_runtime_targets_migration'));
+    db.exec('INSERT INTO endpoint_runtime_targets_migration SELECT * FROM app_runtime_targets');
+    db.exec('DROP TRIGGER app_runtime_target_no_update;DROP TRIGGER app_runtime_target_no_delete;DROP TRIGGER app_runtime_target_no_replace;DROP TABLE app_runtime_targets;');
+    db.exec(ddl);
+    db.exec('INSERT INTO app_runtime_targets SELECT * FROM endpoint_runtime_targets_migration;DROP TABLE endpoint_runtime_targets_migration;');
+    for (const statement of targetGuards()) db.exec(statement);
+    for (const statement of sourceGuards().filter(value => value.includes('CREATE TRIGGER app_runtime_target_no_replace'))) db.exec(statement);
+    db.exec(endpointDdl()); for (const statement of endpointGuards()) db.exec(statement);
+    db.prepare("INSERT INTO apps_meta VALUES ('self_ip_targets',?)").run(ENDPOINT_STORAGE);
+    assertApps(inspectAppsSchema(db) === state && !db.prepare('PRAGMA foreign_key_check').get(), 'apps_endpoint_migration_invalid', 500);
+    validateSourceRows(db); db.exec('COMMIT');
+    return { ...previous, migrated: true, endpointStorage: ENDPOINT_STORAGE };
+  } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
+  finally { db.exec(`PRAGMA foreign_keys=${foreignKeys};`); }
+}
+
+/** New installations include passive continuity. Existing stores opt in once;
+ * the option is migration permission, never a switch disabling a known reader. */
+export function migrateAppsSchema(db, options = {}) {
+  const {allowFrameContinuityMigration=false}=options;
+  assertApps(typeof allowFrameContinuityMigration==='boolean','apps_frame_migration_configuration_invalid',503);
+  const fresh=inspectAppsSchema(db)==='empty',previous=migrateEndpointAppsSchema(db,options);
+  const frameVersion=frameContinuityStorageVersion(db);
+  if(frameVersion===2||!fresh&&!allowFrameContinuityMigration)return previous;
+  assertApps(!db.isTransaction,'apps_frame_migration_required',503);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if(frameVersion===1){
+      let count=0;
+      for(const row of db.prepare('SELECT * FROM app_frame_continuity').iterate()){
+        let value;try{value=JSON.parse(row.binding_json);}catch{}
+        assertApps(++count<=4096&&isFrameContinuityEnvelope(row)&&isNativeFrameContinuityBinding(value)&&canonical(value)===row.binding_json
+          &&digest(row.binding_json)===row.binding_digest,'apps_schema_unsupported');
+      }
+      db.prepare("UPDATE apps_meta SET value=? WHERE key='frame_continuity'").run(FRAME_CONTINUITY_STORAGE);
+    }else if(!frameVersion){
+      db.exec(frameContinuityDdl());db.prepare("INSERT INTO apps_meta VALUES('frame_continuity',?)").run(FRAME_CONTINUITY_STORAGE);
+    }
+    inspectAppsSchema(db);assertApps(!db.prepare('PRAGMA foreign_key_check').get(),'apps_schema_unsupported');db.exec('COMMIT');
+    return {...previous,migrated:true,frameContinuityStorage:FRAME_CONTINUITY_STORAGE};
+  }catch(error){if(db.isTransaction)db.exec('ROLLBACK');throw error;}
 }

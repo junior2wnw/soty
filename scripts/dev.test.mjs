@@ -28,6 +28,13 @@ test('fullstack development serves Vite, signed API and origin-checked WS, then 
   });
   dev = await startDevelopment({ port: ports[0], apiPort: ports[1], connectorPort: ports[2], dataDir, quiet: true, signal: t.signal });
   const html = await fetch(dev.origin); assert.equal(html.status, 200); assert.match(await html.text(), /\/src\/entry\.ts/u);
+  assert.match(html.headers.get('link')??'', /<\/\.well-known\/soty-app-platform>; rel="service-desc"/u, 'The UI entry must advertise the same discovery contract as Root');
+  const discovery=await fetch(`${dev.origin}/.well-known/soty-app-platform`);assert.match(discovery.headers.get('content-type'),/application\/json/u);const platform=await discovery.json();assert.equal(platform.schema,'soty.app-platform-discovery.v1');
+  const installed=await(await fetch(new URL(platform.modules,dev.origin))).json();assert.ok(installed.modules.some(value=>value.id==='soty.referrals'));
+  const sdk=await fetch(new URL(platform.sourceSdk,dev.origin));assert.match(sdk.headers.get('content-type'),/application\/json/u,'SDK metadata must reach its backend, not the HTML fallback');
+  const protectedResource=await fetch(new URL(platform.oauth,dev.origin));assert.match(protectedResource.headers.get('content-type'),/application\/json/u,'OAuth metadata must reach its backend');
+  const mcp=await fetch(new URL(platform.rootMcp,dev.origin));assert.ok(mcp.status>=400&&mcp.status<600,'An anonymous MCP request must fail closed, not return the app shell');assert.doesNotMatch(await mcp.text(),/\/src\/entry\.ts/u);
+  for(const path of ['/mcp-old','/sdk-old','/.well-knownish'])assert.match(await(await fetch(dev.origin+path)).text(),/\/src\/entry\.ts/u,'Only complete protocol namespaces are forwarded');
   assert.equal((await fetch(`${dev.origin}/src/platform/world-adapter.ts`)).status, 200);
   assert.equal((await fetch(`${dev.origin}/var/${privateDir.slice(privateRoot.length).replaceAll('\\', '/')}/probe.txt`)).status, 403, 'Vite must not serve server data under the project root');
   assert.equal((await (await fetch(`${dev.origin}/health`)).json()).ok, true);
@@ -78,6 +85,21 @@ test('an occupied API port fails startup and leaves the UI port free', { timeout
   t.after(async () => { await new Promise(resolveClose => occupied.close(resolveClose)); assert.equal(dirname(resolve(dataDir)), resolve(tmpdir())); await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   await assert.rejects(startDevelopment({ port: ports[0], apiPort: ports[1], connectorPort: ports[2], dataDir, quiet: true, signal: t.signal }), /Cannot start development API/u);
   const unused = await listen(ports[0]); await new Promise(resolveClose => unused.close(resolveClose));
+});
+
+test('explicit local agent API serves authenticated MCP through the UI origin without inherited production configuration', { timeout: 35_000 },async t=>{
+  const dataDir=await mkdtemp(join(tmpdir(),'soty-dev-agent-')),ports=await freePorts(3);let dev;
+  t.after(async()=>{await dev?.close();assert.equal(dirname(resolve(dataDir)),resolve(tmpdir()));await rm(dataDir,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  dev=await startDevelopment({port:ports[0],apiPort:ports[1],connectorPort:ports[2],dataDir,quiet:true,signal:t.signal});assert.equal((await ownedFetch(t.signal,dev.origin+'/mcp')).status,503);await dev.close();
+  dev=await startDevelopment({port:ports[0],apiPort:ports[1],connectorPort:ports[2],dataDir,agentApi:true,quiet:true,signal:t.signal});
+  const fetch=(url,options)=>ownedFetch(t.signal,url,options);assert.equal((await fetch(dev.origin+'/mcp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:0,method:'tools/list'})})).status,401,'Explicit agent API is configured but anonymous callers remain denied');
+  const signing=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),encryption=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),rpc=(op,args)=>signedRpc(dev.origin,signing,op,args,t.signal);
+  const boot=await rpc('bootstrap',{label:'Dev agent fixture',encryptionPublicJwk:encryption.publicKey.export({format:'jwk'})});assert.equal(boot.ok,true);const expectedAccountId=boot.accountId;
+  const principal=await rpc('access.principals.create',{expectedAccountId,label:'Dev MCP metadata'});assert.equal(principal.ok,true);
+  const grant=await rpc('access.grants.issue',{expectedAccountId,principalId:principal.principal.id,capabilities:[{capabilityId:'notes.createDraft',version:1}],resources:['notes:new'],effects:['create'],recipients:['soty:notes'],expiresAt:Date.now()+600000,allowDelegation:false,maxDepth:0,budget:{unit:'invocations',limit:2}});assert.equal(grant.ok,true,grant.error?.code);
+  const credential=await rpc('access.credentials.issue',{expectedAccountId,grantId:grant.grant.id,audience:dev.origin+'/mcp'});assert.equal(credential.ok,true);
+  const response=await fetch(dev.origin+'/mcp',{method:'POST',headers:{authorization:'Bearer '+credential.token,'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':'2026-07-28','mcp-method':'tools/list'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list',params:{_meta:{'io.modelcontextprotocol/protocolVersion':'2026-07-28','io.modelcontextprotocol/clientInfo':{name:'dev-proxy-fixture',version:'1'},'io.modelcontextprotocol/clientCapabilities':{}}}})});
+  assert.equal(response.status,200);const result=await response.json();assert.ok(result.result?.tools.some(value=>value.name==='app_directory_modules'));assert.ok(result.result.tools.some(value=>value.name==='apps_query'));
 });
 
 test('named-apps development isolates canonical and named zones from the shell', { timeout: 35_000 }, async t => {

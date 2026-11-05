@@ -35,9 +35,9 @@ async function loadHumanCallPorts() {
   return module.exports.createHumanCallPorts;
 }
 async function fixture(t, count = 2, { controlledHeartbeat = false } = {}) {
-  let at = 1_800_000_000_000, connect;
+  let at = 1_800_000_000_000, connect, callConnectReads = 0;
   const world = createWorldService({ databasePath: ':memory:', projectId: 'human-call-test', clock: () => at });
-  const calls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: [ORIGIN], clock: () => at });
+  const calls = createHumanCallModule({ getConnect: () => { callConnectReads++; return connect; }, getWorld: () => world, allowedOrigins: [ORIGIN], clock: () => at });
   connect = createConnectService({ databasePath: ':memory:', projectId: 'human-call-test', clock: () => at,
     allowedOrigins: [ORIGIN], extensions: [world, calls], canRequestContact: (a, b) => world.canRequestContact(a, b) });
   const wss = new EventEmitter(); let heartbeatPulse;
@@ -78,6 +78,7 @@ async function fixture(t, count = 2, { controlledHeartbeat = false } = {}) {
     return good(await rpc(right, 'contacts.accept', { requestId: request.requestId }));
   }
   return { actors, connect, world, calls, rpc, group, groupJoin, personalJoin, socketFor, pendingSocket, contact, wss,
+    callConnectReads: () => callConnectReads,
     advance(ms) { at += ms; }, pulse() { assert.equal(typeof heartbeatPulse, 'function'); heartbeatPulse(); } };
 }
 
@@ -188,6 +189,75 @@ test('removed current community membership invalidates previously issued and bou
   left.input({ type: 'p2p.candidate', callId: a.callId, epoch: a.epoch,
     signal: { id: 'candidate_old', targetDeviceId: b.deviceId, candidate: 'synthetic' } });
   assert.equal(right.messages.some(value => value.type === 'p2p.candidate'), false);
+});
+
+test('genuine signed removal keeps the unchanged owner original socket, epoch, admission and microphone', async t => {
+  const f = await fixture(t), [owner, removed] = f.actors;
+  const a = good(await f.groupJoin(owner)), b = good(await f.groupJoin(removed));
+  const left = f.socketFor(a), right = f.socketFor(b);
+  const mic = good(await f.rpc(owner, 'call.microphone', { requestId: 'owner_mic_retained', callId: a.callId, epoch: a.epoch }));
+  left.input({ type: 'call.publish', callId: a.callId, epoch: a.epoch, grantRef: mic.grantRef });
+  good(await f.rpc(owner, 'world.membership.remove', { communityId: f.group.communityId, profileId: removed.state.accountId }));
+  assert.equal(right.readyState, 3, 'removed member must lose its original bound socket');
+  assert.equal(left.readyState, 1, 'unchanged owner must retain its original socket');
+  assert.equal(left.closeCalls, 0); assert.equal(f.calls.status().calls, 1);
+  assert.equal(left.messages.filter(m => m.type === 'call.ready').length, 1);
+  const peers = left.messages.filter(m => m.type === 'call.peers').at(-1);
+  assert.equal(peers.callId, a.callId); assert.equal(peers.epoch, a.epoch); assert.equal(peers.peers.length, 1);
+  assert.equal(peers.peers[0].accountId, owner.state.accountId); assert.equal(peers.peers[0].microphone, true);
+  const pongs = left.messages.filter(m => m.type === 'call.pong').length;
+  left.input({ type: 'call.ping', callId: a.callId, epoch: a.epoch });
+  assert.equal(left.messages.filter(m => m.type === 'call.pong').length, pongs + 1);
+  assert.equal((await f.groupJoin(owner, 'owner_cannot_rejoin_active')).error.code, 'human_call_active');
+  assert.equal((await f.groupJoin(removed, 'removed_cannot_rejoin')).error.code, 'human_call_denied');
+  assert.equal(good(await f.rpc(owner, 'call.leave', { callId: a.callId, epoch: a.epoch, expectedJoinRef: a.grantRef })).left, true);
+  assert.equal(left.readyState, 3); assert.equal(f.calls.status().calls, 0);
+  assert.equal(good(await f.rpc(owner, 'world.community.get', { communityId: f.group.communityId })).community.membership.state, 'active');
+});
+
+test('repeated committed role changes and a rejected mutation preserve active authorized sockets', async t => {
+  const f = await fixture(t), [owner, member] = f.actors;
+  const a = good(await f.groupJoin(owner)), b = good(await f.groupJoin(member));
+  const left = f.socketFor(a), right = f.socketFor(b);
+  assert.equal((await f.rpc(owner, 'world.membership.remove', { communityId: f.group.communityId, profileId: owner.state.accountId })).ok, false);
+  assert.equal(left.readyState, 1); assert.equal(right.readyState, 1);
+  good(await f.rpc(owner, 'world.membership.role', { communityId: f.group.communityId, profileId: member.state.accountId, role: 'moderator' }));
+  good(await f.rpc(owner, 'world.membership.role', { communityId: f.group.communityId, profileId: member.state.accountId, role: 'member' }));
+  assert.equal(left.readyState, 1); assert.equal(right.readyState, 1);
+  assert.equal(left.closeCalls, 0); assert.equal(right.closeCalls, 0);
+  assert.equal(left.messages.filter(m => m.type === 'call.ready').length, 1);
+  assert.equal(right.messages.filter(m => m.type === 'call.ready').length, 1);
+  assert.equal(f.calls.status().calls, 1);
+});
+
+test('shutdown during committed membership notification cancels deferred authority work', async t => {
+  const f = await fixture(t), [owner, member] = f.actors;
+  const a = good(await f.groupJoin(owner)), b = good(await f.groupJoin(member));
+  const left = f.socketFor(a), right = f.socketFor(b); let readsAtClose;
+  const stop = f.world.subscribeMembership(() => { f.calls.close(); readsAtClose = f.callConnectReads(); });
+  t.after(stop);
+  good(await f.rpc(owner, 'world.membership.remove', { communityId: f.group.communityId, profileId: member.state.accountId }));
+  await Promise.resolve();
+  assert.equal(left.readyState, 3); assert.equal(right.readyState, 3);
+  assert.equal(f.calls.status().signalingMounted, false); assert.equal(f.calls.status().calls, 0);
+  assert.equal(f.callConnectReads(), readsAtClose, 'queued membership work must not enter authority after shutdown');
+});
+
+test('committed revocation cannot forward socket IO before the deferred membership sweep', async t => {
+  const f = await fixture(t), [owner, member] = f.actors;
+  const a = good(await f.groupJoin(owner)), b = good(await f.groupJoin(member));
+  const left = f.socketFor(a), right = f.socketFor(b); let observedCommit = false;
+  const stop = f.world.subscribeMembership(() => {
+    observedCommit = true;
+    right.input({ type: 'p2p.offer', callId: b.callId, epoch: b.epoch,
+      signal: { id: 'revoked_before_sweep', kind: 'offer', targetDeviceId: a.deviceId, sdp: 'v=0\r\n' } });
+    assert.equal(left.messages.some(m => m.type === 'p2p.offer'), false);
+    assert.equal(right.readyState, 3);
+  });
+  t.after(stop);
+  good(await f.rpc(owner, 'world.membership.remove', { communityId: f.group.communityId, profileId: member.state.accountId }));
+  assert.equal(observedCommit, true); assert.equal(left.readyState, 1);
+  assert.equal(left.messages.some(m => m.type === 'p2p.offer'), false);
 });
 test('World discoverability never substitutes for accepted reciprocal Connect contact', async t => {
   const f = await fixture(t), [a, b] = f.actors;

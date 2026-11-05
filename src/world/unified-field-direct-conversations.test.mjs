@@ -40,7 +40,7 @@ assert.ok(fieldInspect);
 const code = ts.transpileModule([
   'const options = { accountId: deskAccount, directMessagesEnabled: ' + property('directMessagesEnabled') + ', onOpen: ' + property('onOpen') + ' };',
   ...field.body.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === 'currentEntity').map(node => print(node, screen)),
-  ...['closePreview', 'openPreview', 'inspect', 'activate'].map(actual),
+  ...['closePreview', 'openPreview', 'placementCommands','openPlacementActions','inspect', 'activate'].map(actual),
   'Object.assign(exports, { activate, inspect, options, inspectFromField: ' + print(fieldInspect.initializer, screen) + ', preview: () => preview });',
 ].join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 
@@ -70,6 +70,7 @@ function harness(kind = 'person', { version = 1, state = 'active', mode = 'mine'
     : { communityId: item.entity.id, membership: { state }, previewMembers: [], memberCount: 2 };
   const key = fieldEntityKey(item.entity), records = new Map([[key, record]]);
   const element = node('section'), fieldControl = node('button');
+  const personalDocument={schema:'soty.field.v1',contexts:[{contextId:'personal',title:'Личное',x:0,y:0}],shortcuts:[{shortcutId:'shortcut_001',entity:item.entity,contextId:'personal',slot:[0,0]}]};
   element.querySelector = () => fieldControl; document.activeElement = fieldControl;
   const environment = {
     exports: {}, mode, current: () => live, isCurrent: () => live, deskAccount: 'account_001',
@@ -77,8 +78,8 @@ function harness(kind = 'person', { version = 1, state = 'active', mode = 'mine'
     mineGeneration: 2, mineConfirmedGeneration: 2, summary: { arranging: false },
     directory: { getRecord: ref => records.get(fieldEntityKey(ref)) || null },
     fieldEntityKey, element, document, HTMLElement: NodePort, searchInput: node('input'),
-    preview: null, previewOpener: null, selected: null, signal: new AbortController().signal,
-    engine: { snapshot: () => ({ contexts: [], shortcuts: [] }) }, CSS: { escape: value => value },
+    preview: null, previewCommunity:null,previewOpener: null, selected: null, signal: new AbortController().signal,
+    engine: { snapshot: () => personalDocument }, CSS: { escape: value => value },
     getComputedStyle: () => ({ visibility: 'visible' }), focusFieldControl: () => fieldControl.focus(),
     el: node, button: (label, symbol, className, onClick) => Object.assign(node('button', className, label), { onClick }),
     iconButton: (label, symbol, onClick) => Object.assign(node('button', '', label), { onClick }),
@@ -131,10 +132,10 @@ test('confirmed contact remains one activation after real public search; fresh c
   assert.ok(h.preview()); directory.dispose();
 });
 
-test('joined Mine room requests the existing chat consumer, while every unjoined state remains a preview', () => {
+test('joined Mine room opens retained voice first, while every unjoined state remains a preview', () => {
   const h = harness('community'); h.tap();
   assert.equal(h.calls.groups.length, 1); assert.equal(h.calls.groups[0].id, h.item.entity.id);
-  assert.equal(h.calls.groups[0].tab, 'chat'); assert.equal(h.preview(), null);
+  assert.equal(h.calls.groups[0].tab, 'about'); assert.equal(h.preview(), null);
   for (const state of ['invited', 'requested', 'banned', 'left', undefined]) {
     const h = harness('community', { state }); h.record.membership.state = state; h.tap();
     assert.equal(h.calls.groups.length, 0, String(state)); assert.ok(h.preview(), String(state));
@@ -188,6 +189,12 @@ test('inspect still exposes placement actions and honest Write label, and Escape
   assert.equal(h.calls.direct.length, 0);
   let stopped = false; panel.handlers.get('keydown')({ key: 'Escape', stopPropagation() { stopped = true; } });
   assert.equal(stopped, true); assert.equal(h.preview(), null); assert.equal(h.document.activeElement, h.fieldControl);
+});
+
+test('a read-only discovered contact has no saved placement to move or remove',()=>{
+  const h=harness();h.environment.engine.snapshot=()=>({contexts:[],shortcuts:[]});h.inspect();
+  assert.ok(h.buttons().some(node=>node.textContent==='Написать'));
+  assert.equal(h.buttons().some(node=>['Переместить','Убрать с поля'].includes(node.textContent)),false);
 });
 
 test('secondary inspection of a public search result never borrows a late Mine contact projection', async () => {

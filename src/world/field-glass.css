@@ -1,0 +1,23 @@
+/* One physical layer below the real content and native pointer/focus targets. */
+.uf-glass-root{isolation:isolate}
+.uf-glass-canvas{position:absolute;inset:0;z-index:0;display:block;width:100%;height:100%;pointer-events:none!important;opacity:0}
+.uf-glass-root>.uf-plane{z-index:1}
+.uf-glass-face{position:absolute;inset:0;display:block;pointer-events:none!important;user-select:none}
+.uf-glass-root[data-field-glass=webgl]>.uf-glass-canvas[data-mode=webgl]{opacity:1}
+.uf-glass-root[data-field-glass=webgl] .uf-contour path{fill:transparent}
+.uf-glass-root[data-field-glass=webgl] :is(.uf-node-app,.uf-node-builtin)::before{background:transparent}
+.uf-glass-root[data-field-glass=webgl] .uf-node-community::before{background:transparent}
+.uf-glass-root[data-field-glass=webgl] .uf-art{inset:6px;width:calc(100% - 12px);height:calc(100% - 12px)}
+.uf-glass-root[data-field-glass=webgl] :is(.uf-node-app,.uf-node-builtin)>.uf-hex-frame path{stroke:color-mix(in srgb,var(--sw-control-border) 35%,transparent)}
+.uf-glass-root[data-field-glass=webgl] .uf-node:focus-visible>.uf-hex-frame path{stroke:var(--sw-focus);stroke-width:3}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true]>.uf-object-mask{background:transparent}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true]:not([data-field-glass-node=rect])>.uf-object-mask{border-radius:0}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true] .nf-object{--uf-native-tint:var(--sw-surface);color:var(--sw-ink);background:color-mix(in srgb,var(--uf-native-tint) 16%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--sw-ink) 9%,transparent)}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true] .nf-note[data-color=honey]{--uf-native-tint:light-dark(#fff8df,#4f4430)}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true] .nf-note[data-color=sage]{--uf-native-tint:light-dark(#eef8ed,#354b3a)}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true] .nf-note[data-color=lilac]{--uf-native-tint:light-dark(#f4efff,#443959)}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true] .nf-note[data-color=blue]{--uf-native-tint:light-dark(#eff6ff,#354a63)}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true] .nf-note[data-color=coral]{--uf-native-tint:light-dark(#fff0eb,#593c39)}
+.uf-glass-root[data-field-glass=webgl] [data-field-glass-surface=true] img.nf-image{margin:6px;width:calc(100% - 12px);height:calc(100% - 12px);clip-path:var(--uf-optical-content-clip);flex:none}
+@media (prefers-reduced-motion:reduce){.uf-glass-canvas{display:none}.uf-glass-root *{animation:none!important;transition:none!important}}
+@media (forced-colors:active){.uf-glass-canvas{display:none}.uf-glass-face{display:none}}

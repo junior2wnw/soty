@@ -1,4 +1,33 @@
-# TRANSIT in Soty Agent 1.4.9
+# Personal TRANSIT access and Soty Agent
+
+## Public personal profiles (30 October 2026)
+
+The first-party TRANSIT menu/search entry and `/#internet` use authenticated
+Soty account access, independently of any owner's computer. The former Transit
+card opens the same personal-profile controller. `Получить профиль sing-box`
+claims a distinct preinstalled traffic identity; repeat requests and another
+device on that Soty account receive the same profile. Existing imported access
+is preserved. The download is a portable TUN JSON without a Windows interface name.
+Its TUN stack is explicitly `system`, including downloads of previously saved
+`mixed`/`gvisor` profiles: desktop clients may omit the optional gVisor build tag.
+This export-only conversion preserves the vault, credentials, peer pins, DNS and
+route policy. It does not change the Agent's pinned runtime policy.
+
+Root's `transit.access.profile` extension accepts only the current Connect actor
+and matching expected account. It signs a short-lived request to the private
+TRANSIT profile issuer; no arbitrary account selector, URL, SSH or financial
+authority is accepted. Revocation and account changes are checked after I/O.
+Configuration is an optional owner-only `DATA_DIR/transit-access.json` (or the
+explicit `SOTY_TRANSIT_ACCESS_CONFIG_FILE`); existing Env and mounts need no change.
+The issuer verifies a signed encrypted pool and persists unique account/slot
+claims in its own SQLite volume. Capacity exhaustion denies new claims while
+existing profiles remain downloadable. This free best-effort path enables no
+payments, rewards, interception or claim of unlimited network capacity.
+
+Deployment and pool/rollback procedures live in TRANSIT's
+`services/profile-access/README.md`. Agent networking was inspected and tested,
+and its existing implementation/bundle remains unchanged. The following sections
+describe that existing Agent path and its separate device limitations.
 
 Scope: an existing owner's TRANSIT profile, Windows x64 client ON/OFF, and a
 sing-box file for that owner's phone. It does not issue, reset or revoke a

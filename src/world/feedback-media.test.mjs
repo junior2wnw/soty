@@ -66,3 +66,60 @@ test('voice exceeding the remaining shared attachment budget stops tracks instea
   const recorder=createFeedbackRecorder({maxBytes:1});
   await assert.rejects(recorder.start(),/feedback_attachment_bytes/); assert.equal(stopped,1); assert.equal(recorder.active(),false);
 });
+
+test('a delayed timer uses elapsed monotonic time rather than counting delivered callbacks', async t => {
+  let now=0,interval,stops=0;
+  const saved=['performance','setInterval','clearInterval','setTimeout','clearTimeout'].map(name=>[name,Object.getOwnPropertyDescriptor(globalThis,name)]);
+  Object.defineProperty(globalThis,'performance',{configurable:true,value:{now:()=>now}});
+  Object.defineProperty(globalThis,'setInterval',{configurable:true,value:callback=>{interval=callback;return 1;}});
+  Object.defineProperty(globalThis,'clearInterval',{configurable:true,value:()=>{}});
+  Object.defineProperty(globalThis,'setTimeout',{configurable:true,value:()=>2});
+  Object.defineProperty(globalThis,'clearTimeout',{configurable:true,value:()=>{}});
+  t.after(()=>{for(const[name,descriptor]of saved)Object.defineProperty(globalThis,name,descriptor);});
+  class Recorder {
+    state='inactive';static isTypeSupported(){return true;}
+    start(){this.state='recording';}
+    stop(){stops++;this.state='inactive';queueMicrotask(()=>this.onstop());}
+  }
+  mediaGlobals(t,{mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}}},Recorder);
+  const recorder=createFeedbackRecorder({maxBytes:100,maxSeconds:2});
+  const outcome=recorder.start();await Promise.resolve();
+  now=2500;interval();const stoppedAtDeadline=stops;
+  recorder.cancel();await assert.rejects(outcome);
+  assert.equal(stoppedAtDeadline,1,'One late callback after the deadline must stop capture, not count as one second');
+});
+
+test('blob output assembles the final stop chunk without FileReader; default attachment remains unchanged', async t => {
+  let stopped=0,recorder,reads=0;
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'FileReader');
+  class Reader {
+    readAsDataURL(blob){reads++;void blob.arrayBuffer().then(bytes=>{this.result=`data:${blob.type};base64,${Buffer.from(bytes).toString('base64')}`;this.onload();});}
+  }
+  Object.defineProperty(globalThis,'FileReader',{configurable:true,value:Reader});
+  t.after(()=>{if(descriptor)Object.defineProperty(globalThis,'FileReader',descriptor);else delete globalThis.FileReader;});
+  class Recorder {
+    state='inactive';static isTypeSupported(value){return value==='audio/ogg;codecs=opus';}
+    constructor(){recorder=this;}
+    start(){this.state='recording';this.ondataavailable({data:new Blob([new Uint8Array([1,2])])});}
+    stop(){this.state='inactive';queueMicrotask(()=>{this.ondataavailable({data:new Blob([new Uint8Array([3])])});this.onstop();});}
+  }
+  mediaGlobals(t,{mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){stopped++;}}]};}}},Recorder);
+  const blobRecorder=createFeedbackRecorder({maxBytes:3,output:'blob'}),blobOutcome=blobRecorder.start();
+  await Promise.resolve();blobRecorder.stop();const blob=await blobOutcome;
+  assert.equal(blob.type,'audio/ogg');assert.deepEqual(new Uint8Array(await blob.arrayBuffer()),new Uint8Array([1,2,3]));assert.equal(reads,0);
+  const attachmentRecorder=createFeedbackRecorder({maxBytes:3}),attachmentOutcome=attachmentRecorder.start();
+  await Promise.resolve();attachmentRecorder.stop();assert.deepEqual(await attachmentOutcome,{kind:'audio',name:'voice.ogg',mimeType:'audio/ogg',dataBase64:'AQID'});
+  assert.equal(reads,1);assert.equal(stopped,2);assert.equal(recorder.onstop,null);
+});
+
+test('the final stop chunk participates in the byte limit, not only periodic chunks', async t => {
+  let stopped=0;
+  class Recorder {
+    state='inactive';static isTypeSupported(){return true;}
+    start(){this.state='recording';this.ondataavailable({data:new Blob([new Uint8Array(1)])});}
+    stop(){this.state='inactive';queueMicrotask(()=>{this.ondataavailable?.({data:new Blob([new Uint8Array(2)])});this.onstop?.();});}
+  }
+  mediaGlobals(t,{mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){stopped++;}}]};}}},Recorder);
+  const recorder=createFeedbackRecorder({maxBytes:2,output:'blob'}),outcome=recorder.start();
+  await Promise.resolve();recorder.stop();await assert.rejects(outcome,/feedback_attachment_bytes/);assert.equal(stopped,1);
+});

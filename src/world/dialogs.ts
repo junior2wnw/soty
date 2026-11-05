@@ -1,8 +1,15 @@
 import { button, el, iconButton } from './dom';
+import { mountDialogGlass, type ShellGlassHandle } from './shell-glass';
+import type { GlassRenderPolicy } from '../../vendor/optical-glass/src/ui-kit.js';
 
 export interface DialogReturnTarget { isCurrent(): boolean; resolve(): HTMLElement | null; }
 export interface DialogCloseContext { interrupted: boolean; }
 export interface WorldDialog { element: HTMLDialogElement; body: HTMLElement; close(options?: { restoreFocus?: boolean }): void; }
+/** Optional retained presentation. Ordinary WorldDialog consumers keep close semantics. */
+export interface RetainedWorldDialog extends WorldDialog {
+  suspend(): void;
+  resume(isCurrent?: () => boolean): Promise<boolean>;
+}
 
 /** Keep the primary action reachable while optional fields scroll independently. */
 export function pinDialogSubmit(dialog: WorldDialog, form: HTMLFormElement, submit: HTMLButtonElement): void {
@@ -24,11 +31,14 @@ export function isDialogFocusTarget(node: HTMLElement | null): node is HTMLEleme
   return true;
 }
 
-export function createDialog(title: string, onClose?: (context: DialogCloseContext) => void, returnTarget?: DialogReturnTarget, parent: HTMLElement = document.body): WorldDialog {
+export function createDialog(title: string, onClose?: (context: DialogCloseContext) => void, returnTarget?: DialogReturnTarget, parent: HTMLElement = document.body, material: { renderPolicy?: GlassRenderPolicy } = {}): RetainedWorldDialog {
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const parentDialog = returnFocus?.closest('dialog[open]') ?? null;
   const dialog = el('dialog', 'sw-dialog');
   let finished = false, superseded = false;
+  let suspended = false, suspendClosePending = false, suspendedFocus: HTMLElement | null = null;
+  let resumeRequest: { isCurrent(): boolean; resolve(shown: boolean): void } | null = null;
+  let glass: ShellGlassHandle | null = null;
   // Native close restores its original opener before queuing the close event.
   // An intervening action or another focus target cancels our fallback return.
   const interveningAction = (): void => { if (!dialog.open) superseded = true; };
@@ -38,12 +48,15 @@ export function createDialog(title: string, onClose?: (context: DialogCloseConte
   const finish = (restoreFocus = true): void => {
     if (finished) return;
     finished = true;
+    resumeRequest?.resolve(false); resumeRequest = null; suspendedFocus = null;
+    dialog.removeEventListener('close', nativeClose);
     document.removeEventListener('pointerdown', interveningAction, true);
     document.removeEventListener('keydown', interveningAction, true);
     document.removeEventListener('click', interveningAction, true);
     document.removeEventListener('focusin', interveningFocus, true);
     const beforeCleanup = document.activeElement;
     const ownedFocus = beforeCleanup === document.body || beforeCleanup === returnFocus || dialog.contains(beforeCleanup);
+    glass?.dispose(); glass = null;
     dialog.remove();
     // Dispose and any synchronous render must precede resolving a replacement
     // opener. Managed close cannot leave a later event to destroy that target.
@@ -60,6 +73,36 @@ export function createDialog(title: string, onClose?: (context: DialogCloseConte
     dialog.close();
     finish(options?.restoreFocus !== false);
   };
+  const resumeNow = (): void => {
+    const request = resumeRequest;
+    if (!request || suspendClosePending || finished) return;
+    resumeRequest = null;
+    if (!request.isCurrent()) { request.resolve(false); return; }
+    suspended = false; superseded = false; dialog.hidden = false; dialog.showModal();
+    if (isDialogFocusTarget(suspendedFocus) && dialog.contains(suspendedFocus)) suspendedFocus.focus({ preventScroll: true });
+    suspendedFocus = null; request.resolve(true);
+  };
+  const nativeClose = (): void => {
+    // Only the close initiated by suspend is consumed. Resume waits for that
+    // native task, so its late delivery cannot dispose a newly shown modal.
+    if (suspendClosePending) { suspendClosePending = false; resumeNow(); return; }
+    finish();
+  };
+  const suspend = (): void => {
+    if (finished) return;
+    resumeRequest?.resolve(false); resumeRequest = null;
+    if (suspended) return;
+    suspended = true;
+    suspendedFocus = document.activeElement instanceof HTMLElement && dialog.contains(document.activeElement) ? document.activeElement : null;
+    if (dialog.open) { suspendClosePending = true; dialog.close(); }
+    dialog.hidden = true;
+  };
+  const resume = (isCurrent: () => boolean = () => true): Promise<boolean> => {
+    if (finished || !isCurrent()) return Promise.resolve(false);
+    if (!suspended) return Promise.resolve(dialog.open);
+    resumeRequest?.resolve(false);
+    return new Promise(resolve => { resumeRequest = { isCurrent, resolve }; resumeNow(); });
+  };
   const titleId = `world-dialog-${crypto.randomUUID()}`;
   dialog.setAttribute('aria-labelledby', titleId);
   const header = el('div', 'sw-dialog-header');
@@ -67,7 +110,7 @@ export function createDialog(title: string, onClose?: (context: DialogCloseConte
   header.append(heading, iconButton('Закрыть', 'close', () => close()));
   const body = el('div', 'sw-dialog-content');
   dialog.append(header, body); parent.append(dialog);
-  dialog.addEventListener('close', () => finish(), { once: true });
+  dialog.addEventListener('close', nativeClose);
   dialog.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;
     if (event.target instanceof HTMLElement && event.target.closest('dialog[open]') !== dialog) return;
@@ -86,11 +129,12 @@ export function createDialog(title: string, onClose?: (context: DialogCloseConte
     else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
   });
   dialog.showModal();
+  if (dialog.ownerDocument?.defaultView?.HTMLCanvasElement) glass = mountDialogGlass(dialog, material.renderPolicy);
   document.addEventListener('pointerdown', interveningAction, true);
   document.addEventListener('keydown', interveningAction, true);
   document.addEventListener('click', interveningAction, true);
   document.addEventListener('focusin', interveningFocus, true);
-  return { element: dialog, body, close };
+  return { element: dialog, body, close, suspend, resume };
 }
 
 export function switchControl(label: string, checked: boolean, change: (next: boolean) => Promise<void>): HTMLButtonElement {

@@ -10,6 +10,7 @@ import { checkedFullEncryptedBackup } from './rollout.mjs';
 import { productionMaintenance } from './runtime.mjs';
 import { SafeError } from './docker-api.mjs';
 import { fixture, args, modelProxies } from './test-support/rollout-engine.mjs';
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 
 const modernArgs = { ...args, transaction: 'f'.repeat(32), rollbackMode: 'latest-data' };
 // An injected operator receipt exercises the ordering contract. Genuine GPG,
@@ -209,8 +210,7 @@ test('active jobs, an incompatible latest-data reader and an ambiguous leave ref
         if (failure === 'job') { const db = new DatabaseSync(f.database); db.prepare('INSERT INTO jobs VALUES (?,?,?)').run('new-job', '{"status":"queued"}', 'fixture'); db.close(); }
         else { const image = f.engine.image; f.engine.image = async id => { const value = await image(id);
           if (id === args.originalImage) { const readers = JSON.parse(value.Config.Labels['io.soty.storage.readers']); readers.readers.world = [6]; value.Config.Labels['io.soty.storage.readers'] = JSON.stringify(readers); } return value; };
-          f.run.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v7', rooms: 'empty', apps: 'empty', notes: 'empty', capabilities: 'empty',
-            appRegistration: 'empty', feedback: 'empty', humanIdentity: 'empty', connect: 'empty', world: 7 }); }
+          f.run.storageProbe = async () => currentObservation({ world: 7 }); }
         throw new SafeError('candidate_test_failure');
       }
       return ready(kind, run);

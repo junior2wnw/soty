@@ -95,7 +95,8 @@ export function nounCount(count: number, one: string, few: string, many: string)
   return `${count} ${abs > 10 && abs < 20 ? many : abs % 10 === 1 ? one : abs % 10 > 1 && abs % 10 < 5 ? few : many}`;
 }
 
-export function emptyState(title: string, description: string, action?: HTMLElement, iconName = 'cells'): HTMLElement {
+export function emptyState(title: string, description: string, action?: HTMLElement, iconName = 'cells',options:{compact?:boolean}={}): HTMLElement {
+  if(options.compact){const node=el('div','sw-empty-compact');node.append(el('h2','',title),el('p','sw-muted',description));if(action)node.append(action);return node;}
   const node = el('div', 'sw-empty');
   const art = el('div', 'sw-empty-art');
   const cluster = hexCluster(HEX_FLOWER, 35, 5, 4);

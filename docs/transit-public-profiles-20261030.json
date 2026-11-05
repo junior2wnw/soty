@@ -1,0 +1,110 @@
+{
+  "schema": "transit.public-profiles.release.v1",
+  "observedAt": "2026-10-30T18:17:42.636492+00:00",
+  "status": "deployed-and-publicly-verified",
+  "entry": "https://4-2.xn--p1ai/#internet",
+  "publicDiscovery": {
+    "menu": "Транзит · Интернет",
+    "catalogSearch": [
+      "TRANSIT",
+      "Транзит"
+    ],
+    "existingTransitCardOpensPersonalAccess": true
+  },
+  "delivery": {
+    "perSotyAccountCredentials": true,
+    "repeatDeliveryStable": true,
+    "encryptedAccountVault": true,
+    "signedIssuerRequest": true,
+    "requestBoundAes256GcmResponse": true,
+    "persistentClaims": true,
+    "poolCapacity": 512,
+    "mode": "free-best-effort",
+    "agentRequiredForDownload": false
+  },
+  "runtime": {
+    "sotySource": "330afe853dd8b40c13faa4d7256828b583d4ee3d",
+    "sotyImage": "sha256:c5821dd11eb84b5467ff3c6826716dfc30b30a4ecdcff91a9266327825d47588",
+    "sotyUiSource": "e22fff1e373a68d4f3d9df65da5cb9e2d1ab0dc4",
+    "uiRelease": "db19bc428bb2cd18c4c87ec8f63f68f566a3eef79d4ffce7292164ee8436c670",
+    "issuerSource": "899e25a732beddc4169d4e5e455ff35f8cae4d99"
+  },
+  "observedAcceptance": {
+    "realPublicBrowserIssuance": true,
+    "realFileDownload": true,
+    "browserReloadAndShellUpdatePreserveProfile": true,
+    "repeatDownloadByteIdentical": true,
+    "officialWindowsCore": "1.13.15",
+    "unmodifiedDownloadedProfileParses": true,
+    "automaticUrltestHttps": true,
+    "ger1Hy2ToUglyExitHttps": true,
+    "uglyVlessToGer1ExitHttps": true,
+    "wrongVlessCredentialDenied": true,
+    "wrongHy2CredentialDenied": true,
+    "metadataDeniedByNetworkWithClientRuleRemoved": true,
+    "publicDesktopAnd390pxVisualChecks": true,
+    "protectedHttpPaths404": true
+  },
+  "network": {
+    "nodesHealthy": 3,
+    "ownerAndNewProfileWorkingTransportRoutes": 5,
+    "advertisedTransportRoutes": 6,
+    "unresolvedRoute": "ger1-vless TCP timeout from this PC; also present with original owner profile. Other five routes, including ger1 HY2, pass. No TLS weakening or universal network claim."
+  },
+  "agent": {
+    "publishedVersion": "1.4.16",
+    "existingSingBoxVersion": "1.13.15",
+    "newAgentVpnFunctionsImplemented": false,
+    "thisPcPaired": false,
+    "thisPcVpnActive": false,
+    "currentAmneziaPreserved": true
+  },
+  "dataPreservation": {
+    "latestDataTransaction": "aaaf24b041003ce6727fea811ec368bf",
+    "allExistingEnvironmentAndSevenPrivateBindsPreserved": true,
+    "currentDataOldNewOldPassed": true,
+    "fullStoppedWriterDataAndConfigurationEncrypted": true,
+    "bothArtifactsAuthenticatedAndIsolatedRestoreVerifiedBeforeStart": true,
+    "restoredSqliteDatabases": 13,
+    "restoredRows": 11035,
+    "restoredSchemasRowsAclEqualSource": true,
+    "ciphertextsCopiedAndHashVerifiedInPrivateOperatorCustody": true,
+    "issuerConsistentSqliteAndConfigDpapiRecoveryVerified": true,
+    "originalPhoneAndDesktopFilesUnchanged": true,
+    "oldRootAndOriginalVolumeRetained": true,
+    "immutableUiUrlsRetained": true,
+    "caddySignalsSent": 0
+  },
+  "validation": {
+    "sotyFullMaintainedDockerBuild": "passed; built-in platform/opt-in skips remain explicit",
+    "sotyProfileAndControllerTests": 15,
+    "profileServiceTests": 5,
+    "pythonStagedTests": {
+      "run": 71,
+      "passed": 70,
+      "skipped": 1,
+      "skipReason": "explicit pinned local rqlite integration binary not supplied"
+    },
+    "linuxGpgTests": 62,
+    "rustWorkspaceAllFeatures": {
+      "platform": "WSL Ubuntu 24.04",
+      "toolchain": "1.95.0",
+      "completedSuites": 62,
+      "passed": 1254,
+      "failed": 0,
+      "ignored": 11,
+      "note": "Full workspace compiled at22be3f4; semantically unchanged guardian Clippy cleanup50098f8 separately executed and passed."
+    },
+    "rustClippyAllTargetsAllFeatures": "passed with -D warnings",
+    "rustFormatting": "passed",
+    "actionlint": "passed",
+    "livePrivateSecretsCheckedAbsentFromTrackedSource": 1029
+  },
+  "limits": [
+    "Physical phone and every operating-system/store installation were not performed.",
+    "One ger1 VLESS path is unavailable from this PC.",
+    "The preinstalled pool is finite and must expand append-only without resetting claims.",
+    "No payment, token, reward, content interception or paid-production gate was enabled."
+  ],
+  "rollback": "Use a fresh maintained connector prepare/promote latest-data transaction with the retained compatible original code image, current data and a fresh full backup. Keep issuer claims and installed users. Do not overwrite current data with the old snapshot."
+}

@@ -144,8 +144,9 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
     const href=/<a href="([^"]+)">/u.exec(callback.text)?.[1];assert.ok(href,'fixed completion anchor exists');assert.ok(href.startsWith('/api/embed/complete-link?intent='));const url=new URL(href,callbackUrl);assert.equal(url.pathname,'/api/embed/complete-link');
     const completed=await wire(url);assert.equal(completed.status,200);assert.match(completed.text,/Приложение подключено/u);return{callback,completed};}
   async function login(realm){const flow=await authorize(realm);return{...flow,...await complete(flow.callbackUrl)};}
-  async function restartRoot(){await root.locals.closeServices();root=createHttpApp(dist,activeOptions);
-    await until(async()=>{const list=await owner.client.extension('apps.list');return realms.every(realm=>list.apps.find(app=>app.id===realm.appId)?.state==='ready');});}
+  async function restartRoot({awaitReady=true}={}){await root.locals.closeServices();root=createHttpApp(dist,activeOptions);
+    assert.equal(server.listening,true,'Root transport remains live across service restart');
+    if(awaitReady)await until(async()=>{const list=await owner.client.extension('apps.list');return realms.every(realm=>list.apps.find(app=>app.id===realm.appId)?.state==='ready');});}
   async function grantBrowser(accountId){for(const realm of realms)await owner.client.extension('apps.update',{appId:realm.appId,grants:{accountIds:[reader.account.accountId,accountId],communityIds:[]}});}
   return{directory,origin,backendPort,connectorPort,appTlsPort,realms,owner,reader,foreign,root:()=>root,restartRoot,grantBrowser,wire,authorize,complete,login,outputBytes:()=>outputBytes,oauthCounts};
 }

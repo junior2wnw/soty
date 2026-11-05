@@ -1,6 +1,9 @@
 import type { OtsovProjectArtifact, EditorReadback } from '../../modules/otsov-editor-handoff/wire.mjs';
-import type { AppLaunchRequest, AppResolvedEntry } from './app-launch.mjs';
+import type { AppLaunchRequest, AppResolvedEntry, AppHostSession, AppLaunchBinding } from './app-launch.mjs';
+import type {WorkspaceReturn} from './workspace-return.mjs';
 import type { NotificationsController } from '../platform/notifications-client.mjs';
+import type { HumanCallParticipant } from '../sync';
+import type { ConnectTab } from '../../modules/connect/ui/index.mjs';
 
 export type WorldColor = 'honey' | 'sage' | 'lilac' | 'coral' | 'blue';
 export type WorldProfileAudience = 'private' | 'friends' | 'link' | 'public';
@@ -71,7 +74,7 @@ export interface WorldDirectThread {
   unreadCount: number; preferences: { pinned: boolean; muted: boolean }; createdAt: number;
 }
 export interface WorldSearch { people: WorldProfile[]; communities: WorldCommunity[]; nextCursor: string | null; totals: { people: number; communities: number; peopleExact?: boolean; communitiesExact?: boolean } }
-export interface WorldApi { request<T>(method: string, params?: Record<string, unknown>): Promise<T> }
+export interface WorldApi { request<T>(method: string, params?: Record<string, unknown>,options?:{signal?:AbortSignal}): Promise<T> }
 export interface WorldDevice { deviceId: string; label: string; state: string; }
 export interface WorldAppPublication {
   launchPolicy: 'restricted' | 'anyone';
@@ -115,11 +118,14 @@ export interface WorldBrowserAssist {
 export interface WorldProjectEditorRequest { requestId:string;signal:AbortSignal;assertCurrent():Promise<void> }
 export type WorldProjectEditorPort = (artifact:OtsovProjectArtifact,request:WorldProjectEditorRequest)=>Promise<EditorReadback>;
 export interface WorldAssistantMountContext { openProjectEditor?:WorldProjectEditorPort; browserAssist?(): WorldBrowserAssist | null; context(): WorldAssistantContext | null; isCurrent(): boolean }
+export type WorldHumanCallParticipant = HumanCallParticipant;
 export interface WorldHumanCallState {
   state: string;
   microphone: 'off' | 'permission' | 'publishing' | 'on';
   connection: 'idle' | 'connecting' | 'admitted' | 'connected' | 'reconnecting' | 'closed' | 'error';
   peers: number;
+  /** WS-bound participants; not community membership, RTC connectivity or speech activity. */
+  participants?: readonly WorldHumanCallParticipant[];
   playbackBlocked: boolean;
   roomId: string | null;
   mode: 'one-to-one' | 'group' | null;
@@ -145,6 +151,8 @@ export interface WorldHumanCallPort {
   declineIncoming(invitation: WorldIncomingCall): Promise<{ ok: boolean; code?: string }>;
 }
 export interface WorldAppOptions {
+  /** Local display state only, bound to this adapter's original startup scope. */
+  initialWorkspaceReturn?: {destination: WorkspaceReturn; launchRoute: string; isCurrent(): boolean};
   notifications?: NotificationsController;
   nativeVoice?: { client:any; mount:any };
   readNativeVoice?: (options?: { retry?: boolean }) => Promise<{ client:any; mount:any } | null>;
@@ -155,7 +163,7 @@ export interface WorldAppOptions {
   /** Sync the contact-card name for this controller's mounted account. */
   syncContactName?: (displayName: string) => Promise<void>;
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;
-  openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery' | 'data' | 'profiles') => void | Promise<void>;
+  openAccount: (tab?: ConnectTab) => void | Promise<void>;
   connectDevice: () => void | Promise<void>;
   openConnections?: () => void | Promise<void>;
   agentCreate: (communityId?: string, hostOrRestore?: HTMLElement | { hostDeviceId: string; connectorId: string; jobId: string }) => void | Promise<void>;
@@ -166,7 +174,7 @@ export interface WorldAppOptions {
   listDevices?: () => Promise<WorldDevice[]>;
   listApps?: (communityId?: string) => Promise<WorldAppRecord[]>;
   addApp?: (communityId?: string) => void | Promise<void>;
-  openApp?: (app: WorldAppRecord, launch?: AppLaunchRequest) => Promise<{ url: string; entry: AppResolvedEntry; status?: string }>;
+  openApp?: (app: WorldAppRecord, launch?: AppLaunchRequest) => Promise<{ url: string; entry: AppResolvedEntry; status?: string;runtimeOrigin?:string;launchBinding?:AppLaunchBinding;hostSession?:AppHostSession;hostSessionExpiresAt?:number;hostSessionCleanup?:()=>Promise<void> }>;
   /** Trusted RAM cleanup of an original signed launch reply, no RPC selector. */
   appSlotCleanup?: (reply: unknown) => (() => Promise<void>) | null;
 }

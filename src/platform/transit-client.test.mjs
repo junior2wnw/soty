@@ -34,14 +34,24 @@ class ElementPort {
   remove() { this.isConnected = false; }
   click() { if (!this.disabled) this.emit('click'); }
 }
-function fixture({ paired = true } = {}) {
+function fixture({ paired = true, fresh = false, issuing = false } = {}) {
   let accountId = 'account-A', selectedRead, stateReads = 0, digestRead, importRead, revision = 1, observer;
   let payload = { transitClient: { schema: 'soty.transit-profile.v1', profile: profile() },
     transitControllers: paired ? { 'owned-host': token } : {} };
-  const calls = [], installers = [], intervals = new Map(); let nextTimer = 0, dialog;
+  if (fresh) delete payload.transitClient;
+  let heldProfile;
+  const issuedProfiles = [];
+  const calls = [], installers = [], downloads = [], intervals = new Map(); let nextTimer = 0, dialog;
   const state = { configured: false, running: false, active: false, phase: 'off', version: '1.13.15', entryCount: 1 };
   const response = value => ({ ok: true, async json() { return value; } });
   const client = {
+    async extension(operation, args, context) {
+      assert.equal(args.expectedAccountId, accountId); assert.equal(context.expectedAccountId, accountId);
+      if (operation === 'transit.access.status') return { enabled: issuing };
+      assert.equal(operation, 'transit.access.profile'); issuedProfiles.push(accountId);
+      if (heldProfile) { heldProfile.entered.resolve(); await heldProfile.release.promise; }
+      return { profile: profile() };
+    },
     async getLocalState() {
       const captured = { accountId };
       if (++stateReads === selectedRead?.at) { const wait = selectedRead; selectedRead = null; wait.entered.resolve(); await wait.release.promise; }
@@ -69,7 +79,9 @@ function fixture({ paired = true } = {}) {
   const exported = { exports: {} };
   const context = vm.createContext({ module: exported, exports: exported.exports,
     require(name) { assert.ok(Object.hasOwn(ports, name), `unexpected controller import ${name}`); return ports[name]; },
-    document: { visibilityState: 'visible', createElement: tag => new ElementPort(tag) },
+    document: { visibilityState: 'visible', body: new ElementPort('body'), createElement: tag => new ElementPort(tag) },
+    structuredClone, Blob, URL: { createObjectURL(blob) { downloads.push(blob); return 'blob:profile-fixture'; }, revokeObjectURL() {} },
+    window: { setTimeout() {} },
     navigator: { userAgent: 'Windows', platform: 'Win32' },
     setInterval(fn) { const id = ++nextTimer; intervals.set(id, fn); return id; }, clearInterval(id) { intervals.delete(id); },
     AbortSignal: { timeout() {} }, TextEncoder, Uint8Array, btoa: value => Buffer.from(value, 'binary').toString('base64'),
@@ -95,7 +107,8 @@ function fixture({ paired = true } = {}) {
   function hold(slot) { const wait = { entered: deferred(), release: deferred() }; slot(wait); return wait; }
   const descendants = node => [node, ...node.children.flatMap(descendants)];
   return {
-    calls, installers, state, open: () => exported.exports.openTransitClient(),
+    calls, installers, downloads, state, open: () => exported.exports.openTransitClient(),
+    issuedProfiles, get payload() { return payload; }, holdProfile: () => hold(wait => { heldProfile = wait; }),
     close: () => dialog.close(),
     select(next) { accountId = next; observer?.({ accountId }); },
     holdImport: () => hold(wait => { importRead = wait; }),
@@ -117,6 +130,68 @@ test('actual TRANSIT controller imports then starts and explicitly stops with th
   await f.settle(); f.button('Выключить').click(); await f.settle(() => !f.state.running); await f.settle();
   assert.deepEqual(f.calls.filter(call => call.action !== 'authorize').map(call => call.action), ['import', 'start', 'stop']);
   assert.equal(f.state.phase, 'off'); f.close();
+});
+
+test('a new person obtains their profile without enrolling, importing into or starting a computer', async () => {
+  const f = fixture({ paired: false, fresh: true, issuing: true }); await f.open();
+  f.button('Получить профиль sing-box').click();
+  await f.settle(() => !!f.payload.transitClient); await f.settle();
+  assert.deepEqual(f.issuedProfiles, ['account-A']); assert.equal(f.installers.length, 0);
+  assert.equal(f.calls.length, 0); assert.ok(f.button('Скачать профиль sing-box')); f.close();
+});
+
+test('downloading an already saved gVisor profile uses the system stack without changing its credentials or vault', async () => {
+  const f = fixture({ paired: false });
+  f.payload.transitClient.profile.inbounds = [{ type: 'tun', tag: 'transit-soty', interface_name: 'SotyTransit', stack: 'mixed' }];
+  const before = structuredClone(f.payload);
+  await f.open(); f.button('Скачать профиль sing-box').click();
+  const downloaded = JSON.parse(await f.downloads[0].text());
+  assert.equal(downloaded.inbounds[0].stack, 'system');
+  assert.equal(downloaded.inbounds[0].interface_name, undefined);
+  assert.deepEqual(downloaded.outbounds, before.transitClient.profile.outbounds);
+  assert.deepEqual(downloaded.dns, before.transitClient.profile.dns);
+  assert.deepEqual(downloaded.route, before.transitClient.profile.route);
+  assert.deepEqual(f.payload, before);
+  assert.equal(f.calls.length, 0); f.close();
+});
+
+test('portable UDP domains resolve through the Exit before private-address checks without replacing saved access', async () => {
+  const f = fixture({ paired: false });
+  const rules = [{ action: 'sniff' }, { protocol: 'dns', action: 'hijack-dns' },
+    { network: 'udp', ip_is_private: true, action: 'reject' }];
+  f.payload.transitClient.profile.route = { final: 'entry', default_domain_resolver: 'exit', rules };
+  const before = structuredClone(f.payload);
+  await f.open(); f.button('Скачать профиль sing-box').click();
+  const downloaded = JSON.parse(await f.downloads[0].text());
+  const resolve = { network: 'udp', action: 'resolve', server: 'exit', strategy: 'ipv4_only' };
+  assert.deepEqual(downloaded.route.rules, [rules[0], rules[1], resolve, rules[2]]);
+  assert.deepEqual(downloaded.outbounds, before.transitClient.profile.outbounds);
+  assert.deepEqual(downloaded.dns, before.transitClient.profile.dns);
+  assert.deepEqual(f.payload, before); assert.equal(f.calls.length, 0); f.close();
+
+  const again = fixture({ paired: false });
+  again.payload.transitClient.profile = downloaded;
+  await again.open(); again.button('Скачать профиль sing-box').click();
+  assert.deepEqual(JSON.parse(await again.downloads[0].text()), downloaded);
+  again.close();
+});
+
+test('portable export supports the object form of the default domain resolver', async () => {
+  const f = fixture({ paired: false });
+  f.payload.transitClient.profile.route = { final: 'entry', default_domain_resolver: { server: 'exit' },
+    rules: [{ network: 'udp', ip_is_private: true, action: 'reject' }] };
+  const before = structuredClone(f.payload);
+  await f.open(); f.button('Скачать профиль sing-box').click();
+  const downloaded = JSON.parse(await f.downloads[0].text());
+  assert.equal(downloaded.route.rules[0].server, 'exit');
+  assert.deepEqual(f.payload, before); f.close();
+});
+
+test('a delayed new profile cannot be saved after account A-B-A', async () => {
+  const f = fixture({ paired: false, fresh: true, issuing: true }); await f.open();
+  const held = f.holdProfile(); f.button('Получить профиль sing-box').click(); await f.settle(() => held.entered.settled);
+  f.select('account-B'); f.select('account-A'); held.release.resolve(); await f.settle();
+  assert.equal(f.payload.transitClient, undefined); assert.equal(f.closed, true); assert.equal(f.calls.length, 0);
 });
 
 for (const retire of ['account-switch', 'dialog-close', 'account-ABA']) {

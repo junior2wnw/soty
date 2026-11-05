@@ -12,7 +12,7 @@ export interface AppInspection {
   };
   publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; audience?: AppAudience | null; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number;
     nativeEntry?: { schema: 'soty.native-entry.v1'; origin: string; domainId: string; committedPolicyEpoch: number; admissionKeyHash: string; target: Pick<AppSourceTarget, 'revision' | 'digest' | 'profile' | 'port' | 'entryPath'>; runtimeReady: false } };
-  source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string;
+  source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string; endpoint?:AppSourceEndpoint;
     launchEntry?: { domainId: string; origin: string; path: string } | null;
     integrations?: { profile: Exclude<AppSourceTarget['profile'], 'soty.relay-restricted.v1'>; entryPath: '/embed' }[];
     sourceEntryActivation?: boolean;
@@ -22,8 +22,9 @@ export interface AppInspection {
   actions: { canReserveName: boolean; canEdit: boolean; canPublish: boolean; canPreview: boolean };
 }
 export interface SettingsDraft { audience?: AppAudience | null; name: string; communityIds: string[]; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; exposureConfirmed: boolean; slug: string }
+export interface AppSourceEndpoint {scope:'connector-self';scheme:'http';family:'IPv4';address:string}
 export interface AppSourceTarget {
-  revision: number; digest: string; profile: 'soty.relay-restricted.v1' | 'soty.selected-human-embed.v1' | 'soty.selected-human-embed.v2'; hostDeviceId: string; connectorId: string;
+  revision: number; digest: string; profile: 'soty.relay-restricted.v1' | 'soty.relay-self-ip.v1' | 'soty.selected-human-embed.v1' | 'soty.selected-human-embed.v2'; hostDeviceId: string; connectorId: string;endpoint?:AppSourceEndpoint;
   deviceName: string; port: number; entryPath: string;
 }
 export interface AppSourcePreparation {
@@ -35,7 +36,7 @@ export interface AppSourcePreparation {
   sourceEntry?: { origin: string; domainId: string };
 }
 export interface AppSourceDraft {
-  mode: 'new' | 'history'; hostDeviceId: string; connectorId: string; port: string; entryPath: string; profile: AppSourceTarget['profile'];
+  mode: 'new' | 'history'; hostDeviceId: string; connectorId: string; port: string; entryPath: string; profile: AppSourceTarget['profile'];endpoint?:AppSourceEndpoint;endpointAddress?:string;
   launchPolicy: 'restricted' | 'anyone'; exposureConfirmed: boolean; targetRevision: number | null;
   nativeEntryMode: 'keep' | 'remove'; nativeDomainId: string | null; nativeConfirmed: boolean; sourceDomainId: string | null;
 }

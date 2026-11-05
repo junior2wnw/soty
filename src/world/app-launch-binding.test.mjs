@@ -9,7 +9,16 @@ function fixture(values){const calls=[],state={active:true};const launcher=creat
 test('a detached read-only binding is pinned from the original admitted response; retry carries no metadata selectors', async()=>{
   const input={...binding},f=fixture([{launchBinding:input},{launchBinding:{...binding}}]);await f.launcher.launch();input.targetRevision=9;
   assert.equal(f.launcher.binding().targetRevision,1);assert.equal(Object.isFrozen(f.launcher.binding()),true);
-  assert.equal(await f.launcher.launch({requireSameBinding:true}),url);assert.deepEqual(Object.keys(f.calls[1]).sort(),['appId','domainId','expectedAccountId','path']);
+  assert.equal(await f.launcher.launch({requireSameBinding:true}),url);assert.deepEqual(Object.keys(f.calls[1]).sort(),['appId','domainId','expectedAccountId','hostSession','path']);assert.equal(f.calls[1].hostSession,true);
+});
+
+test('a real self-IP binding admits only its mandatory floor2 and keeps exact automatic recovery/source fences',async()=>{
+  const selfIp={...binding,profile:'soty.relay-self-ip.v1',bindingFloor:2};
+  assert.deepEqual(validateAppLaunchBinding(selfIp),selfIp);
+  for(const change of[{bindingFloor:1},{bindingFloor:3},{profile:'soty.relay-self-ip.v2'},{endpoint:{address:'caller-selected'}}])assert.throws(()=>validateAppLaunchBinding({...selfIp,...change}),/invalid_app_launch_binding/);
+  const f=fixture([{launchBinding:selfIp},{launchBinding:{...selfIp}},{launchBinding:{...selfIp,profile:'soty.relay-restricted.v1'}}]);
+  assert.equal(await f.launcher.launch(),url);assert.equal(await f.launcher.launch({requireSameBinding:true}),url);
+  await assert.rejects(f.launcher.launch({requireSameBinding:true}),/app_launch_source_changed/);assert.equal(f.launcher.binding().profile,'soty.relay-self-ip.v1');
 });
 test('policy/source/profile/floor drift refuses automatic response even for the same app/domain/name', async()=>{
   for(const change of [{policyEpoch:2},{targetRevision:2},{targetDigest:'d'.repeat(64)},{bindingFloor:2},{profile:'unknown'}]){

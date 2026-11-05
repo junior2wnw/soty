@@ -24,6 +24,10 @@ function developmentEnvironment(options) {
     SOTY_APP_ORIGIN_TEMPLATE: `http://{appId}.${options.namedApps ? 'legacy.' : ''}localhost:${options.apiPort}`,
     ...(options.namedApps ? { SOTY_NAMED_APP_ZONE: `http://named.localhost:${options.apiPort}` } : {}),
     SOTY_LOCAL_CONNECTOR_PORT: String(options.connectorPort),
+    SOTY_NATIVE_VAULT_ENABLED: options.nativeVault ? '1' : '0',
+    SOTY_CANVAS_PAGE_SELECTION_ENABLED: options.canvasPageSelection ? '1' : '0',
+    ...(options.agentApi ? { SOTY_CAPABILITY_AUDIENCE: options.origin } : {}),
+    ...(options.selfIpTargets ? {SOTY_SELF_IP_TARGETS_ENABLED:'1'} : {}),
   });
   // Development never inherits production server credentials or database paths.
   // An inference provider is opt-in, using development-specific variables only.
@@ -35,12 +39,19 @@ function developmentEnvironment(options) {
 }
 
 export async function startDevelopment(input = {}) {
+  if (input.nativeVault !== undefined && typeof input.nativeVault !== 'boolean') throw new TypeError('nativeVault must be a boolean');
+  if(input.canvasPageSelection!==undefined&&typeof input.canvasPageSelection!=='boolean')throw new TypeError('canvasPageSelection must be a boolean');
+  if(input.agentApi!==undefined&&typeof input.agentApi!=='boolean')throw new TypeError('agentApi must be a boolean');
   const options = {
     host: input.host || '127.0.0.1',
     port: portNumber(input.port ?? 5173, 'UI port'),
     apiPort: portNumber(input.apiPort ?? 5174, 'API port'),
     connectorPort: portNumber(input.connectorPort ?? 49425, 'Connector port'),
     namedApps: input.namedApps === true,
+    nativeVault: input.nativeVault === true,
+    canvasPageSelection:input.canvasPageSelection===true,
+    agentApi:input.agentApi===true,
+    selfIpTargets: input.selfIpTargets === true,
     dataDir: resolve(input.dataDir || join(rootDir, 'var', 'dev', 'data')),
   };
   if (!['127.0.0.1', 'localhost'].includes(options.host)) throw new Error('Development host must be 127.0.0.1 or localhost');
@@ -80,6 +91,12 @@ export async function startDevelopment(input = {}) {
       root: rootDir, configFile: join(rootDir, 'vite.config.ts'),
       envDir: false, envPrefix: 'SOTY_DEV_PUBLIC_',
       logLevel: input.quiet ? 'silent' : 'info',
+      plugins:[{name:'soty-development-discovery',configureServer(server){
+        server.middlewares.use((request,response,next)=>{
+          if(['GET','HEAD'].includes(request.method)&&/^\/(?:\?.*)?$/u.test(request.url??''))response.setHeader('Link','</.well-known/soty-app-platform>; rel="service-desc"; type="application/json", </agents/apps>; rel="alternate"; type="text/html"');
+          next();
+        });
+      }}],
       server: {
         host: options.host, port: options.port, strictPort: true,
         cors: { origin: options.origin }, allowedHosts: [options.host],
@@ -91,7 +108,7 @@ export async function startDevelopment(input = {}) {
           '**/scripts/app-art/**',
         ] },
         proxy: {
-          '^/(?:api|ws|agents)(?:/|\\?|$)|^/(?:health|ready)(?:\\?|$)': {
+          '^/(?:api|ws|agents|sdk|mcp|oauth)(?:/|\\?|$)|^/\\.well-known(?:/|\\?|$)|^/(?:health|ready)(?:\\?|$)': {
             target: `http://127.0.0.1:${options.apiPort}`, ws: true,
             // Preserve Host and Origin: Connect and room WebSockets validate
             // the browser's origin, including the frontend port.
@@ -123,10 +140,14 @@ async function main() {
     'connector-port': { type: 'string', default: process.env.SOTY_DEV_CONNECTOR_PORT || '49425' },
     'data-dir': { type: 'string', default: process.env.SOTY_DEV_DATA_DIR || join(rootDir, 'var', 'dev', 'data') },
     'named-apps': { type: 'boolean', default: false },
+    'native-vault': { type: 'boolean', default: false },
+    'canvas-page-selection':{type:'boolean',default:false},
+    'agent-api':{type:'boolean',default:false},
+    'self-ip-targets': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
   } });
   if (values.help) {
-    console.log('npm run dev -- [--host 127.0.0.1|localhost] [--port 5173] [--api-port 5174] [--connector-port 49425] [--data-dir path] [--named-apps]');
+    console.log('npm run dev -- [--host 127.0.0.1|localhost] [--port 5173] [--api-port 5174] [--connector-port 49425] [--data-dir path] [--named-apps] [--self-ip-targets] [--native-vault] [--canvas-page-selection] [--agent-api]');
     return;
   }
   let running;
@@ -134,7 +155,7 @@ async function main() {
   const stop = () => controller.abort();
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
   try {
-    running = await startDevelopment({ host: values.host, port: values.port, apiPort: values['api-port'], connectorPort: values['connector-port'], dataDir: values['data-dir'], namedApps: values['named-apps'], signal: controller.signal });
+    running = await startDevelopment({ host: values.host, port: values.port, apiPort: values['api-port'], connectorPort: values['connector-port'], dataDir: values['data-dir'], namedApps: values['named-apps'],selfIpTargets:values['self-ip-targets'],nativeVault:values['native-vault'],canvasPageSelection:values['canvas-page-selection'],agentApi:values['agent-api'], signal: controller.signal });
     const error = await running.done;
     if (error) throw error;
   } catch (error) { if (!controller.signal.aborted || error !== controller.signal.reason) throw error; }

@@ -25,6 +25,86 @@ verifyStructuralDelta(overlay.config, independentlyAdaptedCandidate);
 
 Обычный выпуск выполняет `node deploy/ui/host-publisher.mjs execute publish-plan.json`: один план `action:publish` с public stage, manifest, `base`, `expectedReleaseId` и transaction. Он сам устанавливает sealed release и переключает `current` под Linux kernel flock с CAS. Caddyfile, ключ, PID и DATA не участвуют. `inspect` строго read-only сверяет реальный pointer и исходный журнал; после неизвестного результата повторять execute нельзя. Откат тем же publish меняет mutable UI, сохраняя новые immutable URLs. Полная форма плана и одноразовый bootstrap — [deploy/ui/README.md](../../deploy/ui/README.md).
 
+## Порядок при раздельном выпуске backend и UI
+
+Новый backend может начать выдавать новый UI раньше переключения публичного
+`index.html`. Документы `/human-identity/interaction/...` и
+`/oauth/interaction/...`, а также разрешённые backend SPA-входы читают
+`index.html` из собственного `dist`. Их JS/CSS запрашиваются с того же origin,
+но stable Caddy handler берёт эти публичные файлы из текущего UI release.
+Поэтому backend-first без подготовки его asset-графа может дать пустое окно
+входа: новый HTML ссылается на immutable URL, которого ещё нет в UI root.
+
+До **каждого** backend-переключения выпускай asset-only bridge обычным
+publisher. `currentInput` — физический, проверенный каталог текущего release,
+не symlink `current`; `exactBackendDist` — публичный `dist` именно того
+immutable backend image, который будет запущен следующим.
+
+```js
+const assetBridge = createUiRelease(currentInput, [exactBackendDist]);
+writeUiRelease(assetBridge, freshAssetBridgeStage);
+// Штатный publish: input=freshAssetBridgeStage,
+// expectedReleaseId=проверенный ID текущего UI release.
+```
+
+Если `assetBridge.id` уже равен проверенному ID текущего release, его inventory
+не изменился. После полного публичного readback нужного графа дополнительный
+publish не требуется; используй тот же current input для следующего шага.
+Одного совпавшего entry JS для такого решения недостаточно.
+
+Основной вход остаётся `currentInput`, поэтому все прежние mutable bytes —
+`index.html`, `sw.js`, manifest, документы, фиксированные иконки и шрифты —
+должны совпасть с текущим inventory. Retained-вход добавляет только immutable
+файлы. Проверяй весь точный граф нового backend, включая dynamic imports,
+CSS, hashed font/media assets и другие допущенные immutable URLs; одного
+entry JS недостаточно. Конфликт URL с другими байтами останавливает сборку.
+Если новый код требует несовместимые новые bytes по mutable URL, такой bridge
+не доказывает совместимость: разреши эту зависимость до backend-переключения,
+не подменяя mutable UI и не ослабляя public-path policy.
+
+Для двухступенчатого перехода writer4 → writer5 нужны разные asset-графы:
+
+| Шаг | Primary UI input | Retained input | Следующее действие |
+|---|---|---|---|
+| Asset bridge перед writer4 | Проверенный текущий UI | Точный writer4 image `dist` | HTTP-сверка, затем штатный backend rollout writer4 |
+| Asset bridge перед writer5 | Предыдущий asset bridge | Точный writer5 image `dist` | HTTP-сверка, затем штатный backend rollout writer5 |
+| Финальный UI | Точный новый UI `dist` | Последний asset bridge | Publish нового index/worker после готовности API5 |
+
+Финальный stage сохраняет объединённые immutable URLs обоих bridge:
+
+```js
+const finalUi = createUiRelease(newDist, [assetBridgeInput]);
+writeUiRelease(finalUi, freshFinalStage);
+```
+
+Каждый publish имеет свой transaction и CAS `expectedReleaseId`, равный
+фактически проверенному текущему ID после предыдущего шага. Не подставляй
+первоначальный ID повторно и не теряй immutable URLs первого bridge во втором.
+После потери ответа используй исходный `inspect`; неизвестное действие не
+повторяется. Полный состав и квалификация backend images проверяются своим
+штатным rollout: asset-only публикация их не доказывает.
+
+Перед backend-переключением проверь по настоящим публичным URL:
+
+- Root index, `sw.js` и остальные mutable файлы сохранили прежние SHA-256;
+  root по-прежнему ссылается на прежний entry. Caddy config не менялся.
+- **Все** новые immutable URLs следующего backend отвечают ожидаемыми bytes
+  и SHA-256, подходящим Content-Type и immutable cache policy. HTTP200 с HTML
+  вместо JS не является успехом. При любом отказе backend не переключается.
+  Static overlay выдаёт файл при 200 от Root; остальные ответы сохраняются.
+- После штатного backend rollout настоящий документ входа и его lazy imports
+  загружаются; API нового способа входа готов до выпуска его основного UI.
+  При финальном UI publish дополнительно сверяются новый index/worker, worker
+  graph, прежние immutable URLs и работа старой открытой вкладки.
+
+Старый service worker не решает разрыв: protocol-документы всегда идут в сеть,
+а отсутствующие в его собственном build graph новые assets тоже запрашиваются
+из сети. Сохраняй старые mutable worker bytes на asset-only шагах; не очищай
+кэши, не форсируй обновление пользователей и не добавляй runtime fallback.
+Этот порядок использует существующий atomic publisher, без изменений Caddy.
+Actual URL readback и приёмка сохраняются отдельными release receipts;
+доступность из локального `dist` их не заменяет.
+
 ## Узкая вставка Caddy
 
 Под выбранным точным host требуется единственный прежний upstream `127.0.0.1:18182`, без rewrite/header mutation/response interception. Его leaf route должен быть ровно `{handle:[proxy]}`. Допускается только распознаваемый многострочный literal proxy с обычным transport-блоком, до64строк; неравные отступы допустимы. Неизвестная или неоднозначная форма означает отказ.

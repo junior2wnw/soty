@@ -9,10 +9,13 @@ import { WebSocketServer } from 'ws';
 import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
 import { createWebSocketRelay, normalizeWebSocketLivenessTiming } from './websocket-relay.mjs';
 import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion, selectedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
+import {createFrameContinuity,hasFrameContinuitySchema,hasHostSessionContinuitySchema} from './frame-continuity.mjs';
+import {createHostSessionContinuity,HOST_SESSION_SCHEMA} from './host-session-continuity.mjs';
 import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
 import { createPublicationRegistry, publicationOperations } from './publications.mjs';
 import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
 import { createHostClassifier } from './hosts.mjs';
+import { parseWidgetRuntimeHost, widgetRuntimeOrigin, captureWidgetRuntimeScope, widgetRuntimeScopeDigest,parseMainRuntimeHost,mainRuntimeOrigin,captureMainRuntimeScope } from './runtime-hosts.mjs';
 import { renderBootPage, renderStatusPage } from './runtime-pages.mjs';
 import { describeSourceObservation } from './source-observation.mjs';
 import { createAppInspection } from './inspection.mjs';
@@ -27,6 +30,8 @@ import { createDiscussionReadStore } from './discussion-reads.mjs';
 import { createEngagementTransaction } from './engagement-transaction.mjs';
 import { createAppDirectory, directoryOperations } from './directory.mjs';
 import { createAppAuthorityPort } from './authority-port.mjs';
+import {createWidgetSourceAuthority} from './widget-source-authority.mjs';
+import {createPublicCanvasAuthority} from './public-canvas-authority.mjs';
 import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
 import { createScopedGateway, scopedRenewalBindingDigest } from '../scoped-embed/gateway.mjs';
 import { approvedEmbedProfile, embedRoute } from '../scoped-embed/profile-dispatch.mjs';
@@ -38,8 +43,10 @@ import { COVER_APP_FORMATS, hasAudienceSchema, readAppAudience } from './audienc
 import { synchronous } from './engagement-transaction.mjs';
 import { createAppCoverAdapter, appCoverOperations } from './cover.mjs';
 import { createPreparedBrowse } from './prepared-browse.mjs';
+import { SELF_IP_PROFILE, ENDPOINT_SCHEMA, SELF_ADDRESSES_SCHEMA, targetFromRow, readRuntimeEndpoint, normalizeSelfInventory } from './endpoint-targets.mjs';
+import { createEndpointRegistration } from './endpoint-registration.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.relay.identity', 'apps.relay.identity.close', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.session.renew', 'apps.session.confirm', 'apps.session.context', 'apps.session.close', 'apps.relay.identity', 'apps.relay.identity.close', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 export function appIdForCreationJob(jobId) {
   assertApps(typeof jobId === 'string' && /^job_[a-f0-9]{32}$/u.test(jobId), 'invalid_identifier');
   return `app-${jobId.slice(4)}`;
@@ -53,9 +60,16 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, connectorCurrent = () => false, onHeartbeat = () => {}, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false,
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false, allowSelfIpTargets = false, allowFrameContinuityMigration = false,
   coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity,
-  identitySignTimeoutMs = 8000, readAppGuide } = {}) {
+  identitySignTimeoutMs = 8000, readAppGuide, onChange = () => {}, onRuntimeRequest = () => {}, invitationAccess,checkWidgetLaunch,checkWidgetRuntime,resolveWidgetRuntime } = {}) {
+  assertApps(typeof onChange === 'function', 'apps_change_listener_invalid', 503);
+  assertApps(typeof onRuntimeRequest === 'function'&&!['AsyncFunction','AsyncGeneratorFunction'].includes(onRuntimeRequest.constructor?.name), 'apps_observer_configuration_invalid', 503);
+  assertApps(checkWidgetLaunch===undefined||typeof checkWidgetLaunch==='function'&&checkWidgetLaunch.constructor?.name!=='AsyncFunction','apps_widget_configuration_invalid',503);
+  assertApps(checkWidgetRuntime===undefined||typeof checkWidgetRuntime==='function'&&!['AsyncFunction','AsyncGeneratorFunction'].includes(checkWidgetRuntime.constructor?.name)
+    &&typeof checkWidgetLaunch==='function','apps_widget_configuration_invalid',503);
+  assertApps(resolveWidgetRuntime===undefined||typeof resolveWidgetRuntime==='function'&&!['AsyncFunction','AsyncGeneratorFunction'].includes(resolveWidgetRuntime.constructor?.name)
+    &&typeof checkWidgetLaunch==='function'&&typeof checkWidgetRuntime==='function','apps_widget_configuration_invalid',503);
   assertApps(typeof allowCoverMigration === 'boolean', 'apps_cover_migration_configuration_invalid', 503);
   assertApps(coverDecoder === undefined || coverDecoder && typeof coverDecoder.decode === 'function'
     && typeof withCurrentContacts === 'function' && typeof withWorldAuthorityFence === 'function'
@@ -131,7 +145,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'v12', 'v13', 'v14'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
     // A configured decoder initializes covers for a genuinely empty store.
     // Existing formats still require the explicit offline migration permission.
-    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration, allowSelectedResourceMigration, allowAudienceMigration,
+    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration, allowSelectedResourceMigration, allowAudienceMigration, allowSelfIpTargets, allowFrameContinuityMigration,
       allowCoverMigration: allowCoverMigration || schema === 'empty' && coverDecoder !== undefined });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, withContactAuthority, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, namedCanonical, retainedNamedAppZones: retainedZones, domainLimits: limits,
@@ -139,22 +153,32 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       onPolicyChanged: publications.notifyChanged });
     db.exec('PRAGMA journal_mode=WAL;');
   } catch (error) { db.close(); throw error; }
-  const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins], allowShellZoneRoot });
+  const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins], allowShellZoneRoot, resolveRuntimeHost });
   const scopedAdmissions = createScopedAdmissionRegistry({ db, profiles: scopedEmbedProfiles, clock: now });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map(), relayWindows = new Map();
   const voiceSourceCalls=new Set(),contextSourceCalls=new Set();
   const voiceSourceActors=new WeakMap();
   const backendSourceContexts=new Map();
   const backendSourceAcquisitions=new Set();
-  let inspection, saved, discussions, discussionReads, directory, entryRead, appAuthority, scopedGateway, covers;
+  let inspection, saved, discussions, discussionReads, directory, entryRead, appAuthority, widgetSourceAuthority, publicCanvasAuthority, scopedGateway, covers;
+  let reviewedPublicationFrame = null;
+  function publicationReconciliationSnapshot(authority) {
+    return Object.freeze({ ...authority,
+      sourceChangeEpoch: db.prepare('SELECT coalesce(max(committed_epoch),0) AS epoch FROM app_source_receipts WHERE app_id=?').get(authority.appId).epoch });
+  }
   const scopedRenewals=new Map();
   const bootCandidates=new Map();
+  const hostSessions=hasHostSessionContinuitySchema(db)?createHostSessionContinuity({db,clock:now}):null;
   try {
     inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, inspectIntegrations, inspectLaunchEntry, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
     const resolveEntry = createEngagementEntryResolver({ db, assertActor, publications, inspectSource });
     appAuthority = createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry,requireScopedTarget:target=>scopedAdmissions.require(target) });
+    const widgetSourceOptions={db,assertActor,withAuthorityFence,resolveEntry,resolveDefaultEntry:({app,target,actor})=>defaultEntryFor(app,target,actor),
+      publications,requireScopedTarget:target=>scopedAdmissions.require(target),inspectSource};
+    widgetSourceAuthority=createWidgetSourceAuthority(widgetSourceOptions);publicCanvasAuthority=createPublicCanvasAuthority(widgetSourceOptions);
     if(scopedEmbedProfiles.length && typeof withHumanSubjectAuthority==='function') scopedGateway=createScopedGateway({
+      ...(hasFrameContinuitySchema(db)?{frameContinuity:createFrameContinuity({db,clock:now})}:{}),
       admissions:scopedAdmissions,withAppAuthority:appAuthority,withHumanSubjectAuthority,signSourceAuthority,clock:now,
       onClose(record) {
         for(const [key,value] of backendSourceContexts)if(value.record===record)backendSourceContexts.delete(key);
@@ -222,6 +246,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     };
     saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
     directory = createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds, canUse, resolveEntry,
+      invitationAppIds:accountId=>invitationAccess?.appIds(accountId)??[],
       resolveDefaultEntry({ actor, app }) {
         const target = activeTarget(app.id);
         if (!target || !selectedRuntimeProfile(target.profile)) return undefined;
@@ -253,15 +278,21 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   let closed = false;
   const coverExtension = covers ? Object.freeze({ operations: new Set(appCoverOperations), async executeAsync({ op, args = {}, actor }) {
     assertApps(args && typeof args === 'object' && !Array.isArray(args) && Object.hasOwn(args, 'expectedAccountId'), 'apps_cover_account_required');
-    return covers.execute({ op, actor, args: authenticatedArgs(actor,args) });
+    const result = await covers.execute({ op, actor, args: authenticatedArgs(actor,args) });
+    if (['apps.cover.commit','apps.cover.restore','apps.cover.remove'].includes(op)) notifyChange(actor,args.appId);
+    return result;
   } }) : null;
   const row = id => db.prepare('SELECT * FROM local_apps WHERE id=?').get(id);
+  const publiclyListed = id => Boolean(typeof id==='string' && db.prepare("SELECT 1 FROM app_publications p JOIN local_apps a ON a.id=p.app_id WHERE a.id=? AND a.state='enabled' AND p.launch_policy='anyone' AND p.listed=1").get(id));
+  function notifyChange(actor,id,wasPublic=false) {
+    try { onChange({accountIds:[actor.accountId],...(id?{ref:{kind:'app',id}}:{}),publicTransition:wasPublic||publiclyListed(id)}); }
+    catch { /* A failed observer cannot undo a committed app write. */ }
+  }
   const binding = key => db.prepare('SELECT * FROM app_devices WHERE connector_key=?').get(key);
   const activeTarget = id => db.prepare(`SELECT t.* FROM app_publications p
     JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
     WHERE p.app_id=?`).get(id);
-  const targetTuple = target => ({appId:target.app_id,revision:target.revision,ownerAccountId:target.owner_account_id,
-    connectorKey:target.connector_key,port:target.port,entryPath:target.entry_path,profile:target.profile,digest:target.digest});
+  const targetTuple = target => targetFromRow(db, target);
   const runtimeBindings = createRuntimeBindings({ channels, send, now, blockedPorts,
     scopedTarget(target, { candidate }) {
       assertApps(typeof withHumanSubjectAuthority === 'function', 'app_scoped_human_required', 503);
@@ -274,6 +305,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const preparedBrowse = createPreparedBrowse({ channels, send, secret, assertActor, resolveOwnedDevice, authenticateConnector, connectorCurrent, blockedPorts });
   const sources = createSourceRegistry({ db, now, assertActor, publications, blockedPorts,
     scopedAdmission: scopedAdmissions,
+    endpointAdmission(target) {
+      assertApps(allowSelfIpTargets, 'apps_endpoint_connector_upgrade_required', 503);
+      const device = binding(target.connectorKey), channel = channels.get(target.connectorKey);
+      assertApps(device?.owner_account_id === target.ownerAccountId, 'apps_device_not_owned', 403);
+      endpointInventory(device, channel?.selfInventory && { channelId: channel.channelId, revision: channel.selfInventory.revision, digest: channel.selfInventory.digest }, target.endpoint);
+    },
     prepareTarget: runtimeBindings.prepareTarget, verifyPreparedTarget: runtimeBindings.verifyPreparedTarget,
     onChanged(event) {
       invalidateAccess({ appId: event.appId });
@@ -288,48 +325,72 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     async executeAsync({ op, args = {}, actor }) {
       if (op === 'apps.prepared.browse') return preparedBrowse.browse(actor, authenticatedArgs(actor, args));
       if(op==='apps.scoped.renew'){
-        args=authenticatedArgs(actor,args);exact(args,['appId','handle','requestId','shortSessionHandoff']);const id=appId(args.appId);
+        args=authenticatedArgs(actor,args);exact(args,['appId','handle','requestId','shortSessionHandoff','frameId','currentEntryPath']);const id=appId(args.appId);
+        const currentEntryPath=args.currentEntryPath===undefined?undefined:createScopedLaunchPath(args.currentEntryPath).entryPath;
+        assertApps(args.frameId===undefined||typeof args.frameId==='string'&&/^[A-Za-z0-9_-]{43}$/.test(args.frameId),'app_scoped_renew_invalid',403);
         assertApps(args.shortSessionHandoff===undefined||args.shortSessionHandoff===true,'app_scoped_renew_invalid',403);
         assertApps(scopedGateway&&typeof args.handle==='string'&&/^[A-Za-z0-9_-]{43}$/.test(args.handle)
           &&typeof args.requestId==='string'&&/^[A-Za-z0-9_-]{16,128}$/.test(args.requestId),'app_scoped_renew_invalid',403);
         for(const [key,value]of scopedRenewals)if(value.record.context.expiresAt<=now())scopedRenewals.delete(key);
-        const key=digest(id+'\0'+args.requestId),intent=digest(JSON.stringify([args.handle,args.shortSessionHandoff===true])),prior=scopedRenewals.get(key);
+        const key=digest(id+'\0'+args.requestId),intent=digest(JSON.stringify([args.handle,args.shortSessionHandoff===true,args.frameId??null,currentEntryPath??null])),prior=scopedRenewals.get(key);
         assertActor(actor);
         let issued;
         if(prior){assertApps(prior.intent===intent&&prior.accountId===actor.accountId&&prior.deviceId===actor.deviceId,'app_scoped_renew_conflict',409);
           scopedGateway.context(prior.record);issued=prior;
         }else{
           assertApps(scopedRenewals.size<256,'app_scoped_renew_busy',429);
-          const {record:old,context:first,sourceOnly,shortSession}=scopedGateway.ownedAttempt(actor,id,args.handle);
+          let attempt,recovery;
+          try{attempt=scopedGateway.ownedAttempt(actor,id,args.handle);}catch(error){
+            if(error?.code!=='app_scoped_context_closed'||!args.frameId||args.shortSessionHandoff)throw error;
+            recovery=scopedGateway.recoverFrame(actor,id,args.frameId,args.handle);
+            assertApps(currentEntryPath!==undefined&&scopedHash(currentEntryPath)===recovery.scope.entry.pathDigest,'app_scoped_context_closed',403);
+          }
+          const {record:old,context:first,sourceOnly,shortSession,rootInstanceId}=attempt??{rootInstanceId:recovery.scope.rootInstanceId??undefined},instanceId=rootInstanceId??first?.instanceId;
           assertApps(!args.shortSessionHandoff||shortSession===true,'app_scoped_short_session_required',403);
-          if(!sourceOnly){assertApps(old?.session&&sessions.get(old.session.sessionKey)===old.session,'app_scoped_context_closed',403);
-            const oldDecision=publications.recheckAccess(old.session.decision);assertRuntimeBinding(oldDecision,{requireReady:true});}
-          await Promise.resolve();assertActor(actor);const {record,context:fresh,shortSession:freshShort}=scopedGateway.ownedAttempt(actor,id,args.handle);
-          assertApps(record===old&&JSON.stringify(first)===JSON.stringify(fresh)&&(!args.shortSessionHandoff||freshShort===true),'app_scoped_context_closed',403);
-          const domain=db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id,first.entry.domainId);
-          assertApps(domain&&domain.origin===first.entry.origin,'app_scoped_context_closed',403);
+          if(!recovery&&!sourceOnly){assertApps(old?.session&&sessions.get(old.session.sessionKey)===old.session,'app_scoped_context_closed',403);
+            const oldDecision=publications.recheckAccess(old.session.decision);assertRuntimeBinding(oldDecision,{requireReady:true});checkWidgetRuntimeFor({...old.session,decision:oldDecision},'renew');}
+          await Promise.resolve();assertActor(actor);
+          if(recovery){const fresh=scopedGateway.recoverFrame(actor,id,args.frameId,args.handle);assertApps(fresh.revision===recovery.revision,'app_scoped_context_closed',403);}
+          else{const {record,context:fresh,shortSession:freshShort,rootInstanceId:freshRootInstanceId}=scopedGateway.ownedAttempt(actor,id,args.handle);
+            assertApps(record===old&&rootInstanceId===freshRootInstanceId&&JSON.stringify(first)===JSON.stringify(fresh)&&(!args.shortSessionHandoff||freshShort===true),'app_scoped_context_closed',403);}
+          const priorEntry=recovery?.scope.entry??first.entry;
+          const domain=db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id,priorEntry.domainId);
+          assertApps(domain&&domain.origin===priorEntry.origin,'app_scoped_context_closed',403);
           const decision=publications.decideAccess({domainId:domain.id,origin:domain.origin,actor});assertRuntimeBinding(decision,{requireReady:true});
-          const scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id)),instanceId:first.instanceId}),next=scoped.record.context;
+          if(instanceId?.startsWith('widget-')&&checkWidgetLaunch)synchronous(checkWidgetLaunch({phase:'renew',actor,widgetId:instanceId,appId:id,
+            entry:{domainId:domain.id},target:{revision:decision.targetRevision,digest:decision.targetDigest,profile:decision.profile}}),'apps_async_authority');
+          checkWidgetRuntimeFor({decision,entryPath:priorEntry.path,rootInstanceId},'renew');
+          const previousSession=old?.session??[...sessions.values()].find(value=>value.scopedRecord?.context.reference.id===first?.reference.id);
+          const entryPath=createScopedLaunchPath(recovery?currentEntryPath:previousSession?.entryPath??currentEntryPath??'/embed').entryPath;
+          if(currentEntryPath!==undefined)assertApps(currentEntryPath===entryPath,'app_scoped_context_closed',403);
+          const scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id)),instanceId}),next=scoped.record.context;
           voiceSourceActors.set(scoped.record,actor);
-          const same=args.shortSessionHandoff===true?scopedRenewalBindingDigest(next)===scopedRenewalBindingDigest(first)
+          const same=recovery?isRootSignedWorkspaceSource(next.sourceProfile):args.shortSessionHandoff===true?scopedRenewalBindingDigest(next)===scopedRenewalBindingDigest(first)
             :next.instanceId===first.instanceId&&(sourceOnly?next.appId===first.appId&&decision.profile==='soty.selected-human-embed.v2'
             &&['rootPrincipal','humanPrincipal','sourceProfile','resource'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field]))
             :['profileDigest','appId','policyEpoch'].every(field=>next[field]===first[field])
               &&['rootPrincipal','humanPrincipal','sourceProfile','resource','target','entry'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field])));
           if(!same){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
-          const previousSession=old?.session??[...sessions.values()].find(value=>value.scopedRecord?.context.reference.id===first.reference.id);
-          const frameId=isRootSignedWorkspaceSource(first.sourceProfile)?previousSession?.family?.frameId:undefined;
-          if(isRootSignedWorkspaceSource(first.sourceProfile)&&!frameId){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
+          const frameId=recovery?.frameId??(isRootSignedWorkspaceSource(first.sourceProfile)?previousSession?.family?.frameId:undefined);
+          if(isRootSignedWorkspaceSource(next.sourceProfile)&&!frameId){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
+          try{if(frameId&&scopedGateway.frameId(scoped.record)){
+            assertApps(args.frameId===undefined||args.frameId===frameId,'app_scoped_context_closed',403);scopedGateway.prepareFrame(scoped.record,frameId,recovery,entryPath);
+          }}catch(error){scopedGateway.invalidate(scoped.record);throw error;}
           issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId,frameId,
-            entryPath:createScopedLaunchPath(previousSession?.entryPath??'/embed').entryPath,
+            entryPath,
             ...(args.shortSessionHandoff?{bindingDigest:scopedRenewalBindingDigest(first)}:{})};scopedRenewals.set(key,issued);
         }
         assertActor(actor);scopedGateway.context(issued.record);const decision=publications.recheckAccess(issued.decision);assertRuntimeBinding(decision,{requireReady:true});
+        const issuedInstanceId=issued.record.rootInstanceId??issued.record.context.instanceId;
+        if(issuedInstanceId?.startsWith('widget-')&&checkWidgetLaunch)synchronous(checkWidgetLaunch({phase:'renew',actor,widgetId:issuedInstanceId,appId:id,
+          entry:{domainId:decision.domainId},target:{revision:decision.targetRevision,digest:decision.targetDigest,profile:decision.profile}}),'apps_async_authority');
+        checkWidgetRuntimeFor({decision,entryPath:issued.entryPath,scopedRecord:issued.record},'renew');
         const {entryPath,bootPath}=createScopedLaunchPath(issued.entryPath);
-        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath,scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId,frameId:issued.frameId});
+        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath,scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId,frameId:issued.frameId,frameRecovery:scopedGateway.isFrameRecovery(issued.record)});
         return{launchUrl:`${decision.origin}${bootPath}&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
           runtimeProfile:decision.profile,scopedCloseHandle:issued.handle,scopedSlotExpiresAt:issued.record.context.expiresAt,scopedSource:{...issued.record.context.sourceProfile},
           scopedRenewalRequestId:args.requestId,...(issued.bindingDigest?{scopedRenewalBindingDigest:issued.bindingDigest}:{}),
+          ...(scopedGateway.frameId(issued.record)?{scopedFrameId:issued.frameId}:{}),
           entry:{appId:id,domainId:decision.domainId,origin:decision.origin,path:entryPath}};
       }
       if(op==='apps.scoped.context') {
@@ -381,6 +442,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function canUse(actor, app) {
     if (!app || app.state !== 'enabled' || actorActive(actor) !== true) return false;
     if (app.owner_account_id === actor.accountId) return true;
+    if(invitationAccess?.hasAccess({appId:app.id,ownerId:app.owner_account_id,accountId:actor.accountId})===true)return true;
     const audience = readAppAudience(db, app.id);
     if (audience !== null) return audience === 'friends' && isCurrentFriend(actor, app.owner_account_id);
     const grants = JSON.parse(app.grants_json);
@@ -445,14 +507,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const discussion = discussionsOnly ? ` AND EXISTS(SELECT 1 FROM app_discussion_heads h
       JOIN app_discussion_conversations c ON c.id=h.current_id WHERE h.app_id=local_apps.id AND c.message_seq>0)` : '';
     return typeof activeCommunityIds === 'function' ? db.prepare(`SELECT * FROM local_apps WHERE id IN (
-      SELECT id FROM local_apps WHERE owner_account_id=? UNION
+        SELECT id FROM local_apps WHERE owner_account_id=? UNION SELECT value FROM json_each(?) UNION
       SELECT app_id FROM local_app_grants WHERE kind='account' AND principal_id=?
         ${audienceCandidates ? 'AND NOT EXISTS(SELECT 1 FROM app_audiences mode WHERE mode.app_id=local_app_grants.app_id)' : ''} UNION
       SELECT app_id FROM local_app_grants WHERE kind='community' AND principal_id IN (SELECT value FROM json_each(?))
         ${audienceCandidates ? 'AND NOT EXISTS(SELECT 1 FROM app_audiences mode WHERE mode.app_id=local_app_grants.app_id)' : ''}
       ${audienceCandidates ? `UNION SELECT a.id FROM local_apps a JOIN app_audiences mode ON mode.app_id=a.id
         WHERE mode.audience='friends' AND a.owner_account_id IN(SELECT value FROM json_each(?))` : ''})${discussion} ORDER BY created_at`)
-      .all(actor.accountId, actor.accountId, JSON.stringify(activeCommunityIds(actor.accountId)),
+        .all(actor.accountId,JSON.stringify(invitationAccess?.appIds(actor.accountId)??[]), actor.accountId, JSON.stringify(activeCommunityIds(actor.accountId)),
         ...(audienceCandidates ? [JSON.stringify(currentContactIds(actor))] : [])) : db.prepare(`SELECT * FROM local_apps WHERE 1=1${discussion} ORDER BY created_at`).all();
   }
   function publicApp(app, actor) {
@@ -496,6 +558,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       state, createdAt: current.created_at, updatedAt: current.updated_at,
       ...(actor.accountId === current.owner_account_id ? { connectorId: identity.connectorId, deviceName: current.device_name,
         port: current.target_port, entryPath: current.target_entry_path, grants: JSON.parse(current.grants_json),
+        ...(current.target_profile === SELF_IP_PROFILE ? { endpoint: readRuntimeEndpoint(db, { app_id: current.id, revision: current.target_revision, digest: current.target_digest, profile: current.target_profile }) } : {}),
         publication: { launchPolicy: current.launch_policy, activeNamedAddressCount: current.active_named_address_count,
           ...(hasAudienceSchema(db) ? { audience: readAppAudience(db, current.id), listed: Boolean(current.listed) } : {}) },
         ...(entry ? { entry } : {}) } : {}) };
@@ -578,7 +641,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const identity = JSON.parse(item.identity_json), channel = channels.get(item.connector_key);
     const online = channel?.ws.readyState === 1;
     return { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId, name: item.name, online, claimed: true,
-      bindingVersion: online ? channel.bindingVersion : null };
+      bindingVersion: online ? channel.bindingVersion : null,
+      ...(allowSelfIpTargets ? { sourceEndpoints: { schema: 'soty.connector-source-endpoints.v1',
+        state: !online ? 'offline' : channel.bindingVersion !== 2 || !channel.runtimeProfiles.includes(SELF_IP_PROFILE) ? 'upgrade-required'
+          : !channel.selfInventory || now() - channel.selfInventoryReceivedAt > 15_000 ? 'pending' : 'ready',
+        ...(online && channel.selfInventory && now() - channel.selfInventoryReceivedAt <= 15_000 ? {
+          inventoryWitness: { channelId: channel.channelId, revision: channel.selfInventory.revision, digest: channel.selfInventory.digest },
+          addresses: channel.selfInventory.addresses } : {}) } } : {}) };
   }
   function closeStream(stream, error = 'app_stream_closed', notify = true) {
     if (stream.closed) return;
@@ -602,14 +671,40 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     // signed public visitors, keep their original absolute deadline.
     holder.decision = publications.recheckAccess(holder.decision,
       renewPublic && holder.decision.subject === 'public' ? { ttlMs: publicLeaseMs } : {});
+    checkWidgetRuntimeFor(holder, 'request');
     assertRuntimeBinding(holder.decision);
     return holder.decision;
+  }
+  function rebindPlainHostStream(stream) {
+    const previous=stream.session,claim=previous.hostSession;
+    if(!claim||previous.windowKey||stream.scopedRecord)return null;
+    // Native cookie requests identify the exact logical family, not a physical
+    // document. Another checked member of that same family can retain the
+    // existing transport; explicit member-proof grants never take this path.
+    for(const candidate of sessions.values()){
+      if(candidate.hostCompatibility||candidate.hostChecked!==true||!candidate.hostSession
+        ||candidate.hostSession.frameId===claim.frameId||candidate.hostSession.family!==claim.family
+        ||candidate.runtimeHost?.origin!==previous.runtimeHost?.origin)continue;
+      try{
+        hostSessions.assertClaim(candidate.hostSession);assertApps(!hostSessions.admitting(candidate.hostSession),'app_host_session_unconfirmed',409);
+        assertApps(scopedHash(hostScope(previous))===claim.family&&scopedHash(hostScope(candidate))===claim.family,'app_host_session_changed',403);
+        const decision=checkAccess(candidate);checkWidgetRuntimeFor(candidate,stream.kind==='ws'?'ws':'stream');
+        assertApps(channels.get(stream.channel.key)===stream.channel&&stream.channel.ws.readyState===1
+          &&decision.route.connectorKey===stream.channel.key&&assertRuntimeBinding(decision,{requireReady:true})===stream.runtimeBinding,'app_host_session_changed',403);
+        const{hostRenewal:_oldRenewal,...retained}=previous;
+        stream.session={...retained,decision,sessionKey:candidate.sessionKey,hostSession:candidate.hostSession,
+          ...(candidate.hostRenewal?{hostRenewal:candidate.hostRenewal}:{})};
+        return decision;
+      }catch{/* A stale candidate or another scope never authorizes fallback. */}
+    }
+    return null;
   }
   function checkStream(stream) {
     assertApps(!stream.closed, 'app_stream_closed', 502);
     try {
       if(stream.scopedRecord)scopedGateway.context(stream.scopedRecord);
       const decision = checkAccess(stream.session, { renewPublic: true });
+      checkWidgetRuntimeFor(stream.session, stream.kind === 'ws' ? 'ws' : 'stream');
       assertApps(channels.get(stream.channel.key) === stream.channel && stream.channel.ws.readyState === 1, 'app_offline', 503);
       if (stream.channel.bindingVersion === 2) {
         runtimeBindings.assertBindingCurrent(stream.channel, stream.runtimeBinding);
@@ -617,13 +712,141 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       }
       return decision;
     }
-    catch (error) { closeStream(stream, 'app_access_revoked'); throw error; }
+    catch (error) {const retained=rebindPlainHostStream(stream);if(retained)return retained;closeStream(stream, 'app_access_revoked'); throw error; }
   }
   function retainAccess(holder) {
     // Expiry, rights, epoch and persistent binding floor are authority. A
     // temporarily connected older runtime is only transport unavailability;
     // it must not destroy this session before a compatible device returns.
-    try { holder.decision = publications.recheckAccess(holder.decision); return true; } catch { return false; }
+    try { holder.decision = publications.recheckAccess(holder.decision); checkWidgetRuntimeFor(holder,'renew'); return true; } catch { return false; }
+  }
+  function rootWidgetId(holder) { return holder.rootInstanceId ?? holder.scopedRecord?.rootInstanceId; }
+  function runtimeWidget(widgetId) {
+    assertApps(typeof resolveWidgetRuntime === 'function', 'app_widget_runtime_changed', 403);
+    const widget = synchronous(resolveWidgetRuntime(widgetId), 'apps_async_authority');
+    assertApps(widget?.widgetId === widgetId && widget.state === 'active', 'app_widget_runtime_changed', 403);
+    return widget;
+  }
+  function widgetDomain(widget) {
+    return runtimeDomain(widget.entry?.domainId,widget.appId);
+  }
+  function runtimeDomain(domainId,appId) {
+    const domain = db.prepare(`SELECT d.*,z.suffix,z.scheme,z.port FROM app_domains d
+      JOIN app_domain_zones z ON z.id=d.zone_id WHERE d.id=? AND d.app_id=? AND d.state='bound'`).get(domainId,appId);
+    assertApps(domain && domain.owner_account_id === row(appId)?.owner_account_id, 'app_widget_runtime_changed', 403);
+    const url = new URL(domain.origin);
+    assertApps(url.hostname.slice(url.hostname.indexOf('.') + 1) === domain.suffix && url.protocol === domain.scheme + ':'
+      && url.port === domain.port, 'app_widget_runtime_zone_unsupported', 503);
+    return domain;
+  }
+  const runtimeZone = domain => `${domain.scheme}://${domain.suffix}${domain.port ? ':' + domain.port : ''}`;
+  function resolveRuntimeHost(authority, { tls = false } = {}) {
+    const widgetLocator=parseWidgetRuntimeHost(authority.hostname),mainLocator=parseMainRuntimeHost(authority.hostname),locator=widgetLocator??mainLocator;
+    if(!locator||widgetLocator&&!resolveWidgetRuntime)return null;
+    try {
+      const widget=widgetLocator?runtimeWidget(locator.widgetId):null,id=widget?.appId??locator.appId,app=row(id);
+      if(app?.state!=='enabled'||selectedRuntimeProfile(activeTarget(id)?.profile))return null;
+      let domain;
+      if(widget)domain=widgetDomain(widget);
+      else{
+        const issued=[...tickets.values(),...sessions.values(),...relayWindows.values()].find(holder=>holder.runtimeHost?.scope.schema==='soty.main-runtime-scope.v1'
+          &&holder.decision.appId===id&&new URL(holder.runtimeHost.origin).hostname===authority.hostname);
+        if(issued)domain=runtimeDomain(issued.decision.domainId,id);
+        else{
+          const candidates=db.prepare("SELECT d.*,z.suffix,z.scheme,z.port FROM app_domains d JOIN app_domain_zones z ON z.id=d.zone_id WHERE d.app_id=? AND d.state='bound' ORDER BY d.role='canonical' DESC").all(id);
+          const candidate=candidates.find(value=>value.suffix===locator.suffix&&new URL(value.origin).hostname.split('.').slice(1).join('.')===value.suffix);
+          if(!candidate)return null;domain=runtimeDomain(candidate.id,id);
+        }
+      }
+      const origin=widget?widgetRuntimeOrigin(locator.widgetId,locator.scopeHash,runtimeZone(domain)):mainRuntimeOrigin(id,locator.scopeHash,runtimeZone(domain));
+      if (new URL(origin).hostname !== authority.hostname) return null;
+      if (tls) {
+        if (!origin.startsWith('https://')) return null;
+        let issued = false;
+        // TLS admits only a current already-issued host, not every possible hash
+        // for a public widget ID. Existing bounded holders are the sole index.
+        for (const collection of [tickets, sessions, relayWindows]) {
+          for (const holder of collection.values()) if (holder.runtimeHost?.origin === origin && holder.decision.expiresAt > now()
+            &&(holder.hostTicketExpiresAt===undefined||holder.hostTicketExpiresAt>now())) {
+            try {
+              const decision = publications.recheckAccess(holder.decision);
+              checkWidgetRuntimeFor({ ...holder, decision }, 'tls'); issued = true; break;
+            } catch { /* A stale/locked issued holder cannot admit a certificate. */ }
+          }
+          if (issued) break;
+        }
+        if (!issued) return null;
+      }
+      return Object.freeze({ kind: widget?'widget-runtime':'main-runtime', appId:id, domainId: domain.id, origin,
+        canonicalOrigin: domain.origin, hostname: authority.hostname, state: domain.state,
+        ...(widget?{widgetId:locator.widgetId}:{}),scopeHash:locator.scopeHash });
+    } catch { return null; }
+  }
+  function createWidgetHostBinding(decision, widgetId, path) {
+    const widget = runtimeWidget(widgetId), domain = widgetDomain(widget);
+    assertApps(domain.id === decision.domainId && domain.origin === decision.origin, 'app_widget_runtime_changed', 403);
+    const scope = captureWidgetRuntimeScope(decision, widget, path), scopeDigest = widgetRuntimeScopeDigest(scope);
+    return Object.freeze({ origin: widgetRuntimeOrigin(widgetId, scopeDigest.slice(0, 24), runtimeZone(domain)), scope, scopeDigest });
+  }
+  function createMainHostBinding(decision,path) {
+    const domain=runtimeDomain(decision.domainId,decision.appId);
+    assertApps(domain.origin===decision.origin,'app_widget_runtime_changed',403);
+    const scope=captureMainRuntimeScope(decision,path),scopeDigest=widgetRuntimeScopeDigest(scope);
+    return Object.freeze({origin:mainRuntimeOrigin(decision.appId,scopeDigest.slice(0,24),runtimeZone(domain)),scope,scopeDigest});
+  }
+  function checkWidgetHostBinding(holder) {
+    if (!holder.runtimeHost) return;
+    const before = holder.runtimeHost;
+    const main=before.scope.schema==='soty.main-runtime-scope.v1';
+    assertApps(main?!rootWidgetId(holder)||rootWidgetId(holder)==='main':rootWidgetId(holder)===before.scope.widgetId,'app_widget_runtime_changed',403);
+    const fresh=main?createMainHostBinding(holder.decision,holder.entryPath):createWidgetHostBinding(holder.decision,before.scope.widgetId,holder.entryPath);
+    assertApps(fresh.origin === before.origin && fresh.scopeDigest === before.scopeDigest
+      && JSON.stringify(fresh.scope) === JSON.stringify(before.scope), 'app_widget_runtime_changed', 403);
+    if (!main&&checkWidgetLaunch) synchronous(checkWidgetLaunch({ phase: 'renew', actor: holder.decision.actor,
+      widgetId: before.scope.widgetId, appId: holder.decision.appId,
+      entry: { domainId: holder.decision.domainId, path: holder.entryPath }, target: { revision: holder.decision.targetRevision,
+        digest: holder.decision.targetDigest, profile: holder.decision.profile } }), 'apps_async_authority');
+  }
+  const canonicalHostOrigin = app => app.appHost.canonicalOrigin ?? app.appHost.origin;
+  const internalRuntimeHost=app=>['widget-runtime','main-runtime'].includes(app.appHost.kind);
+  function checkHolderHost(holder, app) {
+    const internal=internalRuntimeHost(app),main=app.appHost.kind==='main-runtime';
+    assertApps(Boolean(holder.runtimeHost) === internal && (!internal || holder.runtimeHost.origin === app.appHost.origin
+      &&(main?holder.runtimeHost.scope.schema==='soty.main-runtime-scope.v1'&&holder.decision.appId===app.id:rootWidgetId(holder)===app.appHost.widgetId)
+      && holder.runtimeHost.scopeDigest.slice(0, 24) === app.appHost.scopeHash), 'app_widget_runtime_changed', 403);
+  }
+  function checkWidgetRuntimeFor(holder, phase) {
+    checkWidgetHostBinding(holder);
+    if(holder.hostSession)hostSessions.assertClaim(holder.hostSession,{candidate:Boolean(holder.hostRenewal)});
+    const widgetId = rootWidgetId(holder); if (!checkWidgetRuntime || !widgetId?.startsWith('widget-')) return;
+    const decision = holder.decision;
+    assertApps(decision?.subject === 'account' && decision.actor, 'apps_widget_runtime_denied', 403);
+    assertApps(synchronous(checkWidgetRuntime(Object.freeze({ widgetId, appId: decision.appId,
+      actor: Object.freeze({ accountId: decision.actor.accountId, deviceId: decision.actor.deviceId }),
+      entry: Object.freeze({ domainId: decision.domainId, path: holder.entryPath ?? decision.route.entryPath }),
+      target: Object.freeze({ revision: decision.targetRevision, digest: decision.targetDigest, profile: decision.profile }), phase })), 'apps_async_authority') === true,
+    'apps_widget_runtime_denied', 403);
+  }
+  /** Host-only invalidation: the IDs originated in reviewed Root launch state,
+   * never a Source header/body. Main application sessions are independent. */
+  function invalidateWidget(filter) {
+    assertApps(filter && typeof filter === 'object' && !Array.isArray(filter) && Object.keys(filter).every(key=>['widgetId','accountId','deviceId'].includes(key))
+      && typeof filter.widgetId === 'string' && /^widget-[a-f0-9-]{36}$/u.test(filter.widgetId), 'app_instance_invalid');
+    if(filter.accountId!==undefined)textId(filter.accountId);if(filter.deviceId!==undefined)textId(filter.deviceId);
+    hostSessions?.invalidateWidget(filter);
+    const matchesWidget = holder => rootWidgetId(holder) === filter.widgetId && (!filter.accountId || holder.decision?.actor?.accountId === filter.accountId)
+      && (!filter.deviceId || holder.decision?.actor?.deviceId === filter.deviceId);
+    const records = new Set();
+    for(const collection of [tickets,sessions,relayWindows])for(const [key,holder]of [...collection])if(matchesWidget(holder)){
+      collection.delete(key);if(holder.scopedRecord)records.add(holder.scopedRecord);
+      if(holder.checkDigest)bootCandidates.delete(holder.checkDigest);
+    }
+    for(const [key,value]of [...scopedRenewals])if(matchesWidget({decision:value.decision,scopedRecord:value.record})){
+      scopedRenewals.delete(key);records.add(value.record);
+    }
+    for(const stream of [...live.values()])if(matchesWidget(stream.session)) { if(stream.scopedRecord)records.add(stream.scopedRecord);closeStream(stream,'app_access_revoked'); }
+    for(const record of records)scopedGateway?.invalidate(record);
+    return { invalidated: true };
   }
   function invalidateAccess(filter = {}) {
     for (const [key, item] of tickets) if (matches(item, filter) && !retainAccess(item)) {tickets.delete(key);if(item.scopedRecord)scopedGateway.invalidate(item.scopedRecord);}
@@ -672,10 +895,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const targets = db.prepare(`SELECT t.* FROM local_apps a
         JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
         JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
-        WHERE t.connector_key=? AND a.state='enabled'`).all(channel.key).map(target => ({
-          appId: target.app_id, revision: target.revision, digest: target.digest, ownerAccountId: target.owner_account_id,
-          connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile,
-        }));
+        WHERE t.connector_key=? AND a.state='enabled'`).all(channel.key).map(targetTuple);
       runtimeBindings.sync(channel, targets); return;
     }
     // Legacy connector v1 receives the route selected by the single current
@@ -711,19 +931,53 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
         WHERE t.connector_key=? AND t.port=? AND a.state='enabled'`).get(device.connector_key, port);
       if (existing) {
-        assertApps(!job && existing.owner_account_id === actor.accountId && existing.name === name && existing.current_entry_path === entryPath
+        assertApps(!job && activeTarget(existing.id)?.profile === 'soty.relay-restricted.v1' && existing.owner_account_id === actor.accountId && existing.name === name && existing.current_entry_path === entryPath
           && existing.grants_json === JSON.stringify(grants), 'app_port_already_registered', 409);
         publications.execute({ actor, op: 'apps.publication.get', args: { appId: existing.id } });
         return existing.id;
       }
-      assertApps(db.prepare('SELECT count(*) AS n FROM local_apps WHERE owner_account_id=?').get(actor.accountId).n < 100, 'apps_limit_reached', 429);
-      const id = jobAppId || `app-${randomBytes(16).toString('hex')}`, timestamp = now();
-      db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, device.connector_key, name, port, entryPath, JSON.stringify(grants), 'enabled', 1, timestamp, timestamp);
-      persistGrants(id, grants); domains.ensureCanonicalForApp(row(id)); publications.initForApp(row(id));
+      const id = jobAppId || `app-${randomBytes(16).toString('hex')}`;
+      insertRegisteredApp(actor, { id, connectorKey: device.connector_key, name, port, entryPath, grants });
       return id;
     });
-    sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor) };
+    notifyChange(actor,id); sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor) };
   }
+  function insertRegisteredApp(actor, { id, connectorKey: key, name, port, entryPath, grants }, initialTarget) {
+    assertApps(db.isTransaction, 'apps_transaction_required', 500);
+    assertApps(!row(id), 'apps_endpoint_request_conflict', 409);
+    assertApps(db.prepare('SELECT count(*) AS n FROM local_apps WHERE owner_account_id=?').get(actor.accountId).n < 100, 'apps_limit_reached', 429);
+    const timestamp = now();
+    db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, key, name, port, entryPath, JSON.stringify(grants), 'enabled', 1, timestamp, timestamp);
+    persistGrants(id, grants); domains.ensureCanonicalForApp(row(id)); publications.initForApp(row(id), initialTarget);
+  }
+  function endpointDevice(actor, intent) {
+    const identity = resolveOwnedDevice(actor, intent.hostDeviceId, intent.connectorId), device = binding(connectorKey(identity));
+    assertApps(device?.owner_account_id === actor.accountId, 'apps_device_not_owned', 403); return device;
+  }
+  function endpointInventory(device, witness, endpoint) {
+    const channel = channels.get(device.connector_key);
+    assertApps(channel?.ws.readyState === 1, 'app_offline', 503);
+    assertApps(channel.bindingVersion === 2 && channel.runtimeProfiles.includes(SELF_IP_PROFILE), 'apps_endpoint_connector_upgrade_required', 503);
+    const inventory = channel.selfInventory;
+    assertApps(inventory && now() >= channel.selfInventoryReceivedAt && now() - channel.selfInventoryReceivedAt <= 15_000, 'apps_endpoint_inventory_pending', 503);
+    assertApps(witness && typeof witness === 'object' && !Array.isArray(witness) && Object.keys(witness).sort().join(',') === 'channelId,digest,revision'
+      && witness.channelId === channel.channelId && witness.revision === inventory.revision && witness.digest === inventory.digest, 'apps_endpoint_interface_unavailable', 409);
+    assertApps(inventory.addresses.some(item => item.address === endpoint.address), 'apps_endpoint_not_on_selected_device', 403);
+    return inventory;
+  }
+  const endpointRegistry = createEndpointRegistration({ db, enabled: allowSelfIpTargets, blockedPorts, assertActor, withAuthorityFence, transaction,
+    resolveDevice: endpointDevice, inventoryFor: endpointInventory, assertGrants,
+    prepareTarget: runtimeBindings.prepareTarget, verifyPreparedTarget: runtimeBindings.verifyPreparedTarget,
+    insertApp(actor, intent, target) {
+      assertNativePortAvailable(db, '', target.connectorKey, target.port);
+      assertApps(!db.prepare(`SELECT 1 FROM local_apps a JOIN app_publications p ON p.app_id=a.id
+        JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision
+        WHERE a.state='enabled' AND t.connector_key=? AND t.port=? LIMIT 1`).get(target.connectorKey, target.port), 'app_port_already_registered', 409);
+      insertRegisteredApp(actor, { id: target.appId, connectorKey: target.connectorKey, name: intent.name, port: target.port, entryPath: target.entryPath, grants: intent.grants }, target);
+    }, readApp: (id, actor) => publicApp(row(id), actor),
+    afterCommit(actor, id) { notifyChange(actor, id); sync(channels.get(activeTarget(id)?.connector_key)); } });
+  const endpointRegistrationExtension = Object.freeze({ operations: endpointRegistry.operations,
+    executeAsync({ op, actor, args = {} }) { return endpointRegistry.executeAsync({ op, actor, args: authenticatedArgs(actor, args) }); } });
   function registerCreationJob(actor, job) {
     return withContactAuthority(actor, () => {
       assertActor(actor);
@@ -753,7 +1007,199 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       return publicApp(app, actor);
     });
   }
-  function execute(request) { return withContactAuthority(request.actor, () => executeCurrent(request)); }
+  function hostScope(holder) {
+    const decision=holder.decision;
+    assertApps(decision?.subject==='account'&&decision.actor&&!selectedRuntimeProfile(decision.profile),'app_host_session_changed',403);
+    const instance=rootWidgetId(holder)??'main';
+    assertApps(instance==='main'||holder.runtimeHost,'app_host_session_unavailable',503);
+    return {schema:'soty.app-host-scope.v1',accountId:decision.actor.accountId,deviceId:decision.actor.deviceId,appId:decision.appId,
+      policyEpoch:decision.policyEpoch,entry:{domainId:decision.domainId,origin:decision.origin,pathDigest:digest(holder.entryPath)},
+      target:{revision:decision.targetRevision,digest:decision.targetDigest,profile:decision.profile,bindingFloor:decision.requiredBindingVersion},
+      instanceId:instance,runtimeOrigin:holder.runtimeHost?.origin??decision.origin,runtimeScopeDigest:holder.runtimeHost?.scopeDigest??null};
+  }
+  function hostBindingReply(holder,descriptor) {
+    const decision=holder.decision;
+    return {hostSession:descriptor,hostSessionExpiresAt:Object.hasOwn(holder,'hostSessionExpiresAt')?holder.hostSessionExpiresAt:decision.expiresAt,
+      entry:{appId:decision.appId,domainId:decision.domainId,origin:decision.origin,path:holder.entryPath},
+      launchBinding:{schema:'soty.app-launch-binding.v1',policyEpoch:decision.policyEpoch,targetRevision:decision.targetRevision,
+        targetDigest:decision.targetDigest,profile:decision.profile,bindingFloor:decision.requiredBindingVersion},
+      ...(holder.runtimeHost?{runtimeOrigin:holder.runtimeHost.origin}:{})};
+  }
+  function freshHostHolder(actor,id,claim,path,candidate=false) {
+    assertApps(hostSessions&&typeof path==='string'&&digest(runtimePath(path))===claim.scope.entry.pathDigest,'app_host_session_changed',403);
+    const scope=claim.scope,decision=publications.decideAccess({domainId:scope.entry.domainId,origin:scope.entry.origin,actor,ttlMs:accountSessionMs});
+    assertApps(decision.appId===id,'app_host_session_changed',403);assertRuntimeBinding(decision,{requireReady:true});
+    const holder={decision,entryPath:path,...(scope.instanceId!=='main'?{rootInstanceId:scope.instanceId}:{}),hostSession:claim,...(candidate?{hostRenewal:{}}:{})};
+    holder.runtimeHost=holder.rootInstanceId?createWidgetHostBinding(decision,holder.rootInstanceId,path):createMainHostBinding(decision,path);
+    checkWidgetRuntimeFor(holder,'renew');
+    assertApps(scopedHash(hostScope(holder))===claim.family,'app_host_session_changed',403);
+    return holder;
+  }
+  const hostCookieName=claim=>`__Host-${cookieName}_h${claim.frameId}_${claim.revision}_${claim.leaseHash}`;
+  const hostSelector=family=>`h_${family}`;
+  function hostBase(req) {
+    const name=`__Host-${cookieName}`,values=String(req.headers.cookie||'').split(';').map(part=>part.trim()).filter(part=>part.split('=',1)[0].trim()===name);
+    assertApps(values.length<=1,'app_session_required',401);
+    return values[0]?.slice(name.length+1);
+  }
+  function hostCookieToken(req,claim) {
+    const name=hostCookieName(claim),values=String(req.headers.cookie||'').split(';').map(part=>part.trim()).filter(part=>part.split('=',1)[0].trim()===name);
+    assertApps(values.length<=1,'app_session_required',401);
+    const token=values[0]?.slice(name.length+1);return typeof token==='string'&&/^[A-Za-z0-9_-]{43}$/.test(token)?token:null;
+  }
+  function hostCookieHeaders(req,session,{initial=false}={}) {
+    const claim=session.hostSession,base=`; HttpOnly; Path=/; SameSite=None; Secure; Partitioned`,headers=[];
+    if(initial)headers.push(`__Host-${cookieName}=${hostSelector(claim.family)}${base}; Max-Age=86400`);
+    headers.push(`${hostCookieName(claim)}=${session.hostCookieToken}${base}; Max-Age=3600`);
+    const issuedHeaders=headers.length;
+    // Expire only names observed in this request and proven obsolete for this
+    // exact family. A delayed header cannot name a future successor cookie.
+    const names=String(req.headers.cookie||'').split(';').map(part=>part.trim().split('=',1)[0]);
+    const pattern=new RegExp(`^__Host-${cookieName}_h([A-Za-z0-9_-]{43})_([0-9]{1,16})_([a-f0-9]{64})$`);
+    for(const name of names.slice(0,64)){
+      const match=pattern.exec(name);if(!match||name===hostCookieName(claim)||headers.length-issuedHeaders>=16)continue;
+      const state=hostSessions.cookieState(match[1],match[3]),revision=Number(match[2]);
+      if(state?.family===claim.family&&Number.isSafeInteger(revision)&&revision>=1
+        &&(!state.open||revision<=state.revision&&match[3]!==state.leaseHash))headers.push(`${name}=${base}; Max-Age=0`);
+    }
+    return headers;
+  }
+  function hostSessionFor(req,app) {
+    const base=hostBase(req);if(!base?.startsWith('h_'))return null;
+    assertApps(/^h_[a-f0-9]{64}$/.test(base),'apps_access_denied',403);
+    const matching=[];let denied;
+    for(const session of sessions.values())if(session.hostSession&&base===hostSelector(session.hostSession.family)){
+      const token=hostCookieToken(req,session.hostSession);if(!token||sessions.get(digest(token))!==session)continue;
+      try{checkHolderHost(session,app);hostSessions.assertClaim(session.hostSession);assertApps(!hostSessions.admitting(session.hostSession),'app_host_session_unconfirmed',409);
+        assertApps(session.decision.appId===app.id&&session.decision.domainId===app.appHost.domainId&&session.decision.origin===canonicalHostOrigin(app),'apps_access_denied',403);
+        checkAccess(session);assertApps(scopedHash(hostScope(session))===session.hostSession.family,'app_host_session_changed',403);matching.push(session);
+      }catch(error){denied=error;}
+    }
+    if(!matching.length){if(denied)throw denied;assertApps(false,'apps_access_denied',403);}
+    // All members in the immutable full-scope family have identical authority.
+    // This does not select another widget, actor, target or policy as fallback.
+    return matching.sort((a,b)=>b.hostCreatedAt-a.hostCreatedAt)[0];
+  }
+  function hostAttempt(id,frameId,requestId) {
+    const matches=new Set();for(const holder of [...tickets.values(),...sessions.values()])if(holder.hostRenewal?.appId===id
+      &&holder.hostRenewal.claim.frameId===frameId&&holder.hostRenewal.requestId===requestId)matches.add(holder.hostRenewal);
+    assertApps(matches.size<=1,'app_host_session_conflict',409);return [...matches][0];
+  }
+  function admitHostSession(req,res,ticket,decision) {
+    assertApps(ticket.hostTicketExpiresAt>now(),'app_ticket_invalid',403);
+    const attempt=ticket.hostRenewal;
+    const cookieNames=String(req.headers.cookie||'').split(';').map(part=>part.trim().split('=',1)[0]);
+    assertApps(cookieNames.filter(name=>name.startsWith(`__Host-${cookieName}_h`)).length<=64,'apps_sessions_busy',429);
+    if(attempt)assertApps(hostBase(req)===hostSelector(ticket.hostSession.family),'app_host_session_changed',403);
+    let session=attempt?.session;
+    if(!session||sessions.get(session.sessionKey)!==session){
+      assertApps(sessions.size<4096,'apps_sessions_busy',429);
+      const token=secret(),key=digest(token),sessionCheck=secret();
+      session={decision,sessionKey:key,entryPath:ticket.entryPath,hostSession:ticket.hostSession,hostCookieToken:token,hostCreatedAt:now(),
+        ...(ticket.rootInstanceId?{rootInstanceId:ticket.rootInstanceId}:{}),...(ticket.runtimeHost?{runtimeHost:ticket.runtimeHost}:{}),
+        ...(attempt?{hostRenewal:attempt}:{}),checkDigest:digest(sessionCheck),checkToken:sessionCheck,checkExpiresAt:now()+30000,family:{head:key,revision:0}};
+      sessions.set(key,session);if(attempt)attempt.session=session;
+    }else{session.decision=decision;checkWidgetRuntimeFor(session,'session');}
+    res.setHeader('Set-Cookie',hostCookieHeaders(req,session,{initial:!attempt}));
+    json(res,200,{ok:true,entryPath:ticket.entryPath,sessionCheck:session.checkToken,
+      ...(attempt?{hostSessionRenewal:true,hostSessionRequestId:attempt.requestId,hostSessionParentOrigin:attempt.parentOrigin}:{})});
+  }
+  function checkedHostCandidate(req,app,session) {
+    assertApps(hostBase(req)===hostSelector(session.hostSession.family),'app_host_session_changed',403);
+    const token=hostCookieToken(req,session.hostSession);
+    const authority=session.hostCompatibility??session;
+    assertApps(token&&sessions.get(digest(token))===authority,'app_session_check_failed',403);
+    if(session.hostCompatibility){hostSessions.assertClaim(authority.hostSession);checkAccess(authority);}
+    checkHolderHost(session,app);checkAccess(session);
+    assertApps(scopedHash(hostScope(session))===session.hostSession.family,'app_host_session_changed',403);
+    return session;
+  }
+  function admitHostCompatibility(req,res,ticket,decision,app) {
+    const current=hostSessionFor(req,app),holder={...ticket,decision};
+    assertApps(current&&scopedHash(hostScope(holder))===current.hostSession.family,'app_host_session_changed',403);
+    for(const[key,value]of sessions)if(value.hostCompatibility&&value.checkExpiresAt<=now())sessions.delete(key);
+    assertApps(sessions.size<4096&&[...sessions.values()].filter(value=>value.hostCompatibility&&value.hostSession.frameId===current.hostSession.frameId).length<4,'apps_sessions_busy',429);
+    const key=digest(secret()),check=secret(),{hostRenewal:_priorRenewal,...base}=current;
+    const session={...base,decision,sessionKey:key,hostCompatibility:current,checkDigest:digest(check),checkToken:check,checkExpiresAt:now()+30000};
+    sessions.set(key,session);
+    // Explicit legacy/external launch may use an already-current exact family,
+    // but cannot replace its selector, lease or auth cookie.
+    json(res,200,{ok:true,entryPath:ticket.entryPath,sessionCheck:check});
+  }
+  function hostPromotionConsumers(attempt,session,holder) {
+    const claim=attempt.claim,prior=value=>value?.frameId===claim.frameId&&value.revision===claim.priorRevision&&value.leaseHash===claim.priorLeaseHash;
+    const currentBinding=assertRuntimeBinding(holder.decision,{requireReady:true}),channel=channels.get(holder.decision.route.connectorKey);
+    const sameScope=value=>!value.scopedRecord&&value.runtimeHost?.origin===holder.runtimeHost?.origin
+      &&value.hostSession.family===claim.family&&scopedHash(hostScope(value))===claim.family;
+    const streams=[...live.values()].filter(value=>prior(value.session.hostSession));
+    const windows=[...relayWindows.values()].filter(value=>prior(value.hostSession));
+    // Validate before the durable CAS. Promotion only replaces transport
+    // authority for this exact member/head; existing Source I/O is not replayed.
+    for(const stream of streams)assertApps(!stream.closed&&sameScope(stream.session)&&stream.channel===channel
+      &&stream.runtimeBinding===currentBinding,'app_host_session_changed',403);
+    for(const window of windows)assertApps(sameScope(window),'app_host_session_changed',403);
+    return()=>{
+      for(const stream of streams)stream.session={...stream.session,decision:holder.decision,sessionKey:session.sessionKey,
+        hostSession:claim,hostRenewal:attempt};
+      // Keep the independently bounded window-grant deadline.
+      for(const window of windows)window.hostSession=claim;
+    };
+  }
+  function hostOperation(op,args,actor,id) {
+    assertApps(hostSessions,'app_host_session_unavailable',503);
+    const common=['appId','frameId','lease','revision'];
+    exact(args,op==='apps.session.renew'?[...common,'requestId','parentOrigin','currentEntryPath']:
+      op==='apps.session.confirm'?[...common,'requestId']:op==='apps.session.context'?[...common,'currentEntryPath']:common);
+    const descriptor={schema:HOST_SESSION_SCHEMA,frameId:args.frameId,lease:args.lease,revision:args.revision};
+    const candidates=new Set([...tickets.values(),...sessions.values()].map(value=>value.hostRenewal).filter(Boolean));
+    if(op==='apps.session.close'){
+      const candidate=[...candidates].find(value=>value.appId===id&&value.descriptor.frameId===args.frameId&&value.descriptor.lease===args.lease&&value.descriptor.revision===args.revision);
+      const closed=hostSessions.close(actor,id,args,candidate?.claim);
+      if(closed){for(const collection of [tickets,sessions,relayWindows])for(const[key,value]of collection)if(value.hostSession?.frameId===args.frameId)collection.delete(key);
+        for(const stream of [...live.values()])if(stream.session.hostSession?.frameId===args.frameId&&!rebindPlainHostStream(stream))closeStream(stream,'app_access_revoked');}
+      else if(candidate)for(const collection of[tickets,sessions])for(const[key,value]of collection)if(value.hostRenewal===candidate)collection.delete(key);
+      return{closed};
+    }
+    if(op==='apps.session.context'){
+      const claim=hostSessions.current(args,actor,id),holder=freshHostHolder(actor,id,claim,args.currentEntryPath);
+      const session=[...sessions.values()].find(value=>!value.hostCompatibility&&value.hostSession?.frameId===claim.frameId&&value.hostSession.leaseHash===claim.leaseHash);
+      const admitting=hostSessions.admitting(claim),current=Boolean(!admitting&&session?.hostChecked===true&&session.decision.expiresAt>now());
+      return{schema:'soty.app-host-session-context.v1',state:admitting?'admitting':current?'current':'renew-required',...hostBindingReply({...holder,hostSessionExpiresAt:current?session.decision.expiresAt:null},{...descriptor,expiresAt:claim.expiresAt})};
+    }
+    assertApps(typeof args.requestId==='string'&&/^[A-Za-z0-9_-]{16,128}$/.test(args.requestId),'app_host_session_request_conflict',409);
+    let attempt=hostAttempt(id,args.frameId,args.requestId);
+    if(op==='apps.session.confirm'){
+      assertApps(attempt&&attempt.descriptor.lease===args.lease&&attempt.descriptor.revision===args.revision,'app_host_session_unconfirmed',409);
+      const holder=freshHostHolder(actor,id,attempt.claim,attempt.entryPath,true),session=attempt.session;
+      assertApps(session&&sessions.get(session.sessionKey)===session&&session.hostChecked===true&&session.checkExpiresAt>now(),'app_host_session_unconfirmed',409);
+      const promoteConsumers=hostPromotionConsumers(attempt,session,holder);
+      hostSessions.promote(attempt.claim);session.decision=holder.decision;session.hostSessionExpiresAt=holder.decision.expiresAt;promoteConsumers();
+      return{schema:'soty.app-host-session-confirmation.v1',requestId:args.requestId,confirmed:true,...hostBindingReply(session,attempt.descriptor)};
+    }
+    assertApps(op==='apps.session.renew'&&origins.has(args.parentOrigin),'app_host_session_changed',403);
+    const intent=digest(JSON.stringify([args.frameId,args.lease,args.revision,args.currentEntryPath,args.parentOrigin]));
+    let holder;
+    if(attempt){assertApps(attempt.intent===intent,'app_host_session_request_conflict',409);holder=freshHostHolder(actor,id,attempt.claim,attempt.entryPath,true);}
+    else{
+      const prior=hostSessions.current(args,actor,id);holder=freshHostHolder(actor,id,prior,args.currentEntryPath);
+      const pending=[...candidates].filter(value=>value.claim.frameId===prior.frameId&&value.claim.priorRevision===prior.revision&&value.claim.priorLeaseHash===prior.leaseHash);
+      assertApps(pending.length<2,'apps_sessions_busy',429);
+      const next=hostSessions.prepare(prior);attempt={appId:id,requestId:args.requestId,intent,descriptor:next.descriptor,claim:next.claim,entryPath:holder.entryPath,parentOrigin:args.parentOrigin};
+    }
+    for(const[key,value]of tickets)if(value.hostRenewal===attempt)tickets.delete(key);
+    assertApps(tickets.size<4096,'apps_launch_busy',429);const token=secret();
+    const ticketExpiresAt=now()+30000;
+    tickets.set(digest(token),{...holder,hostSession:attempt.claim,hostRenewal:attempt,hostTicketExpiresAt:ticketExpiresAt});
+    const {bootPath}=guideLaunchPath(holder.entryPath),binding=hostBindingReply(holder,attempt.descriptor);
+    return{launchUrl:`${holder.runtimeHost?.origin??holder.decision.origin}${bootPath}&mode=renew#${token}`,expiresAt:ticketExpiresAt,...binding,hostSessionRequestId:args.requestId};
+  }
+  function execute(request) {
+    const mutating=['apps.update','apps.revoke','apps.domains.claim','apps.domains.retire','apps.publication.update','apps.source.promote','apps.claim'].includes(request.op);
+    const wasPublic=mutating&&publiclyListed(request.args?.appId);
+    const result=withContactAuthority(request.actor, () => executeCurrent(request));
+    if(mutating)notifyChange(request.actor,request.args?.appId,wasPublic);
+    return result;
+  }
   function executeCurrent({ op, args = {}, actor }) {
     if (directoryOperations.includes(op)) assertApps(Object.hasOwn(args, 'expectedAccountId'), 'apps_directory_account_required');
     args = authenticatedArgs(actor, args); assertApps(operations.has(op), 'unsupported_operation');
@@ -791,6 +1237,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       return registerLocalApp(actor, args);
     }
     const id = appId(args.appId), app = row(id);
+    if(op.startsWith('apps.session.'))return hostOperation(op,args,actor,id);
     if (op === 'apps.relay.identity.close') {
       exact(args, ['appId', 'grant']);
       assertApps(typeof args.grant === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(args.grant), 'app_identity_window_unavailable', 403);
@@ -803,7 +1250,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       return { closed: true };
     }
     if (op === 'apps.relay.identity') {
-      exact(args, ['appId', 'domainId', 'launchBinding']);
+      exact(args, ['appId', 'domainId', 'launchBinding', 'instanceId', 'runtimeOrigin', 'hostSession']);
+      const hasInstance = Object.hasOwn(args, 'instanceId'), hasRuntime = Object.hasOwn(args, 'runtimeOrigin');
+      assertApps(hasInstance === hasRuntime && (!hasInstance || typeof args.instanceId === 'string'
+        && /^(?:main|widget-[a-f0-9-]{36})$/u.test(args.instanceId) && typeof args.runtimeOrigin === 'string'), 'app_identity_window_unavailable', 403);
+      const hasHostSession=Object.hasOwn(args,'hostSession');
+      assertApps(!hasHostSession||hasInstance&&args.hostSession&&typeof args.hostSession==='object'&&!Array.isArray(args.hostSession)
+        &&Object.keys(args.hostSession).sort().join(',')==='frameId,lease,revision','app_identity_window_unavailable',403);
       const pin = args.launchBinding;
       assertApps(pin && typeof pin === 'object' && !Array.isArray(pin)
         && Object.keys(pin).sort().join(',') === 'bindingFloor,policyEpoch,profile,schema,targetDigest,targetRevision'
@@ -816,11 +1269,35 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         && decision.targetDigest === pin.targetDigest && decision.profile === pin.profile
         && decision.requiredBindingVersion === pin.bindingFloor, 'app_access_changed', 403);
       assertRuntimeBinding(decision, { requireReady: true });
+      const holder = { decision };
+      if (hasInstance) {
+        let original;
+        if(hasHostSession){
+          assertApps(hostSessions,'app_host_session_unavailable',503);
+          const claim=hostSessions.current(args.hostSession,actor,id);
+          assertApps(!hostSessions.admitting(claim),'app_host_session_unconfirmed',409);
+          original=[...sessions.values()].find(value=>!value.hostCompatibility&&value.hostChecked===true&&value.decision.expiresAt>now()
+            &&value.hostSession?.frameId===claim.frameId&&value.hostSession.leaseHash===claim.leaseHash&&value.hostSession.revision===claim.revision
+            &&value.runtimeHost?.origin===args.runtimeOrigin);
+          assertApps(original,'app_identity_window_unavailable',403);holder.hostSession=claim;
+        }
+        if(args.instanceId==='main'){
+          assertApps(original?.runtimeHost.scope.schema==='soty.main-runtime-scope.v1','app_identity_window_unavailable',403);
+          holder.entryPath=original.entryPath;holder.runtimeHost=createMainHostBinding(decision,holder.entryPath);
+        }else{
+          const widget = runtimeWidget(args.instanceId);
+          holder.rootInstanceId = args.instanceId; holder.entryPath = widget.entry.path;
+          holder.runtimeHost = createWidgetHostBinding(decision, args.instanceId, holder.entryPath);
+        }
+        assertApps(holder.runtimeHost.origin === args.runtimeOrigin, 'app_widget_runtime_changed', 403);
+        if(hasHostSession)assertApps(scopedHash(hostScope(holder))===holder.hostSession.family,'app_host_session_changed',403);
+        checkWidgetRuntimeFor(holder, 'identity');
+      }
       const channel = channels.get(decision.route.connectorKey);
       assertApps(channel?.bindingVersion === 2 && channel.relayIdentity === true && signRelayIdentity, 'app_identity_unavailable', 503);
       for (const [key, value] of relayWindows) if (value.decision.expiresAt <= now()) relayWindows.delete(key);
       assertApps(relayWindows.size < 4096, 'apps_sessions_busy', 429);
-      const grant = secret(); relayWindows.set(digest(grant), { decision });
+      const grant = secret(); relayWindows.set(digest(grant), holder);
       return { schema: 'soty.relay-window-grant.v1', grant, expiresAt: decision.expiresAt };
     }
     if(op==='apps.scoped.close') {
@@ -828,7 +1305,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       return scopedGateway.abandon(actor,id,args.handle);
     }
     if (op === 'apps.launch') {
-      exact(args, ['appId', 'domainId', 'path', 'instanceId']);
+      exact(args, ['appId', 'domainId', 'path', 'instanceId','hostSession']);
+      assertApps(args.hostSession===undefined||args.hostSession===true,'invalid_arguments');
       assertApps(args.instanceId === undefined || typeof args.instanceId === 'string' && /^(?:main|widget-[a-f0-9-]{36})$/u.test(args.instanceId), 'app_instance_invalid', 400);
       assertApps(app?.state === 'enabled', 'apps_access_denied', 403);
       const domainId = args.domainId === undefined && args.path === undefined
@@ -838,6 +1316,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         : db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id, textId(domainId));
       assertApps(domain, args.domainId === undefined ? 'apps_origin_not_configured' : 'apps_access_denied', args.domainId === undefined ? 503 : 403);
       const decision = publications.decideAccess({ domainId: domain.id, origin: domain.origin, actor });
+      if(args.instanceId?.startsWith('widget-')&&checkWidgetLaunch)synchronous(checkWidgetLaunch({actor,widgetId:args.instanceId,appId:id,
+        entry:{domainId:domain.id,path:runtimePath(args.path??decision.route.entryPath)},target:{revision:decision.targetRevision,digest:decision.targetDigest,profile:decision.profile}}),'apps_async_authority');
       assertRuntimeBinding(decision, { requireReady: true });
       // Saved main/widget root entries follow only an explicitly admitted Root-SSO workspace.
       const savedRootEntry = args.path === '/' && decision.route.entryPath === '/embed' && selectedRuntimeProfile(decision.profile)
@@ -854,10 +1334,20 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id)),instanceId:args.instanceId});
         voiceSourceActors.set(scoped.record,actor);
       }
-      tickets.set(digest(ticket), { decision, entryPath,...(scoped?{scopedRecord:scoped.record}:{}) });
-      return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt,
+      const launchHolder = { decision, entryPath,...(args.instanceId?.startsWith('widget-')?{rootInstanceId:args.instanceId}:{}),...(scoped?{scopedRecord:scoped.record}:{}) };
+      if (!scoped && args.instanceId?.startsWith('widget-') && resolveWidgetRuntime
+        && synchronous(resolveWidgetRuntime(args.instanceId), 'apps_async_authority'))
+        launchHolder.runtimeHost = createWidgetHostBinding(decision, args.instanceId, entryPath);
+      if(!scoped&&args.hostSession===true&&!args.instanceId?.startsWith('widget-'))launchHolder.runtimeHost=createMainHostBinding(decision,entryPath);
+      let hostSession;
+      if(!scoped&&args.hostSession===true){assertApps(hostSessions,'app_host_session_unavailable',503);const initial=hostSessions.create(hostScope(launchHolder));
+        launchHolder.hostSession=initial.claim;launchHolder.hostTicketExpiresAt=now()+30000;hostSession=initial.descriptor;}
+      try {checkWidgetRuntimeFor(launchHolder,'session');}catch(error){if(scoped)scopedGateway.invalidate(scoped.record);if(hostSession)hostSessions.close(actor,id,hostSession);throw error;}tickets.set(digest(ticket), launchHolder);
+      return { launchUrl: `${launchHolder.runtimeHost?.origin ?? domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt,
+        ...(launchHolder.runtimeHost ? { runtimeOrigin: launchHolder.runtimeHost.origin } : {}),
+        ...(hostSession?{hostSession,hostSessionExpiresAt:Math.min(decision.expiresAt,hostSession.expiresAt)}:{}),
         ...(scoped?{runtimeProfile:decision.profile,scopedCloseHandle:scoped.closeHandle,scopedSlotExpiresAt:scoped.record.context.expiresAt,
-          scopedSource:{...scoped.record.context.sourceProfile}}:{}),
+          scopedSource:{...scoped.record.context.sourceProfile},...(scopedGateway.frameId(scoped.record)?{scopedFrameId:scopedGateway.frameId(scoped.record)}:{})}:{}),
         ...(!scoped?{launchBinding:{schema:'soty.app-launch-binding.v1',policyEpoch:decision.policyEpoch,targetRevision:decision.targetRevision,targetDigest:decision.targetDigest,profile:decision.profile,bindingFloor:decision.requiredBindingVersion}}:{}),
         entry: { appId: id, domainId: domain.id, origin: domain.origin, path: entryPath } };
     }
@@ -899,7 +1389,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function appForRequest(req) {
     const host = hostClassifier.classifyHost(req.headers.host);
     if (host.kind === 'outside') return null;
-    if (!['canonical', 'alias'].includes(host.kind)) return { hostStatus: host.kind };
+    if (!['canonical', 'alias', 'widget-runtime','main-runtime'].includes(host.kind)) return { hostStatus: host.kind };
     return { ...(row(host.appId) || { missing: true }), appHost: host };
   }
   function hostFailure(app) {
@@ -949,6 +1439,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return { url: url.href, currentSource: false };
   }
   function publicResetFor(app, path) {
+    if (internalRuntimeHost(app)) return undefined;
     try {
       publications.decideAccess({ domainId: app.appHost.domainId, origin: app.appHost.origin });
       return guidePath(path);
@@ -960,6 +1451,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const app = appForRequest(req);
     const failure = app && hostFailure(app);
     if (failure) { setStatusPolicy(res); respondRuntimeFailure(req, res, failure.status, failure.error); return; }
+    if (app?.appHost&&internalRuntimeHost(app)) { setStatusPolicy(res); respondRuntimeFailure(req, res, status, error); return; }
     if (app?.appHost && !app.missing) {
       let path;
       try { path = runtimePath(req.url || '/'); } catch { /* Internal endpoints never redirect into the shell. */ }
@@ -1044,17 +1536,19 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const session=candidateFor(stream.req,stream.candidateApp),p=session.promotion;
     assertApps(session===stream.bootCandidateSession&&session.sessionKey===stream.session.sessionKey
       &&scopedGateway.sourceContext(session.scopedRecord)?.ready===true,'app_scoped_candidate_unconfirmed',403);
-    if(p.state==='pending'){session.family.head=session.sessionKey;session.family.revision++;p.state='promoted';}
+    if(p.state==='pending'){scopedGateway.promoteFrame(session.scopedRecord);session.family.head=session.sessionKey;session.family.revision++;p.state='promoted';}
     stream.res.setHeader('Set-Cookie',sessionCookies(p.token,session));
   }
   function sessionFor(req, app, { requireCookie = false } = {}) {
+    const hostSession=hostSessionFor(req,app);if(hostSession)return hostSession;
     const key=primaryKey(req);
     if (key===null) {
       assertApps(!requireCookie && app.appHost.kind === 'alias', 'app_session_required', 401);
       return { decision: publications.decideAccess({ domainId: app.appHost.domainId, origin: app.appHost.origin }) };
     }
     const session = sessions.get(key);
-    assertApps(session && session.decision.appId === app.id && session.decision.domainId === app.appHost.domainId && session.decision.origin === app.appHost.origin, 'apps_access_denied', 403);
+    assertApps(session && session.decision.appId === app.id && session.decision.domainId === app.appHost.domainId && session.decision.origin === canonicalHostOrigin(app), 'apps_access_denied', 403);
+    checkHolderHost(session, app);
     assertApps(session.promotion?.state!=='pending','app_scoped_candidate_unconfirmed',403);
     const frame=requestFrame(req);
     assertApps(!frame||session.family.frameId===frame&&session.family.head===key,'app_frame_invalid',403);
@@ -1163,6 +1657,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       ||selected&&path==='/api/embed/session-continue'&&req.method==='POST','app_scoped_candidate_route_denied',403);
     if (internalUrl.pathname === '/_soty/relay-identity-config') {
       assertApps(!selected && path === '/_soty/relay-identity-config' && req.method === 'GET', 'app_identity_unavailable', 403);
+      if (internalRuntimeHost(app)) sessionFor(req, app, { requireCookie: true });
       json(res, 200, { schema: 'soty.relay-identity-config.v1', shellOrigins: [...origins] }); return;
     }
     if (internalUrl.pathname === '/_soty/ingress-check') {
@@ -1180,21 +1675,26 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       res.statusCode = 204; res.end(); return;
     }
     if (internalUrl.pathname === '/_soty/boot' && req.method === 'GET') {
-      assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path'||selected&&key==='mode') && internalUrl.searchParams.getAll('path').length <= 1
+      assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path'||(selected||hostSessions)&&key==='mode') && internalUrl.searchParams.getAll('path').length <= 1
         &&internalUrl.searchParams.getAll('mode').length<=1&&(!internalUrl.searchParams.has('mode')||internalUrl.searchParams.get('mode')==='renew'),'invalid_app_path');
       const recoveryPath = guidePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce(), recovery = shellRecoveryFor(app, recoveryPath);
       const html = renderBootPage({ nonce, shellUrl: recovery.url, publicResetPath: recovery.currentSource ? undefined : publicResetFor(app, recoveryPath),scoped:selected,
-        renewal:selected&&internalUrl.searchParams.get('mode')==='renew',parentOrigin:scopedProfile?.parentOrigin,parentOrigins:[...origins] });
+        renewal:selected&&internalUrl.searchParams.get('mode')==='renew',hostRenewal:!selected&&internalUrl.searchParams.get('mode')==='renew',parentOrigin:scopedProfile?.parentOrigin,parentOrigins:[...origins] });
       setManagedPagePolicy(res, nonce, [...origins]);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end(html); return;
     }
     if (path === '/_soty/session' && req.method === 'GET') {
       const check=req.headers['x-soty-boot-check'];
-      const session=typeof check==='string'&&bootCandidates.has(digest(check))?candidateFor(req,app):sessionFor(req,app,{requireCookie:true});
+      const candidate=typeof check==='string'?[...sessions.values()].find(value=>value.hostSession&&equalDigest(value.checkDigest,digest(check))):null;
+      const session=candidate?checkedHostCandidate(req,app,candidate):typeof check==='string'&&bootCandidates.has(digest(check))?candidateFor(req,app):sessionFor(req,app,{requireCookie:true});
       if (check !== undefined) {
         assertApps(headerCount(req, 'x-soty-boot-check') === 1 && typeof check === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(check)
           && session.checkExpiresAt > now() && equalDigest(session.checkDigest, digest(check)), 'app_session_check_failed', 403);
+      }
+      if(session.hostSession&&check!==undefined){
+        if(!session.hostRenewal&&!session.hostCompatibility&&!session.hostChecked)session.hostSession=hostSessions.activateInitial(session.hostSession);
+        session.hostChecked=true;
       }
       json(res, 200, { ok: true, ...(check === undefined ? {} : { sessionCheck: check }) }); return;
     }
@@ -1204,11 +1704,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(body && typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 1
         && typeof body.ticket === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(body.ticket), 'app_ticket_invalid', 403);
       const key = digest(body.ticket), ticket = tickets.get(key); tickets.delete(key);
-      assertApps(ticket && ticket.decision.appId === app.id && ticket.decision.domainId === app.appHost.domainId && ticket.decision.origin === app.appHost.origin, 'app_ticket_invalid', 403);
+      assertApps(ticket && ticket.decision.appId === app.id && ticket.decision.domainId === app.appHost.domainId && ticket.decision.origin === canonicalHostOrigin(app), 'app_ticket_invalid', 403);
+      checkHolderHost(ticket, app);
       // The request body was asynchronous: only this fresh branded recheck may
       // mint a session. A stale app row or successful launch is not authority.
       const decision = publications.recheckAccess(ticket.decision, { ttlMs: accountSessionMs });
+      checkWidgetRuntimeFor({...ticket,decision},'session');
       assertRuntimeBinding(decision, { requireReady: true });
+      if(ticket.hostSession){admitHostSession(req,res,ticket,decision);return;}
+      if(!selected&&hostBase(req)?.startsWith('h_')){admitHostCompatibility(req,res,ticket,decision,app);return;}
       const frameId=isRootSignedWorkspaceSource(ticket.scopedRecord?.context.sourceProfile)
         ?ticket.frameId??ticket.scopedRecord.context.reference.id:undefined;
       assertApps(!frame||frame===frameId,'app_frame_invalid',403);
@@ -1223,14 +1727,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         if(ticket.rebind){
           assertApps(ticket.scopedRecord&&bootCandidates.size<256,'app_scoped_candidate_busy',429);
           const base=baseCookieKey?sessions.get(baseCookieKey):null;
-          assertApps(!baseCookieKey||base&&base.decision.appId===app.id&&base.decision.domainId===app.appHost.domainId&&base.decision.origin===app.appHost.origin
+          const recovered=ticket.frameRecovery===true&&scopedGateway.isFrameRecovery(ticket.scopedRecord);
+          assertApps(!baseCookieKey||!base&&recovered||base&&base.decision.appId===app.id&&base.decision.domainId===app.appHost.domainId&&base.decision.origin===app.appHost.origin
             &&base.family?.head!==null&&base.family.frameId===frameId
             &&JSON.stringify(base.scopedRecord?.context.rootPrincipal)===JSON.stringify(ticket.scopedRecord.context.rootPrincipal)
             &&JSON.stringify(base.scopedRecord?.context.humanPrincipal)===JSON.stringify(ticket.scopedRecord.context.humanPrincipal),'app_scoped_candidate_changed',403);
           family=base?.family??{head:null,revision:0,...(frameId?{frameId}:{})};
           promotion={state:'pending',token:value,baseCookieKey,baseHead:family.head,baseRevision:family.revision};
         }
-        session={decision,sessionKey,entryPath:ticket.entryPath,checkDigest:digest(sessionCheck),checkToken:sessionCheck,checkExpiresAt:now()+30_000,family,
+        session={decision,sessionKey,entryPath:ticket.entryPath,...(ticket.rootInstanceId?{rootInstanceId:ticket.rootInstanceId}:{}),checkDigest:digest(sessionCheck),checkToken:sessionCheck,checkExpiresAt:now()+30_000,family,
+          ...(ticket.runtimeHost?{runtimeHost:ticket.runtimeHost}:{}),
           ...(ticket.scopedRecord?{scopedRecord:ticket.scopedRecord}:{}),...(promotion?{promotion}:{})};
         if(ticket.scopedRecord)scopedGateway.attach(ticket.scopedRecord,session);sessions.set(sessionKey,session);
         if(promotion)bootCandidates.set(session.checkDigest,session);
@@ -1243,6 +1749,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         ...(ticket.scopedRecord?{scopedRequestId:ticket.scopedRecord.context.reference.id}:{}),...(ticket.rebind?{renewal:true,renewalRequestId:ticket.renewalRequestId}:{}) }); return;
     }
     if (path === '/_soty/session' && req.method === 'DELETE') {
+      assertApps(!internalRuntimeHost(app), 'app_session_required', 401);
       // Reset is an explicit new anonymous entry. It never bypasses the current
       // public policy, and cannot remove a session belonging to another address.
       publications.decideAccess({ domainId: app.appHost.domainId, origin: app.appHost.origin });
@@ -1287,14 +1794,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const holder = identityRequested ? relayWindows.get(windowKey) : undefined;
     if (identityRequested) {
       if (!holder || holder.decision.appId !== app.id || holder.decision.domainId !== app.appHost.domainId
-        || holder.decision.origin !== app.appHost.origin || holder.decision.subject !== 'account') {
+        || holder.decision.origin !== canonicalHostOrigin(app) || holder.decision.subject !== 'account'
+        || Boolean(holder.runtimeHost) !== internalRuntimeHost(app)
+        || holder.runtimeHost && (holder.runtimeHost.origin !== app.appHost.origin || rootWidgetId(holder) !== app.appHost.widgetId)) {
         // This response is generated by Root before a stream or upstream dispatch.
         // Upstream response headers are allowlisted and cannot set this marker.
         res.setHeader('X-Soty-Identity-Window', 'not-dispatched');
         assertApps(false, 'app_identity_window_unavailable', 503);
       }
+      checkHolderHost(holder, app);
+      checkWidgetRuntimeFor(holder, 'identity');
     }
-    const session=identityRequested?{ decision: publications.recheckAccess(holder.decision, { ttlMs: accountSessionMs }), windowKey }
+    const session=identityRequested?{ ...holder, decision: publications.recheckAccess(holder.decision, { ttlMs: accountSessionMs }), windowKey }
       :callbackRecord?callbackRecord.session:candidate?candidateFor(req,app)
       :rootWorkspace&&route?.credentialFree?publicFrameSession(req,app):sessionFor(req,app);
     if(selected){assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
@@ -1350,6 +1861,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function handleRequest(req, res) {
     if (closed) { setStatusPolicy(res); respondRuntimeFailure(req, res, 503, 'app_server_closed'); return true; }
     const app = appForRequest(req); if (!app) return false;
+    // Classification comes from this registry, never an incoming metric label.
+    if(app.id){try{onRuntimeRequest({appId:app.id,response:res});}catch{/* Observation cannot change an app response. */}}
     const failure = hostFailure(app);
     if (failure) { setStatusPolicy(res); respondRuntimeFailure(req, res, failure.status, failure.error); return true; }
     void routeApp(req, res, app).catch(error => { if (!res.headersSent) respondAppFailure(req, res, error.status || 400, error.code || 'app_invalid_request'); else res.destroy(); }); return true;
@@ -1644,7 +2157,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const channel = channels.get(decision.route.connectorKey); assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
     assertApps(channel.streams.size < LIMITS.streams, 'app_device_busy', 429);
     if (decision.accessBasis === 'public') assertApps([...channel.streams.values()].filter(item => item.session.decision.accessBasis === 'public').length < publicStreams, 'app_device_busy', 429);
-    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, runtimeBinding, session: { decision, sessionKey: session.sessionKey }, scopedRecord:session.scopedRecord, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false };
+    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, runtimeBinding, session: { decision, sessionKey: session.sessionKey, entryPath:session.entryPath,
+      ...(session.runtimeHost?{runtimeHost:session.runtimeHost}:{}),
+      ...(session.hostSession?{hostSession:session.hostSession}:{}),
+      ...(session.hostRenewal?{hostRenewal:session.hostRenewal}:{}),
+      ...(session.windowKey?{windowKey:session.windowKey}:{}),
+      ...(session.rootInstanceId?{rootInstanceId:session.rootInstanceId}:{}),...(session.scopedRecord?{scopedRecord:session.scopedRecord}:{}) }, scopedRecord:session.scopedRecord, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false };
     assertApps(!stream.scopedRecord||stream.kind==='http','app_scoped_websocket_denied',403);
     stream.timer = setTimeout(() => closeStream(stream, 'app_response_timeout'), LIMITS.headMs); stream.timer.unref();
     channel.streams.set(id, stream); live.set(id, stream); return stream;
@@ -1712,7 +2230,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       socket.pause(); socket.on('error', () => closeStream(stream, 'app_client_closed')); socket.once('close', () => closeStream(stream, 'app_client_closed'));
       const headers = {};
       for (const name of ['sec-websocket-key', 'sec-websocket-version', 'sec-websocket-protocol']) if (typeof req.headers[name] === 'string' && req.headers[name].length < 2048) headers[name] = req.headers[name];
-      headers.origin = app.appHost.origin;
+      headers.origin = canonicalHostOrigin(app);
       sendStream(stream, { type: 'open', id: stream.id, kind: 'ws', appId: app.id, path, method: 'GET', headers });
     } catch (error) {
       if (stream) closeStream(stream, error.code || 'app_upgrade_denied');
@@ -1773,7 +2291,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             if (frame.capabilities.runtimeProfiles !== undefined) {
               const profiles = frame.capabilities.runtimeProfiles;
               assertApps(Array.isArray(profiles) && profiles.length > 0 && profiles.length <= 8
-                && profiles.every(value => ['soty.relay-restricted.v1','soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(value))
+                && profiles.every(value => ['soty.relay-restricted.v1','soty.selected-human-embed.v1','soty.selected-human-embed.v2', ...(allowSelfIpTargets ? [SELF_IP_PROFILE] : [])].includes(value))
                 && new Set(profiles).size === profiles.length, 'app_source_protocol_required');
               runtimeProfiles = profiles;
             }
@@ -1793,6 +2311,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         }
         channel.lastSeenAt = now();
         assertApps(frame.type !== 'auth', 'app_auth_repeated');
+        if (frame.type === 'self-addresses') {
+          assertApps(allowSelfIpTargets && channel.bindingVersion === 2 && channel.runtimeProfiles.includes(SELF_IP_PROFILE)
+            && Object.keys(frame).sort().join(',') === 'channelId,inventory,type' && frame.channelId === channel.channelId, 'apps_endpoint_inventory_invalid');
+          const inventory = normalizeSelfInventory(frame.inventory, { connectorKey: channel.key, channelId: channel.channelId });
+          const prior = channel.selfInventory;
+          assertApps(!prior || inventory.revision > prior.revision || inventory.revision === prior.revision && inventory.digest === prior.digest, 'apps_endpoint_inventory_invalid');
+          channel.selfInventory = prior?.digest === inventory.digest ? prior : inventory; channel.selfInventoryReceivedAt = now();
+          if (prior?.digest !== inventory.digest) { runtimeBindings.refreshRejected(channel); sync(channel); }
+          return;
+        }
         if(frame.type==='scoped-authority-request') {
           assertApps(channel.bindingVersion===2 && frame.channelId===channel.channelId && /^[A-Za-z0-9_-]{43}$/.test(frame.nonce||'')
             && Object.keys(frame).every(key=>['type','channelId','nonce','reference','sourceChallenge'].includes(key))
@@ -1842,6 +2370,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         }
         if (frame.type === 'cancel') { closeStream(stream, ['app_stopped', 'app_response_timeout'].includes(frame.error) ? frame.error : 'app_upstream_failed', false); return; }
         if (frame.type === 'head') {
+          checkWidgetRuntimeFor(stream.session,'response');
           assertApps(!stream.head && Number.isInteger(frame.status) && frame.status >= 100 && frame.status <= 599, 'app_bad_head');
           assertApps(stream.kind === 'ws' || frame.status >= 200, 'app_bad_head');
           stream.head = true;
@@ -1955,13 +2484,57 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function allowsTlsDomain(domain) {
     return hostClassifier.allowsTlsDomain(domain);
   }
-  return { operations, execute, registerCreationJob, registerPreparedApp, creationJobApp, inspectPrepared: preparedBrowse.inspect, readPreparedManifest: preparedBrowse.readManifest, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
+  return { operations, execute, registerCreationJob, registerPreparedApp, creationJobApp, inspectPrepared: preparedBrowse.inspect, readPreparedManifest: preparedBrowse.readManifest, publicCatalog, sourcePreparationExtension, endpointRegistrationExtension,
+    hostRuntimeStats(){assertApps(!closed,'apps_closed',503);return{online:[...channels.values()].filter(channel=>channel.ws.readyState===1).length};},
+    runtimeCapabilities() { return { schema: 'soty.apps-runtime-capabilities.v1', channelSchema: CHANNEL_SCHEMA, targetBindingVersions: [1, 2],
+      runtimeProfiles: ['soty.relay-restricted.v1', 'soty.selected-human-embed.v1', 'soty.selected-human-embed.v2', ...(allowSelfIpTargets ? [SELF_IP_PROFILE] : [])],
+      ...(allowSelfIpTargets ? { selfIpTargetSchema: ENDPOINT_SCHEMA } : {}) }; },
+    coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateWidget, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
     withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,
     canOpenScopedSourceContext,openScopedSourceContext,
     withAppAuthority: appAuthority,
+    withWidgetSourceAuthority:widgetSourceAuthority,
+    withPublicCanvasAuthority:publicCanvasAuthority,
+    withPublicAppAuthority(request,callback){
+      assertApps(request&&typeof request==='object'&&!Array.isArray(request)&&Object.keys(request).length===1&&Object.hasOwn(request,'appId')&&typeof callback==='function','invalid_arguments');
+      const id=appId(request.appId);assertApps(!closed,'apps_closed',503);
+      return withAuthorityFence(()=>transaction(()=>{
+        const app=row(id),policy=db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(id);
+        assertApps(app?.state==='enabled'&&policy?.owner_account_id===app.owner_account_id&&policy.launch_policy==='anyone'&&policy.listed===1,'apps_access_denied',403);
+        const audience=readAppAudience(db,id);assertApps(audience===null||audience==='public','apps_access_denied',403);
+        const address=db.prepare(`SELECT d.id,d.origin FROM app_publication_domains p
+          JOIN app_domains d ON d.id=p.domain_id AND d.app_id=p.app_id AND d.owner_account_id=p.owner_account_id
+          JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
+          WHERE p.app_id=? AND p.owner_account_id=? AND d.role='alias' AND d.state='bound' ORDER BY d.created_at,d.id LIMIT 1`).get(id,app.owner_account_id);
+        assertApps(address,'apps_access_denied',403);
+        const decision=publications.decideAccess({domainId:address.id,origin:address.origin});
+        assertApps(decision.subject==='public'&&decision.accessBasis==='public','apps_access_denied',403);
+        return synchronous(callback(Object.freeze({appId:id,ownerId:app.owner_account_id,appRevision:app.revision,policyEpoch:policy.policy_epoch,title:app.name,
+          visibility:'public',audience:'public',listed:true,canManage:false,
+          target:Object.freeze({revision:decision.targetRevision,digest:decision.targetDigest,profile:decision.profile}),
+          entry:Object.freeze({appId:id,domainId:address.id,origin:address.origin,path:runtimePath(decision.route.entryPath)})})),'apps_async_authority');
+      }));
+    },
+    withInvitationTarget({appId:id,actor},callback){
+      appId(id);if(actor!==null)assertActor(actor);
+      return withAuthorityFence(()=>transaction(()=>{const app=row(id);assertApps(app?.state==='enabled','invitation_unavailable',404);
+        return synchronous(callback(Object.freeze({appId:id,kind:'app',ownerId:app.owner_account_id,title:app.name})),'apps_async_authority');}),actor??undefined);
+    },
+    invitationOwnedTargets(actor){assertActor(actor);return db.prepare("SELECT id FROM local_apps WHERE owner_account_id=? AND state='enabled'").all(actor.accountId).map(app=>({kind:'app',id:app.id}));},
     withReviewedAppAuthority(request, callback) {
-      return appAuthority({ ...request, mode: 'owner' }, ({ appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants }) =>
-        callback(Object.freeze({ appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants })));
+      return appAuthority({ ...request, mode: 'owner' }, authority => {
+        const { appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants } = authority, prior = reviewedPublicationFrame;
+        reviewedPublicationFrame = publicationReconciliationSnapshot(authority);
+        try { return callback(Object.freeze({ appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants })); }
+        finally { reviewedPublicationFrame = prior; }
+      });
+    },
+    withPublicationReconciliationAuthority(request,callback) {
+      return appAuthority({...request,mode:'owner'},authority=>synchronous(callback(publicationReconciliationSnapshot(authority)),'apps_async_authority'));
+    },
+    currentPublicationReconciliationAuthority() {
+      assertApps(reviewedPublicationFrame && db.isTransaction, 'apps_publication_authority_unavailable', 500);
+      return reviewedPublicationFrame;
     },
     policy: Object.freeze({
       decideAccess(value) { assertApps(!closed, 'apps_closed', 503); return publications.decideAccess(value); },

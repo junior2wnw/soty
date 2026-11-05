@@ -57,8 +57,10 @@ export function loadUniversalConfiguration(env = process.env, { legacyMode = for
     const reviews = field(env, 'SOTY_REVIEWS_BINDINGS_FILE');
     const selectedFile=field(env,'SOTY_SELECTED_EMBED_REGISTRY_FILE'),selectedMigration=field(env,'SOTY_SELECTED_EMBED_MIGRATION');
     const selectedResourceMigration=field(env,'SOTY_SELECTED_RESOURCE_MIGRATION');
+    const frameContinuityMigration=field(env,'SOTY_APPS_FRAME_CONTINUITY_MIGRATION');
     check(['','0','1'].includes(selectedMigration));
     check(['','0','1'].includes(selectedResourceMigration));
+    check(['','0','1'].includes(frameContinuityMigration));
     let selected;
     if(selectedFile){selected=fileValue(selectedFile,131072);check(selected.schema==='soty.selected-embed-registry.v1'&&Array.isArray(selected.profiles)
       &&Object.keys(selected).every(key=>['schema','profiles'].includes(key)));}
@@ -71,6 +73,7 @@ export function loadUniversalConfiguration(env = process.env, { legacyMode = for
       ...(selected?{scopedEmbedProfiles:selected.profiles,scopedEmbedRegistryConfigured:true}:{}),
       ...(selectedMigration==='1'?{allowScopedEmbedMigration:true}:{}),
       ...(selectedResourceMigration==='1'?{allowSelectedResourceMigration:true}:{}),
+      ...(frameContinuityMigration==='1'?{allowFrameContinuityMigration:true}:{}),
     };
   } catch { invalid(); }
 }

@@ -10,11 +10,12 @@ import { pngFixture } from '../../modules/world/test/avatar-fixtures.mjs';
 import { createCoverApi } from './cover-api.mjs';
 import { createCoverEditorState, createCoverJournal } from './cover-editor-state.mjs';
 import { createAppCoverPresenter } from './app-cover-presenter.mjs';
+import { isLiveIdentityLoss } from '../platform/platform-live-client.mjs';
 const tick=()=>new Promise(r=>setImmediate(r));
-async function until(predicate){
+async function until(predicate,message='Actual host flow did not settle'){
   const deadline=performance.now()+5000;
   while(performance.now()<deadline){if(predicate())return;await delay(1);}
-  assert.fail('Actual host flow did not settle');
+  assert.fail(message);
 }
 const local=base64=>async()=>({url:'blob:review-only',width:80,height:80,mime:'image/png',byteCount:Buffer.from(base64,'base64').length,base64:()=>base64,dispose(){}});
 /** Source instrumentation only for thin browser host ports, extracted with the
@@ -23,16 +24,17 @@ const local=base64=>async()=>({url:'blob:review-only',width:80,height:80,mime:'i
 function actualHost(ports){
   const text=readFileSync(new URL('./app.ts',import.meta.url),'utf8'),source=ts.createSourceFile('app.ts',text,ts.ScriptTarget.Latest,true);
   const owner=source.statements.find(node=>ts.isClassDeclaration(node)&&node.name?.text==='WorldApplication');assert.ok(owner);
-  const names=['mountFieldCovers','openCoverEditor','afterNoteSaved','openRoute'];
-  const members=names.map(name=>{const member=owner.members.find(node=>node.name?.getText(source)===name);assert.ok(member,'Actual host method '+name);return member.getText(source);});
+  const names=['isRetainedMain','appRuntimeStages','invalidateLive','mountFieldCovers','openCoverEditor','afterNoteSaved','openRoute'];
+  const members=names.map(name=>{const member=owner.members.find(node=>node.name?.getText(source)===name);assert.ok(member,'Actual host method '+name);let code=member.getText(source);
+    if(name==='invalidateLive'&&ports.suppressLiveRefresh)for(const anchor of ['this.fieldCoverPresenter?.invalidateAll();','this.fieldCoverPresenter?.refreshVisible();']){assert.equal(code.split(anchor).length,2);code=code.replace(anchor,'');}return code;});
   const output=ts.transpileModule('class Host {\n'+members.join('\n')+'\n}',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
-  return new (Function('mountCoverEditor','createCoverApi','createAppCoverPresenter','mountAppCoverField','document','setInterval','clearInterval','history','location',output+';return Host;')(
-    ports.mountCoverEditor,createCoverApi,createAppCoverPresenter,ports.mountField,ports.document,ports.setInterval,ports.clearInterval,ports.history,ports.location))();
+  return new (Function('mountCoverEditor','createCoverApi','createAppCoverPresenter','mountAppCoverField','document','setInterval','clearInterval','history','location','isLiveIdentityLoss',output+';return Host;')(
+    ports.mountCoverEditor,createCoverApi,createAppCoverPresenter,ports.mountField,ports.document,ports.setInterval,ports.clearInterval,ports.history,ports.location,isLiveIdentityLoss))();
 }
-function harness({api,accountId,input,profile=null}){
+function harness({api,accountId,input,profile=null,suppressLiveRefresh=false}){
   let generation=1,timer=0;const timers=new Set(),visual=[],states=[],loads=[],disk=new Map();
   const document={visibilityState:'visible'},field={element:{},refreshes:[],camera:{x:41,y:72,scale:1.35},async refresh(value){this.refreshes.push(value);}};
-  const ports={document,setInterval(fn){const id=++timer;timers.add(id);return id;},clearInterval(id){timers.delete(id);},history:{pushState(){}},location:{hash:'#mine'},
+  const ports={document,suppressLiveRefresh,setInterval(fn){const id=++timer;timers.add(id);return id;},clearInterval(id){timers.delete(id);},history:{pushState(){}},location:{hash:'#mine'},
     mountField({presenter,isCurrent}){const binding=presenter.watch({appId:'app-'+'c'.repeat(32),identity:'actual-source-one',isCurrent,onVisual:v=>visual.push(v)});binding.setVisible(true);return {dispose(){binding.dispose();}};},
     mountCoverEditor(options){const sdk=createCoverApi(options),state=createCoverEditorState({sdk,prepareFile:local(input),journal:createCoverJournal({getItem:key=>disk.get(key)??null,setItem:(key,value)=>disk.set(key,value)}),isCurrent:options.isCurrent,onCommitted:options.onCommitted});
       states.push(state);loads.push(state.load());return {dispose:()=>state.dispose(),hasUnsavedChanges:()=>state.read().hasUnsavedChanges,requestClose:callback=>{host.coverDialog.close();callback?.();}};},
@@ -40,6 +42,7 @@ function harness({api,accountId,input,profile=null}){
   const host=actualHost(ports);Object.assign(host,{deskAccount:accountId,destroyed:false,screenSequence:7,profile,api,group:null,unifiedField:field,fieldCoverPresenter:null,fieldCoverBinding:null,fieldCoverTimer:null,
     coverDialog:null,coverHandle:null,coverTargetCurrent:null,noteActionPending:false,widgets:null,avatars:{calls:[],setContext(value){this.calls.push(value);}},rendered:0,renderNavigation(){this.rendered++;},toast(){},
     accountTask(){const captured=generation;return()=>!host.destroyed&&generation===captured;},screenHasUnsavedChanges:()=>false,
+    async refreshSocialInbox(){this.inboxRefreshes=(this.inboxRefreshes??0)+1;},
     dialog(title,onClose){const dialog={element:{open:true},close(){if(!dialog.element.open)return;dialog.element.open=false;onClose?.();}};return dialog;},
   });
   return {host,ports,field,visual,states,loads,timers,switchAccount(){generation++;},dispose(){host.coverDialog?.close();host.mountFieldCovers(null);}};
@@ -55,8 +58,34 @@ test('actual host hook invalidates the existing visible cell and persists throug
   assert.equal(h.field.camera,camera);assert.deepEqual(h.field.refreshes,[],'app cover hook replaces its image without whole field rebuild');h.host.coverDialog.close();
   h.ports.document.visibilityState='hidden';h.host.mountFieldCovers(h.field);assert.equal(h.timers.size,0);assert.equal(resolveObjectURL(url),undefined);
   f.reopen();delayNextRead=true;h.ports.document.visibilityState='visible';h.host.mountFieldCovers(h.field);await until(()=>h.visual.at(-1)?.mode==='custom'&&h.visual.at(-1).url!==url);
+  await until(()=>delayedReads===1);
   assert.equal(delayedReads,1,'the same signed read may finish after many event-loop turns');
-  assert.deepEqual(Buffer.from(await resolveObjectURL(h.visual.at(-1).url).arrayBuffer()),bytes);assert.equal(h.timers.size,1);assert.equal(h.field.camera,camera);
+  assert.deepEqual(Buffer.from(await resolveObjectURL(h.visual.at(-1).url).arrayBuffer()),bytes);assert.equal(h.timers.size,0);assert.equal(h.field.camera,camera);
+});
+
+async function visibleLiveCoverOracle(t,{suppressLiveRefresh=false}={}){
+  const f=await signedAppsCoverFixture(t);f.enable();let coverReads=0;
+  const accountId=f.accounts.owner.accountId,api={async request(op,args){
+    // The actual signed fixture hosts Covers, not the unrelated World module.
+    if(op==='world.profile.get')return{profile:{profileId:accountId,revision:1}};
+    if(op==='apps.cover.read')coverReads++;
+    const result=await f.raw('owner',op,args);if(!result.ok)throw Object.assign(Error(result.error.code),{code:result.error.code});return result;
+  }};
+  const h=harness({api,accountId,input:await raster('#4488aa'),suppressLiveRefresh});t.after(()=>h.dispose());
+  h.host.mountFieldCovers(h.field);await until(()=>h.visual.at(-1)?.mode==='inherit');const camera=h.field.camera;
+  const revision=f.read(db=>db.prepare('SELECT revision FROM local_apps WHERE id=?').get(f.id).revision);
+  const disk=new Map(),external=createCoverEditorState({sdk:createCoverApi({api,kind:'app',targetId:f.id,accountId,isCurrent:()=>true}),prepareFile:local(await raster('#bb3388')),
+    journal:createCoverJournal({getItem:key=>disk.get(key)??null,setItem:(key,value)=>disk.set(key,value)}),isCurrent:()=>true});t.after(()=>external.dispose());
+  await external.load();await external.choose({});await external.save();
+  const before=coverReads;assert.equal(h.visual.at(-1).mode,'inherit');await h.host.invalidateLive();
+  await until(()=>coverReads>before,'Live invalidation must request a fresh authorized cover');await until(()=>h.visual.at(-1)?.mode==='custom');
+  const bytes=Buffer.from(await resolveObjectURL(h.visual.at(-1).url).arrayBuffer());assert.ok(bytes.length>12);
+  assert.equal(h.field.camera,camera);assert.deepEqual(h.field.refreshes,[{preserveView:true}]);assert.equal(h.host.inboxRefreshes,1);assert.equal(h.timers.size,0);
+  assert.equal(f.read(db=>db.prepare('SELECT revision FROM local_apps WHERE id=?').get(f.id).revision),revision);
+}
+test('the actual live controller requests and paints a fresh signed cover without a polling interval or camera replacement',t=>visibleLiveCoverOracle(t));
+test('suppressing both actual live cover refresh sites fails the same authorized visible-update oracle',async t=>{
+  await assert.rejects(visibleLiveCoverOracle(t,{suppressLiveRefresh:true}),/Live invalidation must request a fresh authorized cover/u);
 });
 test('actual profile hook reuses avatar hydration/current projection and rejects a late read after account generation changes',async t=>{
   const f=await signedFixture(t),person=f.actors[0],initial=await f.profile(person);let held=false,release;

@@ -2,7 +2,7 @@ import './account-center.css';
 import { avatar, button, el } from './dom';
 
 export type AccountSection = 'profile' | 'notifications' | 'appearance' | 'ai' | 'security' | 'data';
-export type AccountAction = 'edit-profile' | 'profile-visibility' | 'switch-profile' | 'appearance' | 'notifications'
+export type AccountAction = 'edit-profile' | 'profile-visibility' | 'switch-profile' | 'connect-profile' | 'appearance' | 'notifications'
   | 'auth-devices' | 'recovery' | 'data-export' | 'ai-api' | 'human-signins' | 'agent-access' | 'device-status' | 'help' | 'developers';
 export interface AccountCenterOptions {
   host: HTMLElement;
@@ -52,6 +52,7 @@ export function mountAccountCenter(options: AccountCenterOptions): { dispose(): 
     body.replaceChildren(el('h3', '', sections.find(value => value[0] === section)![1]));
     if (section === 'profile') {
       if (options.identity.bio) body.append(el('p', 'sw-muted', options.identity.bio));
+      action('connect-profile', 'Открыть прежний аккаунт', 'qr', 'QR с подтверждением на другом устройстве');
       action('edit-profile', 'Имя, фото и описание', 'edit', 'Данные этого профиля');
       action('profile-visibility', 'Кто видит мой профиль', 'eye', 'Публичность профиля и его разделов');
       action('switch-profile', 'Выбрать другой профиль', 'person', 'Известные профили на этом устройстве');

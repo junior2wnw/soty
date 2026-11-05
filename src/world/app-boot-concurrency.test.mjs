@@ -6,8 +6,11 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { renderBootPage } from '../../modules/apps/server/runtime-pages.mjs';
 import { assertApps, textId, requestPath, runtimePath } from '../../modules/apps/server/protocol.mjs';
 import { createLaunchPath } from '../../modules/apps/server/launch-path.mjs';
+import { synchronous } from '../../modules/apps/server/engagement-transaction.mjs';
+import { parseWidgetRuntimeHost, widgetRuntimeOrigin, captureWidgetRuntimeScope, widgetRuntimeScopeDigest } from '../../modules/apps/server/runtime-hosts.mjs';
 import { selectedRuntimeProfile } from '../../modules/apps/server/schema.mjs';
 import { isRootSignedWorkspaceSource } from '../../modules/source-app/server/standard-profile.mjs';
+import { HOST_SESSION_SCHEMA } from '../../modules/apps/server/host-session-continuity.mjs';
 import { createAppLauncher } from './app-launch.mjs';
 import { createAppBootRecovery } from './app-boot-recovery.mjs';
 
@@ -25,6 +28,9 @@ const sessionSource = fragment('  const frameRequests=', '  function setPolicy('
 const routeSource = fragment('  async function routeApp(', '  function handleRequest(');
 const launchSource = fragment("    if (op === 'apps.launch') {", "    if (op === 'apps.revoke') {");
 const defaultEntrySource = fragment('  function defaultEntryFor(', '  function inspectSource(');
+const accessSource = fragment('  function checkAccess(', '  function checkStream(');
+const widgetRuntimeSource = fragment('  function rootWidgetId(', '  /** Host-only invalidation:');
+const hostSessionSource = fragment('  function hostScope(', '  function execute(');
 const appId = 'app-' + 'a'.repeat(32), domainId = 'dom_' + 'b'.repeat(32);
 const origin = 'https://hive.fixture.invalid', shellOrigin = 'https://soty.fixture.invalid';
 const actor = Object.freeze({ accountId: 'synthetic-account', deviceId: 'synthetic-device' });
@@ -48,9 +54,14 @@ function server() {
     return decision;
   };
   const environment = {
-    assertApps, textId, requestPath, runtimePath, createLaunchPath, selectedRuntimeProfile, isRootSignedWorkspaceSource, URL, URLSearchParams, Buffer, tickets, sessions, bootCandidates: new Map(),
+    assertApps, textId, requestPath, runtimePath, createLaunchPath, selectedRuntimeProfile, isRootSignedWorkspaceSource, synchronous,
+    parseWidgetRuntimeHost, widgetRuntimeOrigin, captureWidgetRuntimeScope, widgetRuntimeScopeDigest,
+    URL, URLSearchParams, Buffer, tickets, sessions, bootCandidates: new Map(), hostSessions: null, HOST_SESSION_SCHEMA,
     digest, equalDigest, secret, id: appId, app, actor, cookieName: 'soty_app_session', accountSessionMs: 3600000,
     channels: new Map([['synthetic-connector', {}]]), now: () => state.now,
+    // The existing canonical main service has no widget authority ports. Keep
+    // the actual guard and its dependencies, rather than bypassing its call.
+    checkWidgetLaunch: undefined, checkWidgetRuntime: undefined, resolveWidgetRuntime: undefined,
     activeTarget: () => ({ profile: state.profile }),
     db: { prepare: () => ({ get: (id, requested) => id === appId && (requested === undefined || requested === domainId) ? domain : null }) },
     exact(args, allowed) { assertApps(Object.keys(args).every(key => allowed.includes(key)), 'invalid_arguments'); },
@@ -60,7 +71,7 @@ function server() {
     publications: {
       decideAccess() {
         assertApps(state.active, 'app_access_revoked', 403);
-        const decision = Object.freeze({ appId, domainId, origin, actor, accessBasis: 'account',
+        const decision = Object.freeze({ appId, domainId, origin, actor, subject: 'account', accessBasis: 'account',
           policyEpoch: state.policyEpoch, targetRevision: state.targetRevision, targetDigest: state.targetDigest,
           profile: state.profile, requiredBindingVersion: state.floor, expiresAt: state.now + 30000,
           route: Object.freeze({ connectorKey: 'synthetic-connector', entryPath: '/' }) });
@@ -68,10 +79,10 @@ function server() {
       },
       recheckAccess: live,
     },
-    checkAccess(session) { return live(session.decision); }, assertRuntimeBinding: live,
+    assertRuntimeBinding: live,
     json(res, status, value) { res.status = status; res.value = value; },
   };
-  vm.runInNewContext(defaultEntrySource + '\n' + guidePathSource + '\n' + sessionSource + '\n' + routeSource + '\nglobalThis.route=routeApp;\n'
+  vm.runInNewContext(defaultEntrySource + '\n' + guidePathSource + '\n' + accessSource + '\n' + widgetRuntimeSource + '\n' + hostSessionSource + '\n' + sessionSource + '\n' + routeSource + '\nglobalThis.route=routeApp;\nglobalThis.canonicalOrigin=canonicalHostOrigin;\n'
     + 'globalThis.launch=function(args){const op="apps.launch";\n' + launchSource + '\n};', environment, { timeout: 1000 });
   function launch(args) {
     state.launches.push(structuredClone(args));
@@ -112,7 +123,13 @@ function screen(f, jar, { legacy = false, beforeRetry = () => {} } = {}) {
   const launcher = createAppLauncher({ target: { appId }, accountId: actor.accountId, shellUrl: shellOrigin,
     isCurrent: () => state.current, request: async args => {
       if (f.state.launches.length >= 2) await beforeRetry(state);
-      const result = f.launch(args); if (legacy) delete result.launchBinding; return result;
+      // This explicit custom request port exercises the supported legacy boot
+      // path and its canonical-cookie collision. The normal Root adapter keeps
+      // the opt-in and requires the host DTO; its current protocol is covered
+      // by the signed SDK/host-session integration tests, not this legacy port.
+      assert.equal(args.hostSession, true);
+      const { hostSession: _hostSession, ...legacyArgs } = args;
+      const result = f.launch(Object.freeze(legacyArgs)); if (legacy) delete result.launchBinding; return result;
     } });
   const recovery = createAppBootRecovery({ view, appId, getFrame: () => state.frame, isCurrent: () => state.current,
     recover: current => open(true, current), onFailure: () => { state.failures++; } });
@@ -155,6 +172,37 @@ function screen(f, jar, { legacy = false, beforeRetry = () => {} } = {}) {
   }
   return { state, launcher, recovery, open, dispose() { state.current = false; recovery.dispose(); launcher.dispose(); } };
 }
+
+test('actual runtime guard keeps canonical main compatibility and rejects current widget or host authority violations', () => {
+  const f = server(); f.launch({ appId, expectedAccountId: actor.accountId });
+  const decision = [...f.tickets.values()][0].decision;
+  assert.equal(f.environment.checkAccess({ decision }), decision);
+  assert.equal(f.environment.canonicalOrigin(f.app), origin);
+  assert.equal(f.environment.checkHolderHost({ decision }, f.app), undefined);
+  const widgetId = 'widget-11111111-1111-4111-8111-111111111111';
+  const holder = { decision, rootInstanceId: widgetId, entryPath: '/' }, calls = [];
+  f.environment.checkWidgetRuntime = input => { calls.push(input); return false; };
+  assert.throws(() => f.environment.checkAccess(holder), error => error.code === 'apps_widget_runtime_denied');
+  assert.equal(calls.length, 1);
+  const scope = calls[0];
+  assert.equal(scope.widgetId, widgetId); assert.equal(scope.appId, appId); assert.equal(scope.phase, 'request');
+  assert.deepEqual({ ...scope.actor }, actor);
+  assert.deepEqual({ ...scope.entry }, { domainId, path: '/' });
+  assert.deepEqual({ ...scope.target }, { revision: 11, digest: 'c'.repeat(64), profile: 'soty.relay-restricted.v1' });
+  for (const value of [scope, scope.actor, scope.entry, scope.target]) assert.equal(Object.isFrozen(value), true);
+  f.environment.checkWidgetRuntime = () => Promise.resolve(true);
+  assert.throws(() => f.environment.checkAccess(holder), error => error.code === 'apps_async_authority');
+  f.environment.checkWidgetRuntime = () => true;
+  assert.throws(() => f.environment.checkWidgetRuntimeFor({ ...holder, decision: { ...decision, subject: 'public' } }, 'session'),
+    error => error.code === 'apps_widget_runtime_denied');
+  const wrongHost = { origin, scope: { widgetId: 'widget-22222222-2222-4222-8222-222222222222' } };
+  assert.throws(() => f.environment.checkWidgetRuntimeFor({ ...holder, runtimeHost: wrongHost }, 'session'),
+    error => error.code === 'app_widget_runtime_changed');
+  assert.throws(() => f.environment.checkHolderHost({ ...holder, runtimeHost: wrongHost }, f.app),
+    error => error.code === 'app_widget_runtime_changed');
+  f.state.active = false;
+  assert.throws(() => f.environment.checkAccess(holder), error => error.code === 'app_access_revoked');
+});
 
 test('actual launch branch projects only the original branded decision, not app revision or caller selectors', () => {
   const f = server(), result = f.launch({ appId, expectedAccountId: actor.accountId });

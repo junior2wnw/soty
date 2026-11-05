@@ -1,0 +1,17 @@
+{
+  "schema": "soty.monitoring.module.v1",
+  "id": "soty.monitoring",
+  "version": 1,
+  "entry": "server/index.mjs",
+  "browser": "sdk.mjs",
+  "types": "sdk.d.mts",
+  "descriptorFactory": "descriptor.mjs#createMonitoringDescriptor",
+  "contract": "soty.monitoring.v1",
+  "runtime": "node:sqlite",
+  "storage": {"directory":"monitoring","filename":"monitoring.sqlite","format":1,"lineage":"soty.monitoring.sqlite.v1","defaultMode":"reader"},
+  "collectionDefault": true,
+  "rights": {"read":"monitoring.read","configure":"monitoring.configure","admin":"monitoring.admin","record":"monitoring.record","hostObserve":"trusted-host-only"},
+  "operations": ["monitoring.describe","monitoring.query","monitoring.config.put","monitoring.metric.put","monitoring.metric.record","monitoring.audit.list","monitoring.admin.invoke"],
+  "credentialsPersisted": false,
+  "executionFromManifest": false
+}

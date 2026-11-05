@@ -83,7 +83,7 @@ test('strict image reader manifest rejects missing, extended and malformed claim
   assert.throws(() => requireStorageStartReceipt(null, id(1)), /storage_start_guard_missing/);
   for (const baseline of [JSON.parse(frozenStorageReaders6), JSON.parse(currentStorageReaders)]) {
     for (const store of ['rooms', 'apps', 'notes', 'capabilities']) {
-      for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [baseline.version === 6 ? 12 : 15] : store === 'capabilities' ? [4] : [3]]) {
+      for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [baseline.version === 6 ? 12 : 15] : store === 'capabilities' || store === 'notes' && baseline.version >= 8 ? [4] : [3]]) {
         const value = clone(baseline); value.readers[store] = readers;
         assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
       }
@@ -130,7 +130,7 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   const f = fixture(); f.dropStart();
   const receipt = await guardStorageStart(f.context, f.runtime);
   requireStorageStartReceipt(receipt, f.runtime.Id);
-  assert.equal(receipt.schema, 'soty.storage-start.v7'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.rooms, 2); assert.equal(receipt.apps, 'empty');
+  assert.equal(receipt.schema, 'soty.storage-start.v10'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.rooms, 2); assert.equal(receipt.apps, 'empty');
   assert.equal(receipt.notes, 'empty'); assert.equal(receipt.capabilities, 'empty');
   const created = f.events.find(e => e.verb === 'create').body;
   assert.equal(created.Image, imageId(3)); assert.notEqual(created.Image, f.runtime.Image);
@@ -249,7 +249,7 @@ test('a retained v2 helper is refused without repeating CREATE or START or rewri
 test('future Notes or Capabilities cannot become successful helper or start receipts', async () => {
   for (const store of ['notes', 'capabilities']) {
     const f = fixture({ notes: 1, capabilities: 1 });
-    f.setResult(currentObservation({ ...format(2, 6, 1, 1), [store]: store === 'capabilities' ? 4 : 3 }));
+    f.setResult(currentObservation({ ...format(2, 6, 1, 1), [store]: 4 }));
     await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_probe_invalid/);
     assert.ok(f.state.storageGuardHelper);
     assert.ok(!f.events.some(event => event.verb === 'start' && event.id === f.runtime.Id));
@@ -355,8 +355,9 @@ test('failed probe remains explicit and never becomes a successful start receipt
 
 test('the full application image declares its readers beside its real module and dependency copies', async () => {
   const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
-  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 7,
-    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4], world: [6, 7] } });
+  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 10,
+    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], notes: [1, 2, 3], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4, 5], world: [6, 7],
+      canvasObjects:[1,2],canvasWidgets:[1],canvasVault:[1,2],canvasPages:[1,2],materials:[1,2],invitations:[1,2],referrals:[1],appAgentDirectory:[1],universalPublication:[1],appsEndpoint:[1],appsFrameContinuity:[1,2],monitoring:[1] } });
   assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
   assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);
   assert.match(source, /^COPY --from=build \/app\/node_modules \.\/node_modules$/mu);
@@ -389,9 +390,9 @@ test('Connect bridge snapshot preserves schema3; schema4 fences reader1 and reje
   assert.equal(await readConnectFormat(target), 3);
   assert.deepEqual(await readFile(path.join(target, 'connect', 'accounts.sqlite')), before);
   assert.deepEqual(await readFile(filename), before);
-  const upgraded = new DatabaseSync(filename); migrateDatabase(upgraded, 'soty'); upgraded.close();
+  const upgraded = new DatabaseSync(filename); migrateDatabase(upgraded, 'soty', { supportedVersion: 4 }); upgraded.close();
   const next = await readStorageFormat(root);
-  assert.equal(next.schema, 'soty.storage-format.v7'); assert.equal(next.connect, 4); assert.equal(next.world, 'empty');
+  assert.equal(next.schema, 'soty.storage-format.v10'); assert.equal(next.connect, 4); assert.equal(next.world, 'empty');
   assertStorageCompatible(image(2), next);
   const previous = JSON.parse(frozenStorageReaders6); previous.version = 5; delete previous.readers.connect;
   assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(previous)), next), /storage_reader_incompatible/);

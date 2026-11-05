@@ -80,9 +80,9 @@ test('old v3/v4 readers refuse v5 evidence, while the current image reads histor
   for (const label of [reader3, reader4]) assert.throws(() => assertStorageCompatible(image(label), v5), /storage_reader_incompatible/u);
   for (const value of [v3, v4, v5]) assert.deepEqual(assertStorageCompatible(image(), value), value);
   assertStorageCompatible(image(reader4), v4); assertStorageCompatible(image(reader3), v3);
-  assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'rooms', 'world']);
-  assert.equal(JSON.parse(currentStorageReaders).version, 7);
-  assert.deepEqual(storageReaders(image()).connect, [3, 4]);
+  assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appAgentDirectory', 'appRegistration', 'apps', 'appsEndpoint', 'appsFrameContinuity', 'canvasObjects', 'canvasPages', 'canvasVault', 'canvasWidgets', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'invitations', 'materials', 'monitoring', 'notes', 'referrals', 'rooms', 'universalPublication', 'world']);
+  assert.equal(JSON.parse(currentStorageReaders).version, 10);
+  assert.deepEqual(storageReaders(image()).connect, [3, 4, 5]);
   for (const changed of [undefined, [], [4], ['1'], [1, 1]]) {
     const manifest = JSON.parse(currentStorageReaders); if (changed === undefined) delete manifest.readers.humanIdentity; else manifest.readers.humanIdentity = changed;
     assert.throws(() => storageReaders(image(JSON.stringify(manifest))), /storage_reader_unknown/u);
@@ -149,7 +149,7 @@ test('actual guard emits current v7 START evidence and refuses a v4 human-incomp
   const context = label => ({ engine: { async inspect() { return structuredClone(runtime); }, async image() { return image(label); },
     async request(_method, url) { return url.startsWith('/volumes/') ? { Name: 'synthetic-data', Driver: 'local', Scope: 'local', Mountpoint: '/docker/volumes/synthetic-data', Options: {} } : []; } },
     async probe() { return readStorageFormat(root); } });
-  const receipt = await guardStorageStart(context(currentStorageReaders), runtime); assert.equal(receipt.schema, 'soty.storage-start.v7'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.humanIdentity, 1);
+  const receipt = await guardStorageStart(context(currentStorageReaders), runtime); assert.equal(receipt.schema, 'soty.storage-start.v10'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.humanIdentity, 1);
   requireStorageStartReceipt(receipt, runtime.Id); await assert.rejects(guardStorageStart(context(reader4), runtime), /storage_reader_incompatible/u);
   const docker = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8'); const label = /LABEL io\.soty\.storage\.readers="(.+)"/u.exec(docker)?.[1]?.replace(/\\"/gu, '"');
   assert.equal(label, currentStorageReaders); assert.match(docker, /ARG LEGACY_UNIVERSAL_MODE=0/u); assert.match(docker, /server\/universal-mode\.js/u);

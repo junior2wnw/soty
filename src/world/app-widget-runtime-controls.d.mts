@@ -1,10 +1,16 @@
 import type {WorldDialog,DialogReturnTarget} from './dialogs';
+import type {AppRuntimeCloseRequest} from './app-runtime-close.mjs';
+export type {AppRuntimeCloseRequest} from './app-runtime-close.mjs';
+export interface WidgetRuntimeOwner extends DialogReturnTarget {
+  requestClose?(request:AppRuntimeCloseRequest):Promise<void>;
+}
 export interface WidgetRuntimeControls {
-  attach(target:HTMLElement,owner:DialogReturnTarget):boolean;
+  attach(target:HTMLElement,owner:WidgetRuntimeOwner):boolean;
+  requestClose():Promise<void>;
   dispose():void;
 }
 export function createWidgetRuntimeControls(options:{
-  presentation?:'main';returnTarget?:DialogReturnTarget;mainControlHost?:HTMLElement;
+  presentation?:'main';returnTarget?:WidgetRuntimeOwner;mainControlHost?:HTMLElement;
   view:Window;screen:HTMLElement;message:HTMLElement;runtime:HTMLElement;runtimeActions:HTMLElement;
   externalRecovery?:HTMLButtonElement;
   current():boolean;capture():unknown;matchesCapture(value:any):boolean;canAct():boolean;

@@ -1,0 +1,12 @@
+.cv-capture{display:flex;flex-direction:column;gap:6px;min-width:0;color:var(--sw-ink)}
+.cv-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cv-record,.cv-cancel{display:inline-flex;align-items:center;min-height:44px;touch-action:manipulation}.cv-record{justify-content:center;gap:8px}.cv-cancel{margin-left:auto;font-size:12px}
+.cv-record:focus-visible,.cv-cancel:focus-visible{outline:2px solid var(--sw-focus);outline-offset:3px}
+.cv-time{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--sw-muted)}
+.cv-status{margin:0;min-height:1em;font-size:12px;line-height:1.45;overflow-wrap:anywhere;color:var(--sw-muted)}
+.cv-dot{display:none;width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:var(--sw-danger,#c65353)}
+.cv-capture[data-state=recording] .cv-dot{display:block;animation:cv-recording 1.2s ease-in-out infinite}
+.cv-capture [hidden]{display:none!important}
+@keyframes cv-recording{50%{opacity:.45}}
+@media(prefers-reduced-motion:reduce){.cv-capture[data-state=recording] .cv-dot{animation:none}}
+@media(forced-colors:active){.cv-capture[data-state=recording] .cv-record{outline:2px solid Highlight}.cv-dot{background:CanvasText}.cv-time,.cv-status{color:CanvasText}}

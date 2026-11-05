@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { fork } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -10,6 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createAppsService } from '../../modules/apps/server/index.mjs';
 import { ensureCanonicalDomain, ensureInitialPublication } from '../../modules/apps/server/schema.mjs';
 import { parseAppAuthority } from '../../modules/apps/server/hosts.mjs';
+import { renderStatusPage } from '../../modules/apps/server/runtime-pages.mjs';
 
 const actor = { accountId: 'host_acceptance_owner', deviceId: 'host_acceptance_device' };
 const appId = `app-${'4'.repeat(32)}`;
@@ -17,6 +19,12 @@ const revokedId = `app-${'5'.repeat(32)}`;
 const legacy = 'https://{appId}.legacy.other.online';
 const named = 'https://named.soty.online';
 const trustedHost = 'shell.pochinit.online';
+// Runtime status HTML now contains this exact canonical static material inline.
+// Keep the original protocol budget; only the built-in status page receives
+// those known CSS bytes. Material growth beyond this reviewed bound is not free.
+const statusStyle = readFileSync(new URL('../../vendor/optical-glass/src/ui-kit.css', import.meta.url), 'utf8');
+const statusStyleBytes = Buffer.byteLength(statusStyle);
+assert.ok(statusStyleBytes <= 40 * 1024, 'review canonical material growth before changing the status transport fixture budget');
 
 async function seed(directory) {
   const configuration = { dataDir: directory, appOriginTemplate: legacy, namedAppZone: named,
@@ -67,8 +75,11 @@ function requestRaw(port, host, path = '/', { upgrade = false, extraHeaders = []
     socket.on('error', error => finish(error));
     socket.on('data', data => {
       parts.push(data); length += data.length;
-      if (length > 64 * 1024) { finish(new Error('host_acceptance_response_too_large')); return; }
       const raw = Buffer.concat(parts).toString('utf8');
+      const headerEnd = raw.indexOf('\r\n\r\n'), head = headerEnd < 0 ? '' : raw.slice(0, headerEnd);
+      const builtinStatus = /^Content-Type:\s*text\/html(?:;|\s*$)/imu.test(head)
+        && raw.includes(statusStyle) && raw.includes('<main class="entry" id="entry" data-state="error"');
+      if (length > 64 * 1024 + (builtinStatus ? statusStyleBytes : 0)) { finish(new Error('host_acceptance_response_too_large')); return; }
       // If a regression upgrades a forbidden endpoint, end the test request now
       // instead of waiting for an application/connector handshake timeout.
       if (/^HTTP\/1\.1 101 /u.test(raw) && raw.includes('\r\n\r\n')) finish();
@@ -92,6 +103,20 @@ async function stopChild(child) {
   try { await exited; assert.equal(forced, false, 'the isolated application process must stop without forced termination'); }
   finally { clearTimeout(timeout); }
 }
+
+test('raw host oracle keeps non-HTML and unrelated HTML at64KiB and still bounds the built-in Glass page', async () => {
+  const oversized = 'x'.repeat(65 * 1024);
+  const status = renderStatusPage({ error: 503, shellUrl: `https://${trustedHost}`, nonce: Buffer.alloc(16).toString('base64') });
+  const replies = [ ['application/json', oversized], ['text/html', oversized], ['text/html', status + 'x'.repeat(64 * 1024)] ];
+  const server = createServer((_request, response) => {
+    const [type, body] = replies.shift(); response.writeHead(503, { 'Content-Type': type }); response.end(body);
+  });
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  try {
+    for (let index = 0; index < 3; index++) await assert.rejects(requestRaw(server.address().port, trustedHost), /host_acceptance_response_too_large/u);
+    assert.equal(replies.length, 0);
+  } finally { server.closeAllConnections(); await new Promise(done => server.close(done)); }
+});
 
 test('authority parsing distinguishes canonical IDNA wire names from malformed DNS and bracketed IP forms', () => {
   assert.deepEqual(parseAppAuthority('APP.XN--N1AFE0B.ONLINE:443'), { hostname: 'app.xn--n1afe0b.online', port: '443' });

@@ -1,6 +1,6 @@
 import { createUnifiedField, type FieldCommitResult, type FieldDirectoryEntity, type UnifiedFieldSummary } from './unified-field';
 import { applyFieldCommand } from './unified-field-state.mjs';
-import type { FieldDocument } from '../../modules/field/contract.mjs';
+import type { AnyFieldDocument as FieldDocument } from '../../modules/field/contract.mjs';
 import { resolveFieldAppArt } from './field-art.mjs';
 import { applyThemePreferences } from './theme/theme';
 import './world.css';
@@ -29,7 +29,7 @@ const items: FieldDirectoryEntity[] = [];
 for (let i = 0; i < count; i++) {
   const kind = i % 10 === 3 || i % 10 === 4 ? 'person' : i % 10 === 5 ? 'device' : 'app';
   const entity = { kind, id: `test-${i}` } as const;
-  const contextId = initial.contexts[Math.min(Math.floor(i / (contextCount > 1 ? 10 : count)), contextCount - 1)]!.contextId;
+  const contextId:string = initial.contexts[Math.min(Math.floor(i / (contextCount > 1 ? 10 : count)), contextCount - 1)]!.contextId;
   initial = applyFieldCommand(initial, { type: 'add-shortcut', shortcutId: `shortcut-${i}`, entity, contextId }).document;
   items.push({ entity, title: kind === 'person' ? `Человек ${i}` : kind === 'device' ? 'Ноутбук · тест' : i % 3 === 0 ? `HIVE ${i}` : i % 3 === 1 ? `Canvas ${i}` : `Pulse ${i}`,
     ...(kind === 'person' ? { personAction: i % 10 === 3 ? 'chat' as const : 'profile' as const } : {}),

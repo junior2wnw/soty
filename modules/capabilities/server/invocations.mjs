@@ -271,6 +271,8 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
   }
 
   return Object.freeze({
+    /** Content-free host projection; no actor records or execution authority. */
+    aggregateStatus(){return atomic(()=>{const values=prepare('SELECT status,count(*) AS n FROM cap_invocations GROUP BY status').all();return{succeeded:values.find(value=>value.status==='succeeded')?.n??0,failed:values.find(value=>value.status==='failed')?.n??0};});},
     admit({ actor, capabilityId, version, idempotencyKey, input, target } = {}) {
       check(!readonlyRefs.has(capabilityId+'@'+version),'readonly_query_api_required');
       identifier(capabilityId); check(Number.isSafeInteger(version) && version >= 1 && version <= 1000000);

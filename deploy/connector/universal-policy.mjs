@@ -16,7 +16,7 @@ import { captureAccountAiConfiguration } from '../../server/account-ai-configura
 import { loadInstalledApplicationsEntry } from '../../server/installed-applications-entry.js';
 import { loadUniversalConfiguration, validateHumanIdentityRenewalLimits } from '../../server/universal-configuration.js';
 import { captureHumanPreparedness, captureUniversalPreparedness as captureRuntimePreparedness,
-  captureSelectedPreparedness, UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
+  captureSelectedPreparedness, validateUniversalPreparedness, UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
 
 export const UNIVERSAL_POLICY_SCHEMA = 'soty.universal-rollout-policy.v1';
 export { UNIVERSAL_RUNTIME_SCHEMA };
@@ -28,6 +28,7 @@ export const reviewsTarget = '/run/config/soty-reviews-bindings.json';
 export const selectedTarget = '/run/config/soty-selected-embed.json';
 export const installedApplicationsTarget = '/run/config/soty-installed-applications.mjs';
 const installedModuleSetting = 'SOTY_INSTALLED_APPLICATIONS_MODULE', installedHashSetting = 'SOTY_INSTALLED_APPLICATIONS_SHA256';
+const monitoringModeSetting = 'SOTY_MONITORING_MODE';
 const settings = Object.freeze({ universal: 'SOTY_UNIVERSAL_APPS_ENABLED', human: 'SOTY_HUMAN_IDENTITY_ENABLED',
   issuer: 'SOTY_HUMAN_IDENTITY_ISSUER', keys: 'SOTY_HUMAN_IDENTITY_KEYS_FILE', reviews: 'SOTY_REVIEWS_BINDINGS_FILE',
   operator: 'SOTY_UNIVERSAL_OPERATOR_ENABLED', selected: 'SOTY_SELECTED_EMBED_REGISTRY_FILE',
@@ -238,7 +239,7 @@ function approvedNativeTransport(value) {
 export async function prepareUniversalPolicy(input, options = { shellOrigins: [] }) {
   const files = []; let context;
   try {
-    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected', 'personalAgent', 'accountAi', 'expectedCurrentPreparednessSha256', 'installedApplications', 'featureSelectedEmbed']);
+    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected', 'personalAgent', 'accountAi', 'expectedCurrentPreparednessSha256', 'installedApplications', 'featureSelectedEmbed', 'featureMonitoring']);
     check(plan.schema === UNIVERSAL_POLICY_SCHEMA && ['legacy-baseline', 'features'].includes(plan.phase));
     check(plan.expectedCurrentPreparednessSha256 === undefined || plan.phase === 'features'
       && typeof plan.expectedCurrentPreparednessSha256 === 'string' && HEX.test(plan.expectedCurrentPreparednessSha256));
@@ -247,6 +248,14 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       closed(plan.featureSelectedEmbed, ['source', 'sha256']); exactPath(plan.featureSelectedEmbed.source);
       check(plan.phase === 'features' && plan.expectedCurrentPreparednessSha256 !== undefined && plan.selected
         && typeof plan.featureSelectedEmbed.sha256 === 'string' && HEX.test(plan.featureSelectedEmbed.sha256), 'universal_policy_selected_feature_invalid');
+    }
+    let featureMonitoring;
+    if (plan.featureMonitoring !== undefined) {
+      closed(plan.featureMonitoring, ['expectedMode', 'mode']);
+      check(plan.phase === 'features' && plan.expectedCurrentPreparednessSha256 !== undefined && plan.featureSelectedEmbed === undefined
+        && ['reader', 'writer'].includes(plan.featureMonitoring.expectedMode) && ['reader', 'writer'].includes(plan.featureMonitoring.mode)
+        && plan.featureMonitoring.expectedMode !== plan.featureMonitoring.mode, 'universal_policy_monitoring_feature_invalid');
+      featureMonitoring = { ...plan.featureMonitoring };
     }
     check(plan.phase === 'features' || plan.human === null && plan.reviews === null && !plan.selected && !plan.personalAgent && !plan.accountAi);
     context = await filesystemContext(options);
@@ -363,11 +372,13 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
         { name: settings.selectedMigration, value: selected.migrationConfigured ? '1' : '0' },
         ...(Object.hasOwn(selected, 'resourceMigrationConfigured') ? [{ name: settings.selectedResourceMigration,
           value: selected.resourceMigrationConfigured ? '1' : '0' }] : [])] : []),
+      ...(featureMonitoring ? [{ name: monitoringModeSetting, value: featureMonitoring.mode }] : []),
     ])];
     const mounts = files.filter(file => file.target !== undefined).map(file => ({ source: file.source, target: file.target, readOnly: true, visibility: file.visibility }));
     const publicValue = { schema: UNIVERSAL_POLICY_SCHEMA, phase: plan.phase, fixtureOnly: context.fixtureRoot !== null, environment, mounts,
       human, reviews: { ...reviews, ...(plan.reviews ? { fileSha256: plan.reviews.sha256 } : {}) }, ...(selected ? { selected } : {}),
       ...(featureSelectedEmbed ? { featureSelectedEmbed } : {}),
+      ...(featureMonitoring ? { featureMonitoring } : {}),
       ...(plan.expectedCurrentPreparednessSha256 === undefined ? {} : { expectedCurrentPreparednessSha256: plan.expectedCurrentPreparednessSha256 }) };
     const receipt = freeze({ ...publicValue, policyDigest: digest(publicValue) }), handle = Object.freeze(Object.create(null));
     handles.set(handle, { active: true, context, files, receipt });
@@ -473,6 +484,13 @@ export async function restoreUniversalPolicy(plan, input, options, keyInput) {
 }
 
 const overlaps = (a, b) => a === b || a.startsWith(b.replace(/\/$/u, '') + '/') || b.startsWith(a.replace(/\/$/u, '') + '/');
+function monitoringMode(environment) {
+  check(environment === undefined || Array.isArray(environment) && environment.every(value => typeof value === 'string'), 'universal_policy_configuration_invalid');
+  const values = (environment || []).filter(value => value.startsWith(monitoringModeSetting + '='));
+  check(!(environment || []).includes(monitoringModeSetting) && values.length <= 1
+    && (!values.length || ['reader', 'writer'].some(mode => values[0] === monitoringModeSetting + '=' + mode)), 'universal_policy_monitoring_mode_invalid');
+  return { mode: values.length ? values[0].slice(monitoringModeSetting.length + 1) : 'reader', entry: values[0] };
+}
 /** Returns a clone; no engine calls, inherited secret output or original mutation. */
 export function applyUniversalPolicy(config, handle) {
   const receipt = stateFor(handle).receipt; let next;
@@ -486,6 +504,14 @@ export function applyUniversalPolicy(config, handle) {
     matches[0].Source = feature.source;
   }
   check(next.Env === undefined || Array.isArray(next.Env) && next.Env.every(value => typeof value === 'string'), 'universal_policy_configuration_invalid');
+  const monitoring = receipt.featureMonitoring, previousMonitoring = monitoringMode(next.Env);
+  if (monitoring) {
+    check(previousMonitoring.mode === monitoring.expectedMode, 'universal_policy_monitoring_current_mismatch');
+    next.Env ||= [];
+    const index = next.Env.indexOf(previousMonitoring.entry);
+    if (index >= 0) next.Env[index] = monitoringModeSetting + '=' + monitoring.mode;
+    else next.Env.push(monitoringModeSetting + '=' + monitoring.mode);
+  } else check(previousMonitoring.mode === 'reader', 'universal_policy_monitoring_feature_required');
   const expected = new Map(receipt.environment.map(({ name, value }) => [name, value]));
   for (const name of receipt.phase === 'legacy-baseline' ? [settings.operator] : [...Object.values(settings),
     ...(expected.has(installedModuleSetting) ? [installedModuleSetting, installedHashSetting] : [])]) {
@@ -514,12 +540,28 @@ export function applyUniversalPolicy(config, handle) {
     preserved.HostConfig.Mounts.find(mount => mount.Target === selectedTarget).Source = feature.currentSource;
     check(canonicalJson(preserved) === canonicalJson(config), 'universal_policy_selected_feature_other_configuration');
   }
+  if (monitoring) {
+    const preserved = structuredClone(next), index = preserved.Env.findIndex(value => value.startsWith(monitoringModeSetting + '='));
+    if (previousMonitoring.entry !== undefined) preserved.Env[index] = previousMonitoring.entry;
+    else preserved.Env.splice(index, 1);
+    if (config.Env === undefined && preserved.Env.length === 0) delete preserved.Env;
+    check(canonicalJson(preserved) === canonicalJson(config), 'universal_policy_monitoring_other_configuration');
+  }
   return next;
 }
 
-/** A registry-only feature keeps the actual OLD bind and loaded server capture as its rollback authority. */
-export function assertSelectedEmbedFeatureOriginal(handle, original, observed, { allowFixture = false } = {}) {
+/** Configuration-only features bind the actual OLD configuration and loaded server capture. */
+export function assertUniversalFeatureOriginal(handle, original, observed, { allowFixture = false } = {}) {
   const receipt = stateFor(handle).receipt, feature = receipt.featureSelectedEmbed;
+  if (receipt.featureMonitoring) {
+    try { validateUniversalPreparedness(observed); } catch { fail('universal_policy_runtime_invalid'); }
+    const monitoring = receipt.featureMonitoring, measured = observed.monitoring;
+    check(measured?.mode === monitoring.expectedMode && monitoringMode(original.Config?.Env).mode === monitoring.expectedMode,
+      'universal_policy_monitoring_current_mismatch');
+    assertUniversalPreparedness(handle, { ...observed, monitoring: { ...measured, mode: monitoring.mode,
+      installed: monitoring.mode === 'writer' || measured.installed } }, { allowFixture });
+    return;
+  }
   if (!feature) return;
   const matches = (original.Mounts || []).filter(mount => overlaps(path.posix.normalize(mount.Destination || '/'), selectedTarget));
   check(matches.length === 1 && matches[0].Type === 'bind' && matches[0].Source === feature.currentSource && matches[0].RW === false,
@@ -527,6 +569,7 @@ export function assertSelectedEmbedFeatureOriginal(handle, original, observed, {
   check(canonicalJson(observed.selected ?? null) === canonicalJson(feature.currentSelected), 'universal_policy_selected_feature_current_mismatch');
   assertUniversalPreparedness(handle, { ...observed, selected: receipt.selected }, { allowFixture });
 }
+export const assertSelectedEmbedFeatureOriginal = assertUniversalFeatureOriginal;
 
 /** Image inspect objects are supplied by the existing exact-ID rollout fence.
  * Labels declare compatibility; actual cold boots remain a separate gate. */
@@ -535,7 +578,11 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
   try {
     if (receipt.featureSelectedEmbed) check(candidateImage.Id === originalImage.Id, 'universal_policy_selected_feature_image_mismatch');
     const candidate = storageReaders(candidateImage), original = storageReaders(originalImage);
-    check([5, 6, 7].includes(JSON.parse(candidateImage.Config.Labels[storageReaderLabel]).version) && candidate.appRegistration.includes(1)
+    if (receipt.featureMonitoring) {
+      check(candidate.monitoring?.includes(1) && original.monitoring?.includes(1), 'universal_policy_monitoring_reader_required');
+      check(candidateImage.Id === originalImage.Id, 'universal_policy_monitoring_image_mismatch');
+    }
+    check([5, 6, 7, 8, 9, 10].includes(JSON.parse(candidateImage.Config.Labels[storageReaderLabel]).version) && candidate.appRegistration.includes(1)
       && candidate.feedback.includes(1) && candidate.humanIdentity.includes(1), 'universal_policy_reader_baseline_required');
     check(candidateImage.Config.Labels[universalModeLabel] === (receipt.phase === 'legacy-baseline' ? '1' : '0'), 'universal_policy_image_mode_mismatch');
     if (receipt.environment.some(value => value.name === settings.accountAiFile))
@@ -544,7 +591,7 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
     const needsDeviceConsentReader = Boolean(receipt.human.deviceConsent || receipt.environment.some(value =>
       value.name === settings.humanDeviceConsentMigration && value.value === '1'));
     if (needsDeviceConsentReader) check(candidate.humanIdentity.includes(3), 'universal_policy_reader_baseline_required');
-    if (receipt.phase === 'features') check([5, 6, 7].includes(JSON.parse(originalImage.Config.Labels[storageReaderLabel]).version)
+    if (receipt.phase === 'features') check([5, 6, 7, 8, 9, 10].includes(JSON.parse(originalImage.Config.Labels[storageReaderLabel]).version)
       && original.appRegistration.includes(1) && original.feedback.includes(1) && original.humanIdentity.includes(1)
       && originalImage.Config.Labels[universalModeLabel] === (receipt.expectedCurrentPreparednessSha256 === undefined ? '1' : '0'),
       'universal_policy_reader_baseline_required');
@@ -567,7 +614,10 @@ export function captureUniversalPreparedness(input) {
 export function assertUniversalPreparedness(handle, input, { allowFixture = false } = {}) {
   const expected = stateFor(handle).receipt, runtime = safe(input, 'universal_policy_runtime_invalid');
   check(typeof allowFixture === 'boolean' && (!expected.fixtureOnly || allowFixture), 'universal_policy_fixture_not_production');
-  closed(runtime, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews'], ['selected']);
+  closed(runtime, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews'], ['selected', 'monitoring']);
+  if (runtime.monitoring !== undefined) {
+    try { validateUniversalPreparedness(runtime); } catch { fail('universal_policy_runtime_invalid'); }
+  }
   check(runtime.schema === UNIVERSAL_RUNTIME_SCHEMA && [runtime.compiledLegacyMode, runtime.universalConfigured, runtime.reviewsConfigured, runtime.humanHttpEnabled]
     .every(value => typeof value === 'boolean'), 'universal_policy_runtime_invalid');
   const baseline = expected.phase === 'legacy-baseline';
@@ -576,6 +626,8 @@ export function assertUniversalPreparedness(handle, input, { allowFixture = fals
     && canonicalJson(runtime.reviews) === canonicalJson({ configurationDigest: expected.reviews.configurationDigest,
       providerCount: expected.reviews.providerCount, bindingCount: expected.reviews.bindingCount }), 'universal_policy_runtime_mismatch');
   check(canonicalJson(runtime.selected ?? null) === canonicalJson(expected.selected ?? null), 'universal_policy_runtime_mismatch');
+  check(expected.featureMonitoring ? runtime.monitoring?.mode === expected.featureMonitoring.mode
+    : !runtime.monitoring || runtime.monitoring.mode === 'reader', 'universal_policy_runtime_mismatch');
   return freeze({ ok: true, schema: UNIVERSAL_RUNTIME_SCHEMA, phase: expected.phase, policyDigest: expected.policyDigest, fixtureOnly: expected.fixtureOnly });
 }
 

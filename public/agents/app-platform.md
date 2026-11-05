@@ -1,0 +1,86 @@
+# Подключить приложение к Сотам и открыть его агентам
+
+Начните с `/.well-known/soty-app-platform`. Текущие приложения: `/api/app-agent-directory/apps`; установленные модули и контракты провайдеров: `/api/app-agent-directory/modules`. Каталоги читаются заново при каждом запросе. Они не выдают ключи, права или исполняемый код.
+
+1. Подключите реальное локальное приложение через интерфейс Сот: выберите своё подключённое устройство, укажите `localhost:порт` либо IPv4 **этого устройства**, затем «Только я», «По ссылке» или «Все». Подключение по IP доступно только при поддержке текущим сервером и коннектором; подробности ниже. SDK Source: `/sdk/source-app/index.json`; проверяйте sha256 архива и его admission profile.
+2. Под текущим владельцем прочитайте `apps.inspect` и `apps.agentDescriptor.get` через подписанный Connect. `source` в ответе directory get — точный текущий pin `{id:"apps:<реальный appId>/target",revision,digest}`. Не придумывайте appId, адрес или версию источника.
+3. Подготовьте JSON `soty.app-agent.v1` через SDK ниже. Передайте реальные feedback refs существующей universal registration; поле binding — только описание, оно ничего не запускает. Два независимых примера: `/agents/examples/notes-descriptor.mjs`, `/agents/examples/gallery-descriptor.mjs`. Идентификаторы приложений и их refs передаются параметрами.
+4. От владельца вызовите `apps.agentDescriptor.put` с `{expectedAccountId,appId,requestId,expectedRevision,enabled:true,descriptor}`. Один стабильный requestId на намерение. При потерянном ответе повторите тот же запрос; другой payload с тем же id отклоняется. CAS конфликт требует перечитать состояние. `enabled:false` отзывает описание.
+5. Публичный агент увидит только одновременно listed/public приложение с текущим адресом, текущим Source и включённым owner descriptor. По ссылке и приватное приложение не попадают в публичный каталог. Человек с действующим scoped credential видит доступные ему приложения; знание appId права не создаёт. После смены Source или visibility старый descriptor перестаёт публиковаться; владелец явно подтверждает новый pin.
+
+## SDK описания
+
+Это исходные файлы **существующего** SDK `modules/app-contract`, а не второй контракт. Скачайте, сохраняя относительную структуру:
+
+- `/agents/sdk/app-contract/sdk.mjs`
+- `/agents/sdk/app-contract/index.mjs`
+- `/agents/sdk/app-contract/json.mjs`
+- `/agents/sdk/capabilities/server/validation.mjs`
+
+Node 24.15+; `import {createDescriptor} from './sdk/app-contract/sdk.mjs'`. Примеры сохраните в соседнюю `examples/`. Валидация закрытая: URL, command, credentials, код адаптера и неизвестные поля в descriptor не принимаются. Ни один из этих файлов не содержит ключей среды или импортов авторских пакетов.
+
+## Адрес приложения и выбранное устройство
+
+`localhost:30000` означает порт на выбранном подключённом устройстве. Например, `192.168.1.20:30000` означает именно этот IPv4, а не замену на localhost. Адрес должен быть назначен сетевому интерфейсу **того же устройства**: коннектор сверяет его с ОС непосредственно перед соединением. Для другого компьютера или сервера сначала подключите и выберите его коннектор. Произвольный LAN/public адрес, DNS, IPv6 и HTTPS в этом профиле не принимаются. Перенаправление на другой origin тоже отклоняется.
+
+Публичный `GET /api/apps/runtime-capabilities` сообщает только возможности сервера. Нужны одновременно профиль `soty.relay-self-ip.v1`, target schema `soty.runtime-target.v2`, target binding version2 и поддерживающий их коннектор1.4.17+. Это metadata, а не разрешение на доступ. Серверный флаг `allowSelfIpTargets` по умолчанию выключен; включение и совместимый образ требуют отдельной проверки.
+
+Для автоматизации владелец получает `apps.devices` через существующий подписанный Connect. В выбранном устройстве `sourceEndpoints.state` должен быть `ready`; `addresses` и `inventoryWitness` приходят от его текущего авторизованного канала. Вызов `apps.registerEndpoint` использует:
+
+```js
+{
+  requestId, // один сохранённый ID намерения; повтор при неизвестном исходе
+  hostDeviceId: device.hostDeviceId,
+  connectorId: device.connectorId,
+  name: 'Моё приложение',
+  source: {
+    schema: 'soty.app-http-source.v2',
+    endpoint: {scope:'connector-self', scheme:'http', family:'IPv4', address},
+    port: 30000,
+    entryPath: '/'
+  },
+  inventoryWitness: device.sourceEndpoints.inventoryWitness,
+  grants: {accountIds:[], communityIds:[]}
+}
+```
+
+Проверка источника не держит транзакцию во время сети. До фиксации повторно проверяются исходный подписанный actor, владение устройством, текущий канал, адрес и результат реального HTTP probe. Сохранённый `registrationReceipt` возвращается при повторе того же намерения, включая перезапуск и смену канала; другой payload с тем же ID отклоняется. Не отправляйте новый ID лишь из-за потерянного ответа. Текущий интерфейс затем подтверждает выбранную аудиторию и размещает настоящую соту на личном поле; сбой этого шага продолжает прежнее подключение.
+
+`apps_endpoint_connector_upgrade_required` означает несовместимый сервер/коннектор; `apps_endpoint_inventory_pending` — ещё нет свежего подтверждения адресов; `apps_endpoint_not_on_selected_device` — IP не принадлежит выбранному устройству; `apps_endpoint_interface_unavailable` — канал или адрес изменился. Эти ошибки не означают успешного подключения. Обновите сведения об устройстве и продолжите тот же запрос; если ошибочен сам адрес и запись точно не совершена, интерфейс разрешит его исправить.
+
+## Вызов данных приложения
+
+Root MCP остаётся `/mcp` с существующим OAuth `/.well-known/oauth-protected-resource/mcp`. Дополнительные metadata tools: `app_directory_search`, `app_directory_get`, `app_directory_modules`. Для приватного каталога используется текущая авторизация, не JSON accountId и не cookies.
+
+`discoveryReady:true` означает только актуальное обнаружение. `executionReady:true` появляется у readonly capability, когда **код установленного host adapter** сопоставил её с текущим разрешённым Root contract и проверен отдельный grant. Вызов `app_directory_query({appId,capabilityId,input,idempotencyKey})` идёт через существующий `apps_query`: текущий grant → trusted adapter → Source → ограниченный ответ → повторная проверка Source/descriptor/ACL. Повтор того же id не выполняет Source снова; existing query ledger может вернуть receipt без самих данных. JSON не может установить Root adapter.
+
+Если установленного binding нет, `executionReady:false`; описание не обещает исполнение. Произвольный author MCP URL не проксируется и не считается здоровым по факту наличия JSON. Подключение нового app-owned MCP transport требует отдельного host admission, проверки текущего registered origin, протокола и ограниченного health check. До него агент может изучить контракт и открыть приложение как человек, но не выполнять операции от его имени.
+
+## Модули и виджеты
+
+Module catalog — metadata текущего host registry. Он поддерживает `kind:"provider-contract"`, `providerKinds:["canvas.widget"]` и `readiness:"contract-only"`; это позволяет объявить общий контракт виджета без hardcoded appId. Само объявление не создаёт backend, UI, grant и не разрешает arbitrary HTML/JS. Только `readiness:"available"` сообщает об установленном провайдере; конкретное выполнение проверяется отдельно.
+
+## Реферальная система
+
+Установленный модуль `soty.referrals` использует один журнал для разных приложений с независимыми настройками и привязками. По умолчанию `ratesBps: [1000, 1000, 1000]`: три линии получают по 10% от одной исходной допустимой суммы. Четвёртой линии начислений нет. Например, с 10005 минимальных денежных единиц каждая из первых трёх линий получает 1000; остаток округления не переносится на следующую линию. Реальные выплаты не подключены, `payoutsEnabled:false`.
+
+Начните с module catalog, затем получите отдельное разрешение владельца. В установленном Root агенту нужны capability IDs соответствующих операций, ресурсы `referrals` и `referrals:<appId>` для конкретного разрешённого приложения, получатель `soty:referrals`. Изменение конфигурации дополнительно требует effect `update` и текущих прав владельца этого приложения. Чтение не разрешает изменение. Подставленный в JSON accountId, чужой appId или скопированный reference не дают доступа.
+
+После OAuth используйте существующие MCP tools:
+
+1. `apps_catalog_search({query:"referrals."})` возвращает доступные текущему разрешению операции. Не берите digest из исходников, чужого ответа или номера версии модуля.
+2. Передайте полный полученный `reference` в `apps_catalog_get({reference})`: прочитайте актуальные `inputSchema` и `outputSchema`.
+3. Для чтения вызовите `apps_query({reference,input,idempotencyKey})`. В `input` укажите настоящий разрешённый `appId`; для баланса также `currency`, например `"RUB"`. Сначала прочитайте `referrals.config.get`, чтобы получить исходную revision. Новый осознанный запрос данных использует новый ключ: точный повтор уже выполненного query может вернуть только metadata/receipt с `resultUnavailable:true`, без прежних личных данных.
+4. Для настройки используйте reference именно `referrals.config.put` и `apps_invoke({reference,input:{appId,expectedRevision,ratesBps},idempotencyKey})`. Сохраните этот ключ вместе с точным input до отправки. При потерянном ответе повторяется то же намерение; неизвестный исход проверяется через invocation/receipt и новое чтение. Конфликт revision требует перечитать настройки и явно выбрать новое изменение.
+
+| Операция | Input помимо appId | Результат и граница доступа |
+| --- | --- | --- |
+| `referrals.config.get` | нет | Текущие ratesBps/revision; у нового приложения revision0 и три линии по 10% |
+| `referrals.config.put` | expectedRevision, ratesBps | Только владелец; сохраняет новую версию для будущих оплат |
+| `referrals.attribution.get` | нет | Только собственная привязка текущего аккаунта |
+| `referrals.balance.get` | currency | Только собственный баланс приложения; amountMinor — десятичная строка целых единиц |
+| `referrals.ledger.list` | cursor?, limit? | Только собственные записи; чужие плательщики и внутренние payment IDs не выдаются |
+
+В Root MCP идентичность приходит из текущего credential, `expectedAccountId` и `mutationId` агент в input не выбирает. Внутренний подписанный Connect для человека использует одноимённые операции с `expectedAccountId`; для `config.put` дополнительно нужен стабильный `mutationId`. Это существующие два транспорта одного модуля, с теми же проверками владельца и приложения.
+
+Конфигурация допускает 1–10 линий, каждую от0 до10000 basis points, суммарно не больше10000. Один basis point равен0,01%; `[0]` отключает будущие начисления. Изменение ставок не переписывает уже принятые оплаты и возвраты. Частичный возврат считается накопительно от исходной комиссии; полный возвращает ровно исходное начисление, включая остаток округления. Денежные события принимаются только от установленного доверенного источника приглашений/оплат; в публичных RPC и MCP нет операций payment, refund, credit, withdraw или payout. Обнаружение модуля не подключает платёжного провайдера и не создаёт фактическую оплату.

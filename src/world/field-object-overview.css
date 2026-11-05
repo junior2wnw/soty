@@ -1,0 +1,18 @@
+/* Same shared identity row; container width is screen-sized before inverse scaling. */
+.cf-widget-overview.uf-object-overview{
+  width:clamp(44px,calc(var(--uf-node-screen-width,180px) * .98),160px);
+  flex-wrap:wrap;
+  container:field-object-identity / inline-size;
+}
+.cf-widget-overview.uf-object-overview:not([data-overview-visual=true]){
+  margin-top:calc(clamp(-4px,calc((96px - var(--uf-node-screen-width,128px)) * .125),0px) * var(--uf-label-scale,1));
+}
+@container field-object-identity (max-width:96px){
+  .cf-widget-overview .cf-widget-overview-mark{display:flex;flex-basis:100%;justify-content:center;font-size:16px;line-height:16px}
+  .cf-widget-overview .cf-widget-overview-mark .sw-icon{width:16px;height:16px}
+  .cf-widget-overview .cf-widget-overview-title{flex-basis:100%;text-align:center;font-size:13px;line-height:18px;text-wrap:wrap;overflow-wrap:anywhere}
+}
+/* Below one compact identity, keep its mark; names return on approach. */
+@container field-object-identity (max-width:55px){
+  .cf-widget-overview .cf-widget-overview-title{display:none}
+}

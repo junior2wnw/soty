@@ -374,14 +374,293 @@ function createSourceProofVerifier({
   });
 }
 
+// modules/source-app/server/wire.mjs
+import { createHash as createHash2, randomBytes as randomBytes2 } from "node:crypto";
+function canonical2(input) {
+  if (Array.isArray(input)) return "[" + input.map(canonical2).join(",") + "]";
+  if (input && typeof input === "object") return "{" + Object.keys(input).sort().map((key) => JSON.stringify(key) + ":" + canonical2(input[key])).join(",") + "}";
+  return JSON.stringify(input);
+}
+var digest = (value) => createHash2("sha256").update(typeof value === "string" ? value : canonical2(value)).digest("hex");
+var deepFreeze = (value) => {
+  if (value && typeof value === "object") {
+    Object.values(value).forEach(deepFreeze);
+    Object.freeze(value);
+  }
+  return value;
+};
+
+// modules/source-app/server/standard-profile.mjs
+var rule = (kind, methods, path, requestBytes, responseBytes, queries = []) => ({ kind, methods, path, requestBytes, responseBytes, queries });
+var STANDARD_SOURCE_CONTRACT = deepFreeze({
+  schema: "soty.source-route-adapter.v1",
+  kind: "soty.resource.v1",
+  auth: {
+    schema: "soty.source-embed-auth.v1",
+    cookies: ["soty_rp_session", "soty_rp_intent", "soty_rp_link"],
+    basicSeconds: 300,
+    finiteSeconds: 86400,
+    proof: "maintained-native-rp-current-userinfo",
+    nativeConsent: "selected-current-native-acl",
+    nativeHandoffPath: "/soty/connect",
+    nativeCallbackPath: "/soty/callback",
+    feedbackPermission: "explicit-current-native-report"
+  },
+  rules: [
+    rule("public-ui", ["GET", "HEAD"], "/embed", 0, 4194304),
+    rule("auth-start", ["GET", "POST"], "/api/embed/login", 16384, 65536),
+    rule("auth-read", ["GET"], "/api/embed/session-status", 0, 65536),
+    rule("auth-continue", ["POST"], "/api/embed/session-continue", 16384, 65536),
+    rule("auth-callback", ["GET"], "/api/embed/callback", 0, 65536, ["code", "state", "iss", "error", "error_description"]),
+    rule("auth-completion", ["GET"], "/api/embed/complete-link", 0, 65536, ["intent"]),
+    rule("read", ["GET"], "/api/embed/context", 0, 65536),
+    rule("read", ["POST"], "/api/embed/query", 65536, 65536),
+    rule("write", ["POST"], "/api/embed/invoke", 65536, 65536),
+    rule("read", ["POST"], "/api/embed/receipt", 16384, 65536),
+    rule("feedback-read", ["GET"], "/api/embed/feedback/context", 0, 65536),
+    rule("feedback-read", ["GET"], "/api/embed/feedback", 0, 65536, ["limit", "cursor"]),
+    rule("feedback-write", ["POST"], "/api/embed/feedback", 15e5, 262144),
+    rule("feedback-read", ["GET"], "/api/embed/feedback/ticket", 0, 15e5, ["ticketId"]),
+    rule("feedback-write", ["POST"], "/api/embed/feedback/reply", 32768, 262144),
+    rule("feedback-write", ["POST"], "/api/embed/feedback/status", 32768, 262144),
+    rule("feedback-write", ["POST"], "/api/embed/feedback/accept", 32768, 262144)
+  ],
+  assets: { path: "/assets/", extensions: ["js", "css", "woff2", "svg", "png"], responseBytes: 4194304 }
+});
+var STANDARD_SELECTED_SOURCE = deepFreeze({ id: "soty.standard-resource", version: 1, digest: digest(STANDARD_SOURCE_CONTRACT) });
+var { nativeCallbackPath: _nativePath, ...authV2 } = STANDARD_SOURCE_CONTRACT.auth;
+var STANDARD_SOURCE_CONTRACT_2 = deepFreeze({
+  ...STANDARD_SOURCE_CONTRACT,
+  auth: {
+    ...authV2,
+    callbackPath: "/api/embed/callback",
+    callbackOrigin: "approved-embed-https",
+    loginProof: "durable-source-native-before-oidc.v1",
+    correlation: "handoff-state-original-slot.v1",
+    completionRecovery: "current-original-slot-readonly-receipt.v1"
+  }
+});
+var STANDARD_SELECTED_SOURCE_V2 = deepFreeze({ id: "soty.standard-resource", version: 2, digest: digest(STANDARD_SOURCE_CONTRACT_2) });
+var STANDARD_SOURCE_CONTRACT_3 = deepFreeze({
+  ...STANDARD_SOURCE_CONTRACT_2,
+  rules: STANDARD_SOURCE_CONTRACT_2.rules.map((row) => row.path === "/api/embed/feedback/ticket" ? { ...row, responseBytes: 2097152 } : row)
+});
+var STANDARD_SELECTED_SOURCE_V3 = deepFreeze({ id: "soty.standard-resource", version: 3, digest: digest(STANDARD_SOURCE_CONTRACT_3) });
+var STANDARD_WORKSPACE_CONTRACT = deepFreeze({
+  ...STANDARD_SOURCE_CONTRACT_3,
+  kind: "soty.workspace.v1",
+  context: {
+    schema: "soty.current-context.v2",
+    authority: "application-namespace-and-current-child-native-acl",
+    readOperation: "soty.current_context",
+    uiOperation: "soty.context.select",
+    maxLeaseMs: 3e5,
+    slotCapacity: "host-configured",
+    instanceBinding: "optional-root-account-device-app-profile-main-or-widget",
+    receipt: "soty.context-after.v1",
+    projection: "soty.workspace-receipt.v1",
+    witness: "soty.workspace-context-witness.v1"
+  }
+});
+var STANDARD_WORKSPACE_SOURCE = deepFreeze({ id: "soty.standard-workspace", version: 1, digest: digest(STANDARD_WORKSPACE_CONTRACT) });
+var STANDARD_ROOT_WORKSPACE_CONTRACT = deepFreeze({
+  ...STANDARD_WORKSPACE_CONTRACT,
+  // Feedback names the SAME current Native child as domain reads/effects.
+  // This new workspace2 pin does not widen resource1/2/3 or workspace1.
+  rules: STANDARD_WORKSPACE_CONTRACT.rules.map((row) => row.kind === "feedback-read" ? {
+    ...row,
+    queries: [...row.queries, "contextRef"],
+    ...row.path === "/api/embed/feedback" ? { responseBytes: 262144 } : {}
+  } : row),
+  auth: {
+    schema: "soty.root-workspace-auth.v1",
+    cookies: ["soty_rp_session"],
+    basicSeconds: 300,
+    proof: "root-signed-current-context.v1",
+    audience: "urn:soty:source-authority",
+    witnessType: "soty-source-authority+jwt",
+    witnessMaxSeconds: 10,
+    session: "fresh-reference-short-native-anchor",
+    feedbackPermission: "explicit-current-native-report"
+  }
+});
+var STANDARD_ROOT_WORKSPACE_SOURCE = deepFreeze({ id: "soty.standard-workspace", version: 2, digest: digest(STANDARD_ROOT_WORKSPACE_CONTRACT) });
+var isRootSignedWorkspaceSource = (pin2) => pin2?.id === STANDARD_ROOT_WORKSPACE_SOURCE.id && pin2.version === 2 && pin2.digest === STANDARD_ROOT_WORKSPACE_SOURCE.digest;
+
+// modules/apps/scoped-embed/resource-profile.mjs
+var SELECTED_RESOURCE_PROFILE = "soty.selected-human-embed.v2";
+var validatedProfiles = /* @__PURE__ */ new WeakSet();
+function nativeResourceId(value) {
+  need(
+    typeof value === "string" && value.length > 0 && value.isWellFormed() && Buffer.byteLength(value, "utf8") <= 4096 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value),
+    "scoped_embed_native_id_invalid"
+  );
+  return value;
+}
+function resourceKind(value) {
+  need(typeof value === "string" && /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*\.v[1-9][0-9]*$/u.test(value) && value.length <= 128, "scoped_embed_resource_kind_invalid");
+  return value;
+}
+function selectedResource(value) {
+  closed(value, ["registryId", "tenantId", "appId", "environmentId", "resourceId", "selection"]);
+  for (const field of ["registryId", "tenantId", "appId", "environmentId", "resourceId"]) identifier(value[field]);
+  closed(value.selection, ["kind", "nativeId", "incarnationId"]);
+  resourceKind(value.selection.kind);
+  nativeResourceId(value.selection.nativeId);
+  identifier(value.selection.incarnationId);
+  return value;
+}
+function selectedResourceProfile(input) {
+  if (input && typeof input === "object" && validatedProfiles.has(input)) return input;
+  const value = capture(input);
+  closed(value, [
+    "schema",
+    "appId",
+    "connector",
+    "target",
+    "sourceProfile",
+    "resource",
+    "issuer",
+    "clientId",
+    "embedOrigin",
+    "nativeOrigin",
+    "parentOrigin"
+  ]);
+  need(value.schema === SELECTED_RESOURCE_PROFILE && /^app-[a-f0-9]{32}$/u.test(value.appId));
+  connector(value.connector);
+  closed(value.target, ["revision", "digest"]);
+  need(Number.isSafeInteger(value.target.revision) && value.target.revision > 0);
+  sha(value.target.digest);
+  pin(value.sourceProfile);
+  selectedResource(value.resource);
+  need(value.resource.appId === value.appId);
+  approvedOrigin(value.embedOrigin);
+  approvedOrigin(value.nativeOrigin);
+  approvedOrigin(value.parentOrigin);
+  const sameOriginWorkspace = isRootSignedWorkspaceSource(value.sourceProfile) && value.resource.selection.kind === "soty.workspace.v1" && value.nativeOrigin === value.embedOrigin;
+  need((new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname || sameOriginWorkspace) && value.parentOrigin !== value.embedOrigin);
+  const issuer = new URL(value.issuer);
+  need(issuer.href === value.issuer && issuer.pathname === "/human-identity" && issuer.origin === value.parentOrigin && !issuer.search && !issuer.hash);
+  identifier(value.clientId);
+  need(Buffer.byteLength(JSON.stringify(value), "utf8") <= 16384, "scoped_embed_profile_too_large");
+  const profile = Object.freeze({ ...value, digest: hash(value) });
+  validatedProfiles.add(profile);
+  return profile;
+}
+var RESOURCE_TRANSPORT_LIMITS = Object.freeze({
+  proofHeaderBytes: 12288,
+  headerBytes: 16384,
+  continuations: 256,
+  continuationMs: 3e5,
+  proofMs: 1e4,
+  inflight: 4,
+  callMs: 8e3
+});
+
+// modules/apps/scoped-embed/resource-route-adapters.mjs
+var MiB = 1048576;
+var rule2 = (kind, methods, path, requestBytes, responseBytes, queries = []) => Object.freeze({ kind, methods: Object.freeze(methods), path, requestBytes, responseBytes, queries: Object.freeze(queries) });
+var hiveContract = capture({
+  schema: "soty.source-route-adapter.v1",
+  kind: "hive.project.v1",
+  auth: {
+    schema: "soty.source-embed-auth.v1",
+    cookies: ["soty_rp_session", "soty_rp_intent", "soty_rp_link"],
+    basicSeconds: 300,
+    finiteSeconds: 86400,
+    proof: "maintained-native-rp-current-userinfo",
+    nativeConsent: "selected-current-native-acl",
+    nativeHandoffPath: "/soty/connect",
+    nativeCallbackPath: "/account/soty/callback",
+    feedbackPermission: "explicit-current-native-report"
+  },
+  rules: [
+    rule2("public-ui", ["GET", "HEAD"], "/embed", 0, 4 * MiB),
+    rule2("auth-start", ["GET", "POST"], "/api/embed/login", 16384, 65536),
+    rule2("auth-read", ["GET"], "/api/embed/session-status", 0, 65536),
+    rule2("auth-continue", ["POST"], "/api/embed/session-continue", 16384, 65536),
+    rule2("auth-callback", ["GET"], "/api/embed/callback", 0, 65536, ["code", "state", "iss", "error", "error_description"]),
+    rule2("auth-completion", ["GET"], "/api/embed/complete-link", 0, 65536, ["intent"]),
+    rule2("read", ["GET"], "/api/embed/context", 0, 65536),
+    rule2("read", ["GET"], "/api/embed/project", 0, 4 * MiB),
+    rule2("write", ["PUT"], "/api/embed/project", MiB, 4 * MiB),
+    rule2("write", ["POST"], "/api/embed/operations", MiB, 4 * MiB),
+    rule2("read", ["GET"], "/api/embed/changes", 0, MiB, ["after", "limit"]),
+    rule2("read", ["GET"], "/api/embed/live", 0, 65536, ["clientId"]),
+    rule2("read", ["GET"], "/api/embed/presence", 0, 65536, ["clientId"]),
+    rule2("presence", ["POST", "DELETE"], "/api/embed/presence", 16384, 65536),
+    rule2("feedback-read", ["GET"], "/api/embed/feedback/context", 0, 65536),
+    rule2("feedback-read", ["GET"], "/api/embed/feedback", 0, 65536, ["limit", "cursor"]),
+    rule2("feedback-write", ["POST"], "/api/embed/feedback", 15e5, 262144),
+    rule2("feedback-read", ["GET"], "/api/embed/feedback/ticket", 0, 2 * MiB, ["ticketId"]),
+    rule2("feedback-write", ["POST"], "/api/embed/feedback/reply", 32768, 262144),
+    rule2("feedback-write", ["POST"], "/api/embed/feedback/status", 32768, 262144),
+    rule2("feedback-write", ["POST"], "/api/embed/feedback/accept", 32768, 262144)
+  ],
+  assets: { path: "/assets/", extensions: ["js", "css", "woff2", "svg", "png"], responseBytes: 4 * MiB }
+});
+var HIVE_SELECTED_KERNEL_SOURCE = Object.freeze({ id: "hive.selected-project", version: 1, digest: hash(hiveContract) });
+var editorContract = capture({ ...hiveContract, assets: {
+  responseBytes: 4 * MiB,
+  credentialFree: true,
+  redirects: false,
+  queries: false,
+  paths: [
+    { prefix: "/_next/static/chunks/", extensions: ["js"] },
+    { prefix: "/_next/static/css/", extensions: ["css"] },
+    { prefix: "/_next/static/media/", extensions: ["woff2", "svg", "png"] }
+  ]
+} });
+var HIVE_SELECTED_SOURCE = Object.freeze({ id: "hive.selected-project", version: 2, digest: hash(editorContract) });
+var hive = Object.freeze({ pin: HIVE_SELECTED_KERNEL_SOURCE, kind: hiveContract.kind, contract: hiveContract });
+var editor = Object.freeze({ pin: HIVE_SELECTED_SOURCE, kind: editorContract.kind, contract: editorContract });
+var adapters = new Map([hive, editor].map((adapter) => [adapter.pin.id + ":" + adapter.pin.version + ":" + adapter.pin.digest, adapter]));
+adapters.set(
+  STANDARD_SELECTED_SOURCE.id + ":1:" + STANDARD_SELECTED_SOURCE.digest,
+  Object.freeze({ pin: STANDARD_SELECTED_SOURCE, kind: STANDARD_SOURCE_CONTRACT.kind, contract: STANDARD_SOURCE_CONTRACT })
+);
+adapters.set(
+  STANDARD_SELECTED_SOURCE_V2.id + ":2:" + STANDARD_SELECTED_SOURCE_V2.digest,
+  Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V2, kind: STANDARD_SOURCE_CONTRACT_2.kind, contract: STANDARD_SOURCE_CONTRACT_2 })
+);
+adapters.set(
+  STANDARD_SELECTED_SOURCE_V3.id + ":3:" + STANDARD_SELECTED_SOURCE_V3.digest,
+  Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V3, kind: STANDARD_SOURCE_CONTRACT_3.kind, contract: STANDARD_SOURCE_CONTRACT_3 })
+);
+adapters.set(
+  STANDARD_WORKSPACE_SOURCE.id + ":1:" + STANDARD_WORKSPACE_SOURCE.digest,
+  Object.freeze({ pin: STANDARD_WORKSPACE_SOURCE, kind: STANDARD_WORKSPACE_CONTRACT.kind, contract: STANDARD_WORKSPACE_CONTRACT })
+);
+adapters.set(
+  STANDARD_ROOT_WORKSPACE_SOURCE.id + ":2:" + STANDARD_ROOT_WORKSPACE_SOURCE.digest,
+  Object.freeze({ pin: STANDARD_ROOT_WORKSPACE_SOURCE, kind: STANDARD_ROOT_WORKSPACE_CONTRACT.kind, contract: STANDARD_ROOT_WORKSPACE_CONTRACT })
+);
+function selectedRouteAdapter(input) {
+  const profile = selectedResourceProfile(input);
+  const pin2 = profile.sourceProfile, adapter = adapters.get(pin2.id + ":" + pin2.version + ":" + pin2.digest);
+  need(adapter && adapter.kind === profile.resource.selection.kind, "scoped_embed_adapter_unapproved", 403);
+  return adapter;
+}
+
+// modules/apps/scoped-embed/profile-dispatch.mjs
+function approvedEmbedProfile(input) {
+  return input?.schema === SELECTED_RESOURCE_PROFILE ? selectedResourceProfile(input) : scopedEmbedProfile(input);
+}
+function requireEmbedAdapter(input) {
+  const profile = approvedEmbedProfile(input);
+  if (profile.schema === SELECTED_RESOURCE_PROFILE) selectedRouteAdapter(input);
+  return profile;
+}
+
 // modules/apps/scoped-embed/local-broker.mjs
+var PUBLIC_ASSET_LIMITS = Object.freeze({ active: 4, queued: 32, waitMs: 8e3 });
 function createSourceCurrentSubjectPort({
   profile: raw,
   verifier,
   readAuthority,
   verifyHuman
 } = {}) {
-  const profile = scopedEmbedProfile(raw);
+  const profile = approvedEmbedProfile(raw);
   need(
     verifier && typeof verifier.context === "function" && [readAuthority, verifyHuman].every((fn) => typeof fn === "function")
   );
@@ -438,21 +717,64 @@ function createSourceCurrentSubjectPort({
 }
 
 // modules/apps/scoped-embed/source-authority-client.mjs
-import { createHmac as createHmac2, timingSafeEqual as timingSafeEqual2, randomBytes as randomBytes2 } from "node:crypto";
+import { createHmac as createHmac2, timingSafeEqual as timingSafeEqual2, randomBytes as randomBytes3 } from "node:crypto";
 import { request as httpRequest } from "node:http";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+var verifiedRoot = /* @__PURE__ */ new WeakMap();
+var jose;
+var maintainedJose = () => jose ??= import(
+  /* @vite-ignore */
+  pathToFileURL(createRequire(createRequire(import.meta.url).resolve("openid-client")).resolve("jose")).href
+);
+var AUTHORITY_ISSUANCE_CLOCK_SKEW_MS = 1e3;
 function createSourceAuthorityClient({ profile: raw, key, connectorPort = 49424, clock = Date.now } = {}) {
-  const profile = scopedEmbedProfile(raw);
+  const profile = requireEmbedAdapter(raw);
   need(Buffer.isBuffer(key) && key.length === 32 && Number.isSafeInteger(connectorPort) && connectorPort >= 1024 && connectorPort <= 65535);
   const privateKey = Buffer.from(key), mac2 = (text) => createHmac2("sha256", privateKey).update(text).digest("base64url");
+  const rootSigned = isRootSignedWorkspaceSource(profile.sourceProfile);
+  let jwks;
+  async function verifyIdentityWitness(value, challenge) {
+    const { jwtVerify, createRemoteJWKSet, customFetch } = await maintainedJose();
+    need(typeof value.identityWitness === "string" && value.identityWitness.length <= 8192, "source_root_witness_invalid", 403);
+    jwks ??= createRemoteJWKSet(new URL(profile.issuer + "/jwks"), { timeoutDuration: 5e3, [customFetch]: async (url, init) => {
+      need(String(url) === profile.issuer + "/jwks", "source_root_witness_invalid", 403);
+      const response = await fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(5e3) });
+      need(response.status === 200 && response.body, "source_root_witness_unavailable", 503);
+      const parts = [];
+      let size = 0;
+      for await (const part of response.body) {
+        size += part.length;
+        need(size <= 65536, "source_root_witness_unavailable", 503);
+        parts.push(part);
+      }
+      return new Response(Buffer.concat(parts), { status: 200, headers: { "content-type": "application/json" } });
+    } });
+    try {
+      const { payload, protectedHeader } = await jwtVerify(value.identityWitness, jwks, {
+        algorithms: ["RS256"],
+        issuer: profile.issuer,
+        audience: "urn:soty:source-authority",
+        typ: "soty-source-authority+jwt",
+        currentDate: new Date(clock()),
+        clockTolerance: 0
+      });
+      need(Object.keys(protectedHeader).every((key2) => ["alg", "typ", "kid"].includes(key2)) && Object.keys(payload).sort().join(",") === "aud,contextDigest,exp,iat,iss,sourceChallenge,sub" && payload.aud === "urn:soty:source-authority" && payload.sub === value.context.humanPrincipal.subject && payload.sourceChallenge === challenge && payload.contextDigest === hash(value.context) && Number.isSafeInteger(payload.iat) && Number.isSafeInteger(payload.exp) && payload.exp > payload.iat && payload.exp - payload.iat <= 10 && payload.iat * 1e3 <= clock() + 1e3 && payload.exp * 1e3 > clock() && payload.exp * 1e3 <= value.context.expiresAt, "source_root_witness_invalid", 403);
+      verifiedRoot.set(value.context, { expiresAt: payload.exp * 1e3, clock });
+      return value.context;
+    } catch {
+      need(false, "source_root_witness_invalid", 403);
+    }
+  }
   return async function readAuthority({ reference, connector: connector2 }) {
     need(hash(connector2) === hash(profile.connector), "scoped_embed_connector_mismatch", 403);
-    const nonce = randomBytes2(32).toString("base64url"), text = JSON.stringify({
+    const nonce = randomBytes3(32).toString("base64url"), text = JSON.stringify({
       schema: "soty.selected-source-authority.v1",
       appId: profile.appId,
       profileDigest: profile.digest,
       reference: capture(reference),
       nonce,
-      expiresAt: clock() + 1e4
+      expiresAt: clock() + 1e4 - AUTHORITY_ISSUANCE_CLOCK_SKEW_MS
     });
     return new Promise((resolve, reject) => {
       const request = httpRequest({
@@ -472,7 +794,7 @@ function createSourceAuthorityClient({ profile: raw, key, connectorPort = 49424,
           else parts.push(part);
         });
         response.on("error", () => reject(Object.assign(new Error("scoped_embed_authority_unavailable"), { status: 503, code: "scoped_embed_authority_unavailable" })));
-        response.on("end", () => {
+        response.on("end", async () => {
           try {
             const body = Buffer.concat(parts).toString("utf8"), signature = response.headers["x-soty-source-mac"];
             need(
@@ -486,7 +808,7 @@ function createSourceAuthorityClient({ profile: raw, key, connectorPort = 49424,
               "scoped_embed_authority_mismatch",
               403
             );
-            resolve(value.context);
+            resolve(rootSigned ? await verifyIdentityWitness(value, nonce) : value.context);
           } catch (error) {
             reject(error);
           }

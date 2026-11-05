@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer,request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { createConnectHandler } from '../server/http.mjs';
 import { createConnectService, digestArgs } from '../server/index.mjs';
@@ -105,4 +105,17 @@ test('declared and chunked body limits return a complete 413 response without ca
   assert.match(response, /^HTTP\/1\.1 413 /); assert.match(response, /"code":"request_too_large"/);
   const next = await f.post(challenge());
   assert.equal(next.response.status, 200);
+});
+
+test('multi-megabyte declared uploads receive complete typed rejection while their request body drains',async t=>{
+ const f=await fixture(t,{maxBytes:256}),body=JSON.stringify({...challenge(),padding:'x'.repeat(2300000)});
+ for(let n=0;n<12;n++){
+  const response=await new Promise((resolve,reject)=>{
+   const request=httpRequest(f.origin+'/api/connect/rpc',{method:'POST',agent:false,headers:{origin:f.origin,'content-type':'application/json','content-length':Buffer.byteLength(body)}},response=>{
+    const chunks=[];response.on('data',chunk=>chunks.push(chunk));response.on('error',reject);response.on('end',()=>{try{resolve({status:response.statusCode,complete:response.complete,body:JSON.parse(Buffer.concat(chunks).toString())});}catch(error){reject(error);}});
+   });request.on('error',reject);request.end(body);
+  });
+  assert.equal(response.status,413);assert.equal(response.complete,true);assert.equal(response.body.error.code,'request_too_large');
+ }
+ assert.equal((await f.post(challenge())).response.status,200);
 });

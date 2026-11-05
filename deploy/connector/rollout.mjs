@@ -4,7 +4,7 @@ import { SafeError, universalMeasurementDiagnostic } from './docker-api.mjs';
 import {addApprovedPolicy,readApprovedPolicy} from './application-policy.mjs';
 import {guardStorageStart, storageReaderLabel, storageReaders} from './storage-guard.mjs';
 import { applyUniversalPolicy, publicUniversalPolicy, bindUniversalRollout, assertUniversalPolicyCurrent,
-  assertUniversalImagePrerequisites, assertUniversalPreparedness, assertSelectedEmbedFeatureOriginal, universalModeLabel } from './universal-policy.mjs';
+  assertUniversalImagePrerequisites, assertUniversalPreparedness, assertUniversalFeatureOriginal, universalModeLabel } from './universal-policy.mjs';
 import { captureUniversalPreparedness, validateUniversalPreparedness } from '../../modules/app-contract/universal-preparedness.mjs';
 const clone=x=>structuredClone(x);
 const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,sorted(x[k])])):x;
@@ -139,9 +139,11 @@ export class Rollout {
           // it never substitutes the proposed profile for that observation.
           requireThat(observed.compiledLegacyMode===false&&observed.universalConfigured===true
             &&hash(observed)===universalReceipt.expectedCurrentPreparednessSha256,'universal_current_runtime_mismatch');
-          assertSelectedEmbedFeatureOriginal(args.universalPolicy,old,observed,{allowFixture:this.allowUniversalFixture});
+          assertUniversalFeatureOriginal(args.universalPolicy,old,observed,{allowFixture:this.allowUniversalFixture});
         }else{
-          const expected=captureUniversalPreparedness({compiledLegacyMode:true,universalConfigured:false,reviewsConfigured:false,humanHttpEnabled:false,humanProfile:null});
+          requireThat(!observed.monitoring||observed.monitoring.mode==='reader','universal_baseline_runtime_mismatch');
+          const expected=captureUniversalPreparedness({compiledLegacyMode:true,universalConfigured:false,reviewsConfigured:false,humanHttpEnabled:false,humanProfile:null,
+            ...(observed.monitoring?{monitoring:observed.monitoring}:{})});
           requireThat(hash(observed)===hash(expected),'universal_baseline_runtime_mismatch');
         }
       }

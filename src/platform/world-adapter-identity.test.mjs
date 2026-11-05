@@ -1,5 +1,6 @@
 import * as connectionIntents from './connection-intent.mjs';
 import * as nativeVoiceDescriptor from './native-voice-descriptor.mjs';
+import {createPlatformLiveTestPort} from './test-support/platform-live-port.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -15,6 +16,7 @@ test('actual world adapter keeps each controller and late contact action bound t
   const ports = {
     './notifications-client.mjs': { createNotificationsController() { return { async refresh() {}, dispose() {} }; } },
     './native-voice-descriptor.mjs': nativeVoiceDescriptor,
+    './platform-live-client.mjs':createPlatformLiveTestPort(),
     './connection-intent.mjs': connectionIntents,
     './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); return { state, intent: null }; } },
     '../core/connect-client': {

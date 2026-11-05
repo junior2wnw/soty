@@ -1,5 +1,5 @@
+import { readFileSync } from 'node:fs';
 import { roundedHexPath, hexCluster } from '../../ui/hex.mjs';
-import { createPalette } from '../../ui/palette.mjs';
 import { createBootDisplayClient } from './runtime-display-client.mjs';
 import { checkedScopedEntryPath } from './launch-path.mjs';
 
@@ -50,9 +50,9 @@ function nonceAttribute(value) {
 }
 
 const copy = Object.freeze({
-  loading: ['Открываем приложение', 'Проверяем ваш доступ.'],
-  checking: ['Проверяем вход', 'Ещё мгновение — и можно продолжить.'],
-  opening: ['Открываем приложение', 'Доступ подтверждён.'],
+  loading: ['Открываем приложение', ''],
+  checking: ['Открываем приложение', ''],
+  opening: ['Открываем приложение', ''],
   denied: ['Доступ закрыт', 'Откройте приложение через Соты, чтобы проверить доступ.'],
   changed: ['Доступ изменился', 'Откройте приложение заново.'],
   expired: ['Нужно открыть заново', 'Ссылка для входа больше не действует.'],
@@ -83,26 +83,30 @@ const errorStates = Object.freeze({
 
 const statesFor = publicResetPath => publicResetPath ? { ...errorStates, app_access_changed: 'changed' } : errorStates;
 
-const palette = Object.entries(createPalette('dark', 50)).map(([name, value]) => `${name}:${value}`).join(';');
+// Managed pages remain self-contained under their existing inline-only CSP.
+// Read the packaged canonical material once, never an application-selected URL.
+const glassStyles = readFileSync(new URL('../../../vendor/optical-glass/src/ui-kit.css', import.meta.url), 'utf8');
 const cluster = hexCluster([[0, 0], [1, 0], [0, 1]], 20, 3, 2);
 const emblem = `<svg class="emblem" viewBox="0 0 ${cluster.width} ${cluster.height}" aria-hidden="true" focusable="false">${cluster.cells.map((cell, index) =>
   `<path class="cell cell-${index}" d="${roundedHexPath(20, undefined, cell)}"/>`).join('')}</svg>`;
 
 const styles = `
-:root{${palette};color-scheme:var(--sw-color-scheme);font-family:Manrope,"Segoe UI",system-ui,sans-serif;font-synthesis:none}
-*{box-sizing:border-box}body{margin:0;min-width:0;min-height:100vh;min-height:100svh;background:var(--sw-bg);color:var(--sw-ink);display:grid;grid-template-rows:auto 1fr}
+${glassStyles}
+:root{color-scheme:light dark;font-synthesis:none}
+*{box-sizing:border-box}body{margin:0;min-width:0;min-height:100vh;min-height:100svh;display:grid;grid-template-rows:auto 1fr}
 body[data-framed="true"]{grid-template-rows:1fr}body[data-framed="true"] .brand{display:none}
-.brand{display:flex;align-items:center;gap:9px;padding:22px 24px;font-size:15px;font-weight:650;letter-spacing:.01em;color:var(--sw-muted)}
-.brand svg{width:22px;height:20px;fill:var(--sw-honey)}.entry{align-self:center;justify-self:center;width:min(460px,calc(100% - 32px));margin:12px 0 64px;padding:clamp(24px,5vw,40px);border:1px solid var(--sw-line);border-radius:28px;background:var(--sw-surface);box-shadow:var(--sw-shadow-small)}
-.visual{width:88px;max-width:100%;margin-bottom:28px}.emblem{display:block;width:100%;height:auto;overflow:visible}.cell{fill:var(--sw-surface-raised);stroke:var(--sw-line);stroke-width:1}.cell-0{fill:var(--sw-honey-light);stroke:var(--sw-honey-border)}
+.brand{display:flex;align-items:center;gap:9px;padding:22px 24px;font-size:15px;font-weight:650;letter-spacing:.01em;color:var(--glass-ui-muted)}
+.brand svg{width:22px;height:20px;fill:var(--glass-ui-accent)}.entry{align-self:center;justify-self:center;width:min(460px,calc(100% - 32px));margin:12px 0 64px;padding:clamp(24px,5vw,40px)}
+.visual{width:88px;max-width:100%;margin-bottom:28px}.emblem{display:block;width:100%;height:auto;overflow:visible}.cell{fill:var(--glass-ui-surface);stroke:var(--glass-ui-edge);stroke-width:1}.cell-0{fill:color-mix(in srgb,var(--glass-ui-accent) 16%,var(--glass-ui-surface));stroke:var(--glass-ui-edge)}
 [data-state="loading"] .cell{animation:breathe 2s ease-in-out infinite}.cell-1{animation-delay:.18s!important}.cell-2{animation-delay:.36s!important}
-.content{min-width:0}.eyebrow{margin:0 0 8px;color:var(--sw-muted);font-size:12px;font-weight:600;letter-spacing:.06em}h1{font-size:clamp(24px,6vw,32px);font-weight:620;line-height:1.18;letter-spacing:-.035em;margin:0;text-wrap:balance;overflow-wrap:anywhere}
-.detail{margin:14px 0 0;max-width:36ch;font-size:15px;line-height:1.55;color:var(--sw-muted);overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}.action{appearance:none;min-height:46px;max-width:100%;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 16px;border:1px solid var(--sw-control-border);border-radius:14px;background:transparent;color:var(--sw-ink);font-weight:600;font-size:14px;line-height:1.35;font-family:inherit;text-decoration:none;text-align:center;cursor:pointer;overflow-wrap:anywhere;transition:background .15s,border-color .15s}
-.action-primary{background:var(--sw-action);color:var(--sw-action-ink);border-color:var(--sw-action)}.action:hover{background:var(--sw-surface-hover)}.action-primary:hover{background:var(--sw-action-hover);border-color:var(--sw-action-hover)}.action:focus-visible{outline:3px solid var(--sw-focus);outline-offset:4px}.action:disabled{cursor:wait;opacity:.65}.frame-hint{margin:20px 0 0;font-size:14px;line-height:1.5;color:var(--sw-muted);max-width:34ch}.noscript{margin-top:20px;font-size:14px;line-height:1.5;color:var(--sw-muted)}[hidden]{display:none!important}
+.content{min-width:0}h1{font-size:clamp(24px,6vw,32px);font-weight:620;line-height:1.18;letter-spacing:-.035em;margin:0;text-wrap:balance;overflow-wrap:anywhere}
+.entry[data-state="loading"] .visual{display:none}.entry[data-state="loading"] h1{font-size:18px;line-height:1.4;font-weight:550}.entry[data-state="loading"] h1::after{content:"…"}.entry[data-state="loading"] .actions{justify-content:center}
+.detail{margin:14px 0 0;max-width:36ch;font-size:15px;line-height:1.55;color:var(--glass-ui-muted);overflow-wrap:anywhere}.detail:empty{display:none}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}.action{appearance:none;min-height:46px;max-width:100%;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 16px;font-weight:600;font-size:14px;line-height:1.35;font-family:inherit;text-decoration:none;text-align:center;cursor:pointer;overflow-wrap:anywhere}
+.glass-ui :is(a,button).action[data-glass-role]{min-inline-size:44px}.action:disabled{cursor:wait;opacity:.65}.frame-hint{margin:20px 0 0;font-size:14px;line-height:1.5;color:var(--glass-ui-muted);max-width:34ch}.noscript{margin-top:20px;font-size:14px;line-height:1.5;color:var(--glass-ui-muted)}[hidden]{display:none!important}
 @keyframes breathe{0%,100%{opacity:.48}50%{opacity:1}}
-@media(max-width:359px){.brand{padding:18px 20px}.entry{padding:24px 20px;border-radius:22px}.actions{flex-direction:column}.action{width:100%}.visual{width:76px;margin-bottom:22px}}
-@media(max-height:440px) and (min-width:480px){.brand{padding:12px 20px}.entry{width:min(660px,calc(100% - 32px));display:grid;grid-template-columns:72px minmax(0,1fr);gap:24px;padding:22px 26px;margin:6px 0 24px}.visual{width:72px;margin:5px 0 0}h1{font-size:26px}.detail{margin-top:9px}.actions{margin-top:18px}.frame-hint{margin-top:14px}}
-@media(max-height:280px) and (min-width:480px){body[data-framed="true"] .entry{width:min(660px,calc(100% - 24px));grid-template-columns:48px minmax(0,1fr);gap:16px;padding:12px 16px;margin:8px 0;border-radius:18px}body[data-framed="true"] .visual{width:48px;margin:2px 0 0}body[data-framed="true"] .eyebrow{display:none}body[data-framed="true"] h1{font-size:22px}body[data-framed="true"] .detail{margin-top:6px;font-size:14px;line-height:1.4;max-width:none}body[data-framed="true"] .actions{margin-top:10px;gap:8px}body[data-framed="true"] .action{min-height:44px;padding:10px 14px}body[data-framed="true"] .frame-hint{margin-top:8px;font-size:13px;line-height:1.4;max-width:none}}
+@media(max-width:359px){.brand{padding:18px 20px}.entry{padding:24px 20px}.actions{flex-direction:column}.action{width:100%}.visual{width:76px;margin-bottom:22px}}
+@media(max-height:440px){.brand{padding:12px 20px}.entry{width:min(660px,calc(100% - 24px));padding:12px;margin:8px 0}.entry[data-state="error"]{display:grid;grid-template-columns:36px minmax(0,1fr);gap:12px}.visual{width:36px;margin:2px 0 0}h1{font-size:20px}.detail{margin-top:6px;font-size:14px;line-height:1.4}.actions{margin-top:10px;gap:8px}.frame-hint{margin-top:8px;font-size:13px;line-height:1.4}}
+@media(max-height:280px){body[data-framed="true"] .entry{padding:10px;margin:6px 0}.action{min-height:44px;padding:10px 14px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 `;
 
@@ -255,6 +259,13 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
       const checked = await requestJson('GET', undefined, issued.sessionCheck, issued.frame);
       if (offPage || generation !== currentGeneration) return;
       if (checked.sessionCheck !== issued.sessionCheck) throw { code: 'cookie_check' };
+      if(config.hostRenewal){
+        if(issued.hostSessionRenewal!==true||typeof issued.hostSessionRequestId!=='string'
+          ||!/^[A-Za-z0-9_-]{16,128}$/.test(issued.hostSessionRequestId)||!config.parentOrigins.includes(issued.hostSessionParentOrigin))throw{code:'app_host_session_changed'};
+        // Transport wakeup only. Root must freshly confirm its own current
+        // durable lease/CAS; this neither navigates nor calls the Source.
+        window.parent.postMessage({schema:'soty.app-host-session-wakeup.v1',requestId:issued.hostSessionRequestId},issued.hostSessionParentOrigin);return;
+      }
       if(config.scoped){
         if(typeof issued.scopedRequestId!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(issued.scopedRequestId))throw{code:'app_scoped_context_closed'};
         let ready=false;
@@ -308,23 +319,33 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
   if (config.mode === 'boot') void boot();
 }
 
-function render({ mode, state, shellUrl, publicResetPath, nonce,parentOrigins=[],scoped=false,renewal=false,parentOrigin }) {
-  const config = { mode, initialState: state, shellUrl, publicResetPath,parentOrigins, copy, errorStates: statesFor(publicResetPath),
-    ...(scoped?{scoped:true,renewal,parentOrigin}:{}) };
-  const text = copy[state];
-  const nativeAction = mode === 'boot' && scoped && !renewal ? '<a class="action action-primary" id="native-action" hidden>Продолжить открытие</a>' : '';
-  const brand = roundedHexPath(10, undefined, { x: 11, y: 10 });
-  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="dark"><title>${html(text[0])} · Соты</title><style>${styles}</style></head>
-<body><header class="brand"><svg viewBox="0 0 22 20" aria-hidden="true" focusable="false"><path d="${brand}"/></svg><span>Соты</span></header>
-<main class="entry" id="entry" data-state="${mode === 'boot' ? 'loading' : 'error'}" aria-labelledby="status-title" aria-busy="${mode === 'boot'}"><div class="visual">${emblem}</div><div class="content"><p class="eyebrow">ПРИЛОЖЕНИЕ</p><div role="status" aria-live="polite" aria-atomic="true"><h1 id="status-title">${html(text[0])}</h1><p class="detail" id="status-detail">${html(text[1])}</p></div><div class="actions" id="actions" hidden><a class="action action-primary" id="shell-action" hidden>Открыть через Соты <span aria-hidden="true">↗</span></a><button class="action" id="reset-action" type="button" hidden>Продолжить без входа</button>${nativeAction}</div><p class="frame-hint" id="frame-hint" hidden>В меню ⋯ над окном выберите „Открыть отдельно“.</p><noscript><p class="noscript">Для входа нужен JavaScript. Откройте приложение из Сот.</p></noscript></div></main>
-<script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()},${createBootDisplayClient.toString()},${checkedScopedEntryPath.toString()});</script></body></html>`;
+function initializeMaterialTheme() {
+  if (typeof window.matchMedia !== 'function') return;
+  const preference = window.matchMedia('(prefers-color-scheme: dark)'), root = document.body;
+  const update = () => { root.dataset.glassTone = preference.matches ? 'dark' : 'light'; };
+  update(); preference.addEventListener?.('change', update);
+  window.addEventListener('pagehide', () => preference.removeEventListener?.('change', update));
+  window.addEventListener('pageshow', event => { if(event.persisted){update();preference.addEventListener?.('change', update);} });
 }
 
-export function renderBootPage({ shellUrl, publicResetPath, nonce, parentOrigins,scoped=false,renewal=false,parentOrigin } = {}) {
+function render({ mode, state, shellUrl, publicResetPath, nonce,parentOrigins=[],scoped=false,renewal=false,hostRenewal=false,parentOrigin }) {
+  const config = { mode, initialState: state, shellUrl, publicResetPath,parentOrigins, copy, errorStates: statesFor(publicResetPath),
+    ...(scoped?{scoped:true,renewal,parentOrigin}:{}),...(hostRenewal?{hostRenewal:true}:{}) };
+  const text = copy[state];
+  const nativeAction = mode === 'boot' && scoped && !renewal ? '<a class="action action-primary" data-glass-role="accent" id="native-action" hidden>Продолжить открытие</a>' : '';
+  const brand = roundedHexPath(10, undefined, { x: 11, y: 10 });
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="light dark"><title>${html(text[0])} · Соты</title><style>${styles}</style></head>
+<body class="glass-ui" data-glass-material="working" data-glass-render-mode="static" data-glass-tone="light" data-glass-role="panel"><header class="brand"><svg viewBox="0 0 22 20" aria-hidden="true" focusable="false"><path d="${brand}"/></svg><span>Соты</span></header>
+<main class="entry" id="entry" data-state="${mode === 'boot' ? 'loading' : 'error'}" aria-labelledby="status-title" aria-busy="${mode === 'boot'}"><div class="visual">${emblem}</div><div class="content"><div role="status" aria-live="polite" aria-atomic="true"><h1 id="status-title">${html(text[0])}</h1><p class="detail" id="status-detail">${html(text[1])}</p></div><div class="actions" id="actions" hidden><a class="action action-primary" data-glass-role="accent" id="shell-action" hidden>Открыть через Соты <span aria-hidden="true">↗</span></a><button class="action" data-glass-role="control" id="reset-action" type="button" hidden>Продолжить без входа</button>${nativeAction}</div><p class="frame-hint" id="frame-hint" hidden>В меню ⋯ над окном выберите „Открыть отдельно“.</p><noscript><p class="noscript">Для входа нужен JavaScript. Откройте приложение из Сот.</p></noscript></div></main>
+<script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()},${createBootDisplayClient.toString()},${checkedScopedEntryPath.toString()});(${initializeMaterialTheme.toString()})();</script></body></html>`;
+}
+
+export function renderBootPage({ shellUrl, publicResetPath, nonce, parentOrigins,scoped=false,renewal=false,hostRenewal=false,parentOrigin } = {}) {
   const shell = shellAddress(shellUrl, true), origins = parentOrigins ?? [new URL(shell).origin];
   if (!Array.isArray(origins) || !origins.length
     || origins.some(origin => typeof origin !== 'string' || new URL(shellAddress(origin, true)).origin !== origin)) throw new TypeError('invalid_parent_origins');
-  return render({ mode: 'boot', state: 'loading', shellUrl: shell, publicResetPath: resetPath(publicResetPath), nonce, parentOrigins: origins,scoped,renewal,parentOrigin });
+  if(typeof hostRenewal!=='boolean'||hostRenewal&&scoped)throw new TypeError('invalid_host_renewal');
+  return render({ mode: 'boot', state: 'loading', shellUrl: shell, publicResetPath: resetPath(publicResetPath), nonce, parentOrigins: origins,scoped,renewal,hostRenewal,parentOrigin });
 }
 
 export function renderStatusPage({ error, shellUrl, publicResetPath, nonce } = {}) {

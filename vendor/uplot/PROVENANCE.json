@@ -1,0 +1,20 @@
+{
+  "schema": "soty.vendored-package.v1",
+  "name": "uplot",
+  "version": "1.6.32",
+  "source": "https://registry.npmjs.org/uplot/-/uplot-1.6.32.tgz",
+  "sourceRepository": "https://github.com/leeoniya/uPlot/tree/1.6.32",
+  "license": "MIT",
+  "integrity": "sha512-KIMVnG68zvu5XXUbC4LQEPnhwOxBuLyW1AHtpm6IKTXImkbLgkMy+jabjLgSLMasNuGGzQm/ep3tOkyTxpiQIw==",
+  "tarballSha256": "4b8a8191e425658e3ea8c8c1314b0fc679c861ee3a1af2b20c7b16ba50b5133d",
+  "downloadedAt": "2026-11-05T10:01:22.934610+00:00",
+  "reason": "Pinned dependency retained locally without mutating borrowed node_modules; pristine official runtime, CSS, types and license; no runtime CDN.",
+  "files": {
+    "package.json": "6bfea8e275a2f8194e2395d2dc15f64151e69f141db19741e5a5afe75ba4180b",
+    "LICENSE": "8f989229699b4fe2f1a0432d0e9edc338a8a911e250e2d1b01ecd770a5f5b1bd",
+    "dist/uPlot.esm.js": "5dd9b3281aa64b461b42d9945f6adb2649d346502b12281a9ae0d46599a80eba",
+    "dist/uPlot.cjs.js": "6ef321d4b161c3234bcd2c7076ef2534b561001868b73f36d4960f433f0dbdf8",
+    "dist/uPlot.d.ts": "af44374f6e808be4f7f3fa5888b9c7574dca9f8a15a66d54b6763535802c8080",
+    "dist/uPlot.min.css": "df630c6a8d6f8eeaff264b50f73ce5b114f646ffd9a0bb74f049b0a00135fa04"
+  }
+}

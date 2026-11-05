@@ -109,6 +109,53 @@ test('two concurrent branches preserve conflicting text and do not send repeated
   assert.equal(restored.state().conflict, true); assert.equal((await store.list()).length, 1);
 });
 
+test('explicit keepLocal resolves a restored conflict with a new CAS and retires the old durable branch', async t => {
+  const sent=[];const {create,store,read}=fixture(t,request=>async(op,args)=>{if(op==='notes.put')sent.push(structuredClone(args));return request(op,args);});
+  const initial=create();initial.edit({body:'Основа'});await initial.flush();const note=read(initial.state().note.noteId);
+  const remote=create({note}),local=create({note});remote.edit({body:'На сервере'});await remote.flush();
+  local.edit({body:'Мой восстановленный текст'});await local.flush();assert.equal(local.state().conflict,true);const oldMutation=sent.at(-1).mutationId;
+  local.dispose();await local.flushLocal();const draft=(await store.list())[0],restored=create({note,draft});
+  assert.equal(typeof restored.keepLocal,'function','A conflicting draft needs an explicit path to save the chosen local version');
+  await restored.keepLocal();assert.equal(read(note.noteId).revision,3);assert.equal(read(note.noteId).body,'Мой восстановленный текст');
+  assert.equal(restored.state().conflict,false);assert.equal(restored.state().dirty,false);assert.equal((await store.list()).length,0);
+  assert.notEqual(sent.at(-1).mutationId,oldMutation);assert.equal(sent.at(-1).expectedRevision,2);
+});
+
+test('another write after the keepLocal read remains a conflict; no automatic rebase or repeated overwrite', async t => {
+  let interleave=false,interleavedCommitted=false;const sent=[];
+  const {create,read,store}=fixture(t,request=>async(op,args)=>{
+    if(op==='notes.put')sent.push(structuredClone(args));const result=await request(op,args);
+    if(op==='notes.get'&&interleave){interleave=false;const {title,items,color,pinned,state}=result.note;await request('notes.put',{expectedAccountId:actor.accountId,noteId:args.noteId,mutationId:crypto.randomUUID(),expectedRevision:result.note.revision,title,items,color,pinned,state,body:'Параллельный новый текст'});interleavedCommitted=true;}
+    return result;
+  });
+  const initial=create();initial.edit({body:'Основа'});await initial.flush();const note=read(initial.state().note.noteId),remote=create({note}),local=create({note});
+  remote.edit({body:'На сервере'});await remote.flush();local.edit({body:'Выбранный локальный текст'});await local.flush();
+  assert.equal(typeof local.keepLocal,'function','Conflict resolution must use a fresh CAS');interleave=true;await local.keepLocal();
+  assert.equal(interleavedCommitted,true,'The competing write must really commit before the local CAS');assert.equal(read(note.noteId).body,'Параллельный новый текст');assert.equal(read(note.noteId).revision,3);assert.equal(local.state().conflict,true);
+  const before=sent.length;await local.retry();assert.equal(sent.length,before);assert.ok((await store.list()).some(value=>value.note.body==='Выбранный локальный текст'));
+});
+
+test('keepLocal never sends when its replacement intent cannot commit locally',async t=>{
+  const {create,store,read}=fixture(t),initial=create();initial.edit({body:'Основа'});await initial.flush();const note=read(initial.state().note.noteId),remote=create({note}),local=create({note});
+  remote.edit({body:'Серверная версия'});await remote.flush();local.edit({body:'Локальный выбор'});await local.flush();assert.equal(local.state().conflict,true);
+  const originalPut=store.put;store.put=async value=>{if(!value.conflict)throw Error('notes_local_quota');return originalPut(value);};
+  await local.keepLocal();assert.equal(read(note.noteId).revision,2);assert.equal(read(note.noteId).body,'Серверная версия');assert.equal(local.state().conflict,true);assert.equal(local.state().localError,'notes_local_quota');
+  assert.ok((await store.list()).some(value=>value.note.body==='Локальный выбор'&&value.conflict));store.put=originalPut;
+});
+
+test('disposing during the keepLocal read preserves the draft and prevents the new API write',async t=>{
+  let delayRead=false,release,begun;const started=new Promise(resolve=>{begun=resolve;});
+  const {create,store,read}=fixture(t,request=>async(op,args)=>{const result=await request(op,args);if(op==='notes.get'&&delayRead){begun();await new Promise(resolve=>{release=resolve;});}return result;});
+  const initial=create();initial.edit({body:'Основа'});await initial.flush();const note=read(initial.state().note.noteId),remote=create({note}),local=create({note});remote.edit({body:'Сервер'});await remote.flush();local.edit({body:'Черновик перед выходом'});await local.flush();
+  delayRead=true;const saving=local.keepLocal();await started;local.dispose();release();await saving;await local.flushLocal();
+  assert.equal(read(note.noteId).revision,2);assert.equal(read(note.noteId).body,'Сервер');assert.ok((await store.list()).some(value=>value.note.body==='Черновик перед выходом'&&value.conflict));
+});
+
+test('completed mutation retirement metadata does not accumulate into the next independent edit',async t=>{
+  let offline=false;const {create,store}=fixture(t,request=>async(op,args)=>{if(offline)throw Error('offline');return request(op,args);});const session=create();session.edit({body:'Подтверждённая версия'});await session.flush();assert.equal(session.state().dirty,false);
+  offline=true;session.edit({body:'Следующая отдельная правка'});await session.flush();const [draft]=await store.list();assert.equal(draft.note.body,'Следующая отдельная правка');assert.deepEqual(draft.retiredMutations??[],[],'Successfully committed retirement IDs must not grow for the lifetime of the editor');
+});
+
 test('offline drafting stays recoverable; quota failure never reports durable and never sends a nonrecoverable write', async t => {
   let sends = 0; const { create, store } = fixture(t, () => async () => { sends++; throw new Error('offline'); });
   const session = create(); session.edit({ body: 'Без сети' }); await session.flush();

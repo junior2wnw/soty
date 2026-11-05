@@ -41,7 +41,7 @@ function fixture(notifyInitial = true) {
   let layout = layoutUnifiedField(fieldDocument, entities, metrics);
   const mode = 'mine', initialized = { mine: true }, cameraFit = { mine: 'manual' }, contextFocus = { mine: 'personal' };
   let gesture = null, pinch = null, pendingPointer = null, inPointerFrame = false, moving = null, contextPreview = null,
-    suppressClickUntil = 0, destroyed = false, arranging = true, selectedId = 'first';
+    suppressClickUntil = 0, destroyed = false, arranging = true, selectedId = 'first',spacePanning=false;
   const pointers = new Map(), captures = new Set(), timers = new Map(), tasks = []; let timer = 0;
   const viewport = { clientWidth: 390, clientHeight: 620, getBoundingClientRect: () => ({ left: 0, top: 0 }),
     hasPointerCapture: id => captures.has(id), setPointerCapture: id => captures.add(id), releasePointerCapture: id => captures.delete(id),
@@ -52,6 +52,7 @@ function fixture(notifyInitial = true) {
   const options = { commit: true }, nodeElements = new Map();
   const setTimeout = callback => { timers.set(++timer, callback); return timer; }, clearTimeout = id => timers.delete(id);
   const available = id => layout.nodes.find(node => node.shortcutId === id), perform = task => tasks.push(task);
+  const activeNode=available;
   const execute = async command => { state.commands.push(structuredClone(command)); const applied = applyFieldCommand(fieldDocument, command);
     fieldDocument = applied.document; layout = layoutUnifiedField(fieldDocument, entities, metrics); return applied; };
   const focusNode = id => { state.focused = id; }, fitOverview = () => { state.fit++; }, focusContext = () => { state.fit++; }, rebuild = () => {};
@@ -99,6 +100,15 @@ test('rotating during a pending shortcut drag cancels capture and late pointerup
   assert.equal(f.state.commands.length, 0, 'late pointerup emitted ' + JSON.stringify(f.state.commands[0]));
   assert.equal(JSON.stringify(f.document()), before); clean(f);
   assert.deepEqual(resized, { pointers: [], captures: [], pinch: false, gesture: null, pending: false, moving: false, context: false });
+});
+
+test('keyboard M starts direct placement without Arrange, arrow previews and Enter persists one command',async()=>{
+  const f=fixture();f.arrange(false);const before=JSON.stringify(f.document());
+  const start=f.event('key',1,{key:'m'});assert.equal(start.defaultPrevented,true);assert.equal(f.snapshot().moving,true);
+  f.event('key',1,{key:'ArrowRight'});assert.equal(f.state.commands.length,0);
+  f.event('key',1,{key:'Enter'});await f.settle();
+  assert.equal(f.state.commands.length,1);assert.notEqual(JSON.stringify(f.document()),before);
+  assert.equal(f.state.camera.x,0);assert.equal(f.state.camera.y,0);assert.equal(f.state.camera.scale,1);
 });
 
 test('rotating after a rendered whole-context preview cannot commit its late pointerup', async () => {

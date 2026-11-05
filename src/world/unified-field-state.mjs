@@ -1,6 +1,6 @@
-import { createFieldDocument, validateFieldDocument, validateFieldEntity } from '../../modules/field/contract.mjs';
+import { createFieldDocument, validateAnyFieldDocument, validateAnyFieldEntity as validateFieldEntity, fieldShortcutPlacement, validateFieldPlacement,convertFieldDocumentToV2 } from '../../modules/field/contract.mjs';
 import { hexSpiral } from '../geometry/hex.mjs';
-import { fieldSlotToPoint, fieldFootprint, fieldPolygonsOverlap, fieldBounds, fieldBoundsOverlap, UNIFIED_FIELD_METRICS } from './unified-field-layout.mjs';
+import { fieldSlotToPoint, fieldFootprint, fieldPolygonsOverlap, fieldBounds, fieldBoundsOverlap,rectPoints, UNIFIED_FIELD_METRICS } from './unified-field-layout.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -11,12 +11,13 @@ export function nextFieldSlot(document, contextId, kind = 'app', metrics = UNIFI
   const context = document.contexts.find(context => context.contextId === contextId);
   if (!context) fail('field_context_missing');
   const existing = document.shortcuts.filter(shortcut => shortcut.contextId === contextId);
-  const occupied = new Set(existing.map(shortcut => shortcut.slot.join(',')));
+  const occupied = new Set(existing.map(fieldShortcutPlacement).filter(value=>value.kind==='hex').map(value=>value.slot.join(',')));
   const contexts = new Map(document.contexts.map(value => [value.contextId, value]));
   const worldPoint = (slot, origin) => { const point = fieldSlotToPoint(slot, metrics); return { x: origin.x + point.x, y: origin.y + point.y }; };
   const footprints = document.shortcuts.map(shortcut => {
     const origin = contexts.get(shortcut.contextId); if (!origin) fail('field_context_missing');
-    const polygon = fieldFootprint(shortcut.entity.kind, worldPoint(shortcut.slot, origin), metrics); return { polygon, bounds: fieldBounds(polygon) };
+    const placement=fieldShortcutPlacement(shortcut),point=placement.kind==='free'?{x:origin.x+placement.x,y:origin.y+placement.y}:worldPoint(placement.slot,origin);
+    const polygon = placement.kind==='free'?rectPoints({left:point.x-placement.width/2,right:point.x+placement.width/2,top:point.y-placement.height/2,bottom:point.y+placement.height/2}):fieldFootprint(shortcut.entity.kind, point, metrics); return { polygon, bounds: fieldBounds(polygon) };
   });
   const slot = [...preferred, ...candidates].find(value => {
     if (occupied.has(value.join(','))) return false;
@@ -30,19 +31,19 @@ export function nextFieldSlot(document, contextId, kind = 'app', metrics = UNIFI
 /** Detached preview only. The caller explicitly applies one existing restore
  * command after confirming this exact prior document. Never moves other spaces. */
 export function compactFieldContext(value, contextId, metrics = UNIFIED_FIELD_METRICS) {
-  const before = validateFieldDocument(value), document = structuredClone(before);
+  const before = validateAnyFieldDocument(value), document = structuredClone(before);
   if (!document.contexts.some(context => context.contextId === contextId)) fail('field_context_missing');
-  const own = document.shortcuts.filter(shortcut => shortcut.contextId === contextId);
-  document.shortcuts = document.shortcuts.filter(shortcut => shortcut.contextId !== contextId);
-  for (const shortcut of own) document.shortcuts.push({ ...shortcut, slot: nextFieldSlot(document, contextId, shortcut.entity.kind, metrics) });
+  const own = document.shortcuts.filter(shortcut => shortcut.contextId === contextId&&fieldShortcutPlacement(shortcut).kind==='hex');
+  document.shortcuts = document.shortcuts.filter(shortcut => !own.some(item=>item.shortcutId===shortcut.shortcutId));
+  for (const shortcut of own){const slot=nextFieldSlot(document, contextId, shortcut.entity.kind, metrics);document.shortcuts.push(document.schema==='soty.field.v1'?{...shortcut,slot}:{...shortcut,placement:{kind:'hex',slot}});}
   const placed = new Map(document.shortcuts.map(shortcut => [shortcut.shortcutId, shortcut]));
   document.shortcuts = before.shortcuts.map(shortcut => placed.get(shortcut.shortcutId));
-  return validateFieldDocument(document);
+  return validateAnyFieldDocument(document);
 }
 
 /** A command has no authority-bearing operation: every result is only a detached field document. */
 export function applyFieldCommand(value, command, metrics = UNIFIED_FIELD_METRICS) {
-  const before = validateFieldDocument(value), document = structuredClone(before);
+  const before = validateAnyFieldDocument(value);let document = structuredClone(before);
   if (!command || typeof command !== 'object') fail('field_command_invalid');
   if (command.expected && !same(command.expected, before)) fail('field_conflict');
   const context = id => document.contexts.find(item => item.contextId === id) ?? fail('field_context_missing');
@@ -64,8 +65,11 @@ export function applyFieldCommand(value, command, metrics = UNIFIED_FIELD_METRIC
     document.contexts = document.contexts.filter(item => item.contextId !== command.contextId);
   } else if (command.type === 'add-shortcut') {
     context(command.contextId);
-    document.shortcuts.push({ shortcutId: command.shortcutId, entity: validateFieldEntity(command.entity), contextId: command.contextId,
-      slot: command.slot ? [...command.slot] : nextFieldSlot(document, command.contextId, command.entity.kind, metrics) });
+    if(command.placement||command.entity?.kind==='object'){const placement=validateFieldPlacement(command.placement??{kind:'hex',slot:command.slot??nextFieldSlot(document,command.contextId,command.entity.kind,metrics)});document=convertFieldDocumentToV2(document);
+      document.shortcuts.push({shortcutId:command.shortcutId,entity:validateFieldEntity(command.entity),contextId:command.contextId,placement});}
+    else {const slot=command.slot ? [...command.slot] : nextFieldSlot(document, command.contextId, command.entity.kind, metrics);
+      document.shortcuts.push(document.schema==='soty.field.v1'?{shortcutId:command.shortcutId,entity:validateFieldEntity(command.entity),contextId:command.contextId,slot}
+        :{shortcutId:command.shortcutId,entity:validateFieldEntity(command.entity),contextId:command.contextId,placement:{kind:'hex',slot}});}
     affected.push(command.shortcutId);
   } else if (command.type === 'remove-shortcut') {
     shortcut(command.shortcutId); affected.push(command.shortcutId);
@@ -73,17 +77,21 @@ export function applyFieldCommand(value, command, metrics = UNIFIED_FIELD_METRIC
   } else if (command.type === 'move-shortcut') {
     const source = shortcut(command.shortcutId); context(command.contextId);
     if (!Array.isArray(command.slot) || command.slot.length !== 2) fail('field_command_invalid');
-    const other = document.shortcuts.find(item => item.shortcutId !== source.shortcutId && item.contextId === command.contextId && same(item.slot, command.slot));
+    const sourcePlacement=fieldShortcutPlacement(source);
+    const other = document.shortcuts.find(item => item.shortcutId !== source.shortcutId && item.contextId === command.contextId && fieldShortcutPlacement(item).kind==='hex' && same(fieldShortcutPlacement(item).slot, command.slot));
     if (other) {
       if (command.swap !== true) fail('field_slot_occupied');
-      other.contextId = source.contextId; other.slot = [...source.slot]; affected.push(other.shortcutId);
+      other.contextId = source.contextId;if(document.schema==='soty.field.v1')other.slot=[...source.slot];else other.placement=sourcePlacement;affected.push(other.shortcutId);
     }
-    source.contextId = command.contextId; source.slot = [...command.slot]; affected.push(source.shortcutId);
+    source.contextId = command.contextId;if(document.schema==='soty.field.v1')source.slot=[...command.slot];else source.placement={kind:'hex',slot:[...command.slot]};affected.push(source.shortcutId);
+  } else if(command.type==='place-shortcut'){
+    shortcut(command.shortcutId);context(command.contextId);const placement=validateFieldPlacement(command.placement);
+    document=convertFieldDocumentToV2(document);const source=shortcut(command.shortcutId);source.contextId=command.contextId;source.placement=placement;affected.push(source.shortcutId);
   } else if (command.type === 'restore') {
-    const restored = validateFieldDocument(command.document);
+    const restored = validateAnyFieldDocument(command.document);
     return { before, document: restored, changed: !same(before, restored), affected: restored.shortcuts.map(item => item.shortcutId), type: command.type };
   } else fail('field_command_invalid');
-  const after = validateFieldDocument(document);
+  const after = validateAnyFieldDocument(document);
   return { before, document: after, changed: !same(before, after), affected, type: command.type };
 }
 
@@ -95,7 +103,7 @@ export function recordFieldHistory(history, change) {
 }
 export function undoFieldHistory(history, current) {
   const last = history.entries.at(-1); if (!last) return null;
-  if (!same(last.after, validateFieldDocument(current))) fail('field_undo_conflict');
+  if (!same(last.after, validateAnyFieldDocument(current))) fail('field_undo_conflict');
   history.entries.pop();
   return applyFieldCommand(current, { type: 'restore', document: last.before, expected: last.after });
 }

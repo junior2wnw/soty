@@ -30,14 +30,25 @@ export function validateAppLaunchBinding(value) {
     && Object.keys(value).sort().join(',') === 'bindingFloor,policyEpoch,profile,schema,targetDigest,targetRevision'
     && value.schema === 'soty.app-launch-binding.v1'
     && [value.policyEpoch, value.targetRevision].every(number => Number.isSafeInteger(number) && number > 0)
-    && typeof value.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(value.targetDigest) && value.profile === 'soty.relay-restricted.v1'
-    && [1, 2].includes(value.bindingFloor), 'invalid_app_launch_binding');
+    && typeof value.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(value.targetDigest)
+    && (value.profile === 'soty.relay-restricted.v1' && [1, 2].includes(value.bindingFloor)
+      || value.profile === 'soty.relay-self-ip.v1' && value.bindingFloor === 2), 'invalid_app_launch_binding');
   return Object.freeze({ schema: value.schema, policyEpoch: value.policyEpoch, targetRevision: value.targetRevision,
     targetDigest: value.targetDigest, profile: value.profile, bindingFloor: value.bindingFloor });
 }
 export function sameAppLaunchBinding(first, next) {
   return !!first && !!next && ['schema', 'policyEpoch', 'targetRevision', 'targetDigest', 'profile', 'bindingFloor']
     .every(key => first[key] === next[key]);
+}
+
+/** Root-only continuity proof. It is never a Source credential or ready ACK. */
+export function validateAppHostSession(value) {
+  requireValue(value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'expiresAt,frameId,lease,revision,schema'
+    && value.schema === 'soty.app-host-session.v1'
+    && [value.frameId,value.lease].every(item => typeof item === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(item))
+    && [value.revision,value.expiresAt].every(item => Number.isSafeInteger(item) && item > 0), 'invalid_app_host_session');
+  return Object.freeze({schema:value.schema,frameId:value.frameId,lease:value.lease,revision:value.revision,expiresAt:value.expiresAt});
 }
 
 /** A local HTTP target, never a return URL or a platform control endpoint. */
@@ -166,14 +177,39 @@ export function validateAppLaunchUrl(value, shellUrl) {
   return url.href;
 }
 
+/** A signed ordinary Root frame may use its own browser origin. The logical app
+ * entry remains canonical; neither a frame message nor an offline read can
+ * select this transport. The server still owns all session/Source authority. */
+function ordinaryRuntimeOrigin(value, { instanceId, entry, url, shellUrl, scoped, provenance, hostSession }) {
+  const invalid = 'invalid_app_runtime_origin';
+  const widget=/^widget-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(instanceId ?? '');
+  requireValue(!scoped && provenance && (widget || instanceId==='main'&&hostSession), invalid);
+  let runtime, canonical, boot, shell;
+  try { runtime = new URL(value); canonical = new URL(entry.origin); boot = new URL(url); shell = new URL(shellUrl); }
+  catch { throw new AppLaunchError(invalid); }
+  const prefix = widget?'app-w'+instanceId.slice(7).replaceAll('-', '')+'-':'app-m'+entry.appId.slice(4)+'-';
+  const label = runtime.hostname.split('.')[0], dot = canonical.hostname.indexOf('.');
+  requireValue(typeof value === 'string' && value.length <= 512 && runtime.origin === value
+    && runtime.origin !== canonical.origin && runtime.origin !== shell.origin
+    && runtime.protocol === canonical.protocol && runtime.port === canonical.port
+    && dot > 0 && label.startsWith(prefix) && /^[a-f0-9]{24}$/u.test(label.slice(prefix.length))
+    && runtime.hostname.slice(label.length) === '.' + canonical.hostname.slice(dot + 1)
+    && boot.origin === value && [...boot.searchParams.keys()].join(',') === 'path'
+    && boot.searchParams.get('path') === entry.path, invalid);
+  return value;
+}
+
 /** One screen owns its pending popup. Completed external tabs belong to the user. */
-export function createAppLauncher({ target, accountId, instanceId, shellUrl, isCurrent, request, resolveEntry, resolveExternalEntry, abandonScoped }) {
+export function createAppLauncher({ target, accountId, instanceId, shellUrl, isCurrent, request, resolveEntry, resolveExternalEntry, abandonScoped, abandonHost }) {
   requireValue(typeof accountId === 'string' && accountId.length > 0, 'app_account_required');
   const requestedTarget = normalizeAppLaunchTarget(target);
   let selected = null, initializing = null, disposed = false, popup = null, externalPending = false;
   let scoped=null;
   function abandon(value) {if(!value)return;const action=value.cleanup??(typeof abandonScoped==='function'?()=>abandonScoped({appId:requestedTarget.appId,handle:value.handle}):null);if(action)void Promise.resolve(action()).catch(()=>{});}
-  let originalBinding = null, latestBinding = null, bindingPinned = false;
+  function abandonHostProof(value,cleanup){if(!value)return;const action=typeof cleanup==='function'?cleanup:typeof abandonHost==='function'
+    ?()=>abandonHost({appId:requestedTarget.appId,frameId:value.frameId,lease:value.lease,revision:value.revision}):null;
+    if(action)void Promise.resolve().then(()=>action()).catch(()=>{});}
+  let originalBinding = null, latestBinding = null, bindingPinned = false, acceptedRuntimeOrigin = null, hostSession = null;
   let sourceEntryChanged = false;
   const rootWorkspace = source => source?.id === 'soty.standard-workspace' && source.version === 2
     && source.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9';
@@ -186,47 +222,69 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     if (!current()) return null;
     return result?.entry ? validateAppEntry(result.entry, { appId: requestedTarget.appId }, shellUrl) : null;
   }
-  function capture(value, requested, url, binding) {
+  function capture(value, requested, url, binding, transport) {
     // A signed launch may replace the historical default only for the exact Root-SSO pin.
     // Offline resolution and every other deep link keep the strict entry contract.
     const savedRootEntry = requested.path === '/' && value?.path === '/embed'
       && binding?.profile === 'soty.selected-human-embed.v2' && binding.source?.id === 'soty.standard-workspace'
       && binding.source.version === 2 && binding.source.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9';
-    const entry = validateAppEntry(value, savedRootEntry ? { ...requested, path: '/embed' } : requested, shellUrl, url, binding?.profile);
+    const entry = validateAppEntry(value, savedRootEntry ? { ...requested, path: '/embed' } : requested, shellUrl,
+      transport?.runtimeOrigin === undefined ? url : undefined, binding?.profile);
+    const nextOrigin = transport?.runtimeOrigin === undefined ? entry.origin : ordinaryRuntimeOrigin(transport.runtimeOrigin,
+      { instanceId, entry, url, shellUrl, scoped: binding, provenance: transport.provenance,hostSession:transport.hostSession });
+    requireValue(!transport?.requireSameBinding || acceptedRuntimeOrigin === null || acceptedRuntimeOrigin === nextOrigin, 'app_runtime_origin_changed');
     requireValue(!selected || (selected.domainId === entry.domainId && selected.origin === entry.origin
       && (selected.path === entry.path || (savedRootEntry && selected.path === '/'))), 'invalid_app_entry');
     selected = entry;
+    if (url !== undefined && !transport?.external) acceptedRuntimeOrigin = nextOrigin;
   }
   async function issue(initial,external=false,requireSameBinding=false) {
     const scopedBefore=requireSameBinding&&!originalBinding?scoped:null;
     requireValue(!requireSameBinding||!!originalBinding||!!scopedBefore?.source,'app_launch_binding_required');
     const args = parameters(), intended = { appId: args.appId,
       ...(args.domainId === undefined ? {} : { domainId: args.domainId }), ...(args.path === undefined ? {} : { path: args.path }) };
-    let received = false,binding=null;
+    let received = false,binding=null,responseHost=null,responseHostCleanup=null;
     try {
-      const result = await request(args); received = true;
+      const result = await request(Object.freeze({...args,...(external?{}:{hostSession:true})})); received = true;
       if(result.runtimeProfile!==undefined||result.scopedCloseHandle!==undefined) {
         requireValue(isScopedRuntimeProfile(result.runtimeProfile)&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedCloseHandle??''),'invalid_app_scoped_launch');
         requireValue(result.scopedCleanup===undefined||typeof result.scopedCleanup==='function','invalid_app_scoped_launch');
         const source=captureSourcePin(result.scopedSource);
+        requireValue(result.scopedFrameId===undefined||typeof result.scopedFrameId==='string'&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedFrameId)
+          &&source?.id==='soty.standard-workspace'&&source.version===2&&source.digest==='23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9','invalid_app_scoped_launch');
         binding=Object.freeze({profile:result.runtimeProfile,handle:result.scopedCloseHandle,cleanup:result.scopedCleanup,
-          source,slot:Object.freeze({})});
+          source,slot:Object.freeze({}),...(result.scopedFrameId?{frameId:result.scopedFrameId}:{})});
       }
-      if (!current()) {abandon(binding);return null;}
+      if(result.hostSession!==undefined)responseHost=validateAppHostSession(result.hostSession);
+      if(typeof result.hostSessionCleanup==='function')responseHostCleanup=result.hostSessionCleanup;
+      requireValue(!external||result.hostSession===undefined&&result.hostSessionExpiresAt===undefined,'invalid_app_host_session');
+      if (!current()) {abandon(binding);abandonHostProof(responseHost,responseHostCleanup);return null;}
       const provenance=result?.launchBinding===undefined?null:validateAppLaunchBinding(result.launchBinding);
       requireValue(!requireSameBinding||(scopedBefore
         ?scoped===scopedBefore&&binding?.profile===scopedBefore.profile&&binding.source
           &&['id','version','digest'].every(key=>binding.source[key]===scopedBefore.source[key])
         :sameAppLaunchBinding(originalBinding,provenance)),'app_launch_source_changed');
       const url = validateAppLaunchUrl(result?.url, shellUrl);
-      capture(result?.entry, intended, url, binding);
+      let host=null;
+      if(result.hostSession!==undefined||result.hostSessionExpiresAt!==undefined){
+        host=validateAppHostSession(result.hostSession);
+        requireValue(!binding&&!!provenance&&Number.isSafeInteger(result.hostSessionExpiresAt)
+          &&result.hostSessionExpiresAt>0&&result.hostSessionExpiresAt<=host.expiresAt,'invalid_app_host_session');
+        requireValue(result.runtimeOrigin!==undefined,'invalid_app_runtime_origin');
+        requireValue(result.hostSessionCleanup===undefined||typeof result.hostSessionCleanup==='function','invalid_app_host_session');
+      }
+      capture(result?.entry, intended, url, binding, {runtimeOrigin:result.runtimeOrigin,provenance,requireSameBinding,external,hostSession:host});
       if(!bindingPinned&&!external){originalBinding=provenance;bindingPinned=true;}
       if(!external)latestBinding=provenance;
+      if(!external)hostSession=host?Object.freeze({hostSession:host,hostSessionExpiresAt:result.hostSessionExpiresAt,
+        entry:selected,launchBinding:provenance,runtimeOrigin:acceptedRuntimeOrigin,slot:Object.freeze({}),
+        ...(result.hostSessionCleanup?{cleanup:result.hostSessionCleanup}:{})}):null;
       if(!external){const previous=scoped;scoped=binding;abandon(previous);}
       return url;
     } catch (error) {
       if (['scoped_embed_source_changed', 'scoped_embed_authority_changed'].includes(error?.code)) sourceEntryChanged = true;
       abandon(binding);
+      abandonHostProof(responseHost,responseHostCleanup);
       if (!current()) return null;
       // Only a failed admission may resolve an offline location. A successful
       // response with a missing/mismatched DTO must never be guessed later.
@@ -281,16 +339,33 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
   return {
     get parameters() { return parameters(); },
     entry: () => current() ? selected : null,
+    runtimeOrigin: () => current() ? acceptedRuntimeOrigin ?? selected?.origin ?? null : null,
+    hostSession:()=>current()?hostSession:null,
+    commitHostSession(previous,next){
+      if(!current()||hostSession!==previous)return false;
+      const session=validateAppHostSession(next.hostSession);
+      const sameProof=session.lease===previous.hostSession.lease&&session.revision===previous.hostSession.revision;
+      requireValue(session.frameId===previous.hostSession.frameId&&(sameProof?session.expiresAt>=previous.hostSession.expiresAt
+        :session.revision===previous.hostSession.revision+1&&session.lease!==previous.hostSession.lease)
+        &&sameAppLaunchBinding(previous.launchBinding,next.launchBinding)
+        &&['appId','domainId','origin','path'].every(key=>next.entry?.[key]===previous.entry[key])
+        &&(next.runtimeOrigin??next.entry.origin)===previous.runtimeOrigin
+        &&(next.hostSessionExpiresAt===null||Number.isSafeInteger(next.hostSessionExpiresAt)
+          &&next.hostSessionExpiresAt>0&&next.hostSessionExpiresAt<=session.expiresAt),'app_host_session_changed');
+      requireValue(next.cleanup===undefined||typeof next.cleanup==='function','invalid_app_host_session');
+      hostSession=Object.freeze({...previous,hostSession:session,hostSessionExpiresAt:next.hostSessionExpiresAt,...(next.cleanup?{cleanup:next.cleanup}:{})});return true;
+    },
     binding: () => current() ? originalBinding : null,
     latestBinding: () => current() ? latestBinding : null,
     launch, resolve,
     isCurrent: current,
     runtimeProfile:()=>scoped?.profile??null,
-    scopedCapture:()=>current()&&scoped?Object.freeze({handle:scoped.handle,source:scoped.source,slot:scoped.slot}):null,
+    scopedCapture:()=>current()&&scoped?Object.freeze({handle:scoped.handle,source:scoped.source,slot:scoped.slot,...(scoped.frameId?{frameId:scoped.frameId,entry:selected}:{})}):null,
     // Presentation only. Opening still performs its own fresh signed read.
     async canOpenExternal() { return current() && (!needsNativeEntry() || !!await readNativeEntry()); },
     prepareRenewal(result){requireValue(current()&&scoped&&selected,'invalid_app_scoped_launch');
       requireValue(result.runtimeProfile===scoped.profile&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedCloseHandle??''),'invalid_app_scoped_launch');
+      requireValue(result.scopedFrameId===scoped.frameId,'invalid_app_scoped_launch');
       const source=captureSourcePin(result.scopedSource);requireValue(source&&scoped.source&&source.id===scoped.source.id&&source.version===scoped.source.version
         &&source.digest===scoped.source.digest,'invalid_app_scoped_launch');
       const url=validateAppLaunchUrl(result.url,shellUrl),boot=new URL(url);
@@ -301,9 +376,9 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
         &&result.scopedSlotExpiresAt<=Date.now()+310000&&typeof result.scopedRenewalRequestId==='string'&&/^[A-Za-z0-9_-]{16,128}$/.test(result.scopedRenewalRequestId),'invalid_app_scoped_launch');
       requireValue(result.scopedRenewalBindingDigest===undefined||/^[a-f0-9]{64}$/.test(result.scopedRenewalBindingDigest),'invalid_app_scoped_launch');
       return Object.freeze({url,handle:result.scopedCloseHandle,requestId:result.scopedRenewalRequestId,source,expiresAt:result.scopedSlotExpiresAt,cleanup:result.scopedCleanup,
-        ...(result.scopedRenewalBindingDigest?{bindingDigest:result.scopedRenewalBindingDigest}:{}),slot:Object.freeze({})});},
+        ...(scoped.frameId?{frameId:scoped.frameId}:{}),...(result.scopedRenewalBindingDigest?{bindingDigest:result.scopedRenewalBindingDigest}:{}),slot:Object.freeze({})});},
     commitRenewal(previous,next){if(!current()||scoped?.slot!==previous.slot)return false;const old=scoped;
-      scoped=Object.freeze({profile:old.profile,handle:next.handle,source:next.source,cleanup:next.cleanup,slot:next.slot});abandon(old);return true;},
+      scoped=Object.freeze({profile:old.profile,handle:next.handle,source:next.source,cleanup:next.cleanup,slot:next.slot,...(next.frameId?{frameId:next.frameId}:{})});abandon(old);return true;},
     async openExternal(openPopup) {
       if (!current()) return 'stale';
       if (externalPending) return 'busy';
@@ -334,6 +409,6 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
         throw error;
       } finally { popup = null; externalPending = false; }
     },
-    dispose() { disposed = true; selected = null; close(popup); popup = null;const previous=scoped;scoped=null;abandon(previous); },
+    dispose() {if(disposed)return;disposed = true; selected = null;const host=hostSession;hostSession=null;abandonHostProof(host?.hostSession,host?.cleanup);close(popup); popup = null;const previous=scoped;scoped=null;abandon(previous); },
   };
 }

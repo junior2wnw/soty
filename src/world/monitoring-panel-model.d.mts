@@ -1,0 +1,15 @@
+import type {MonitoringSeries,MonitoringUnit,MonitoringStatus} from '../../modules/monitoring/sdk.mjs';
+export const MONITORING_RANGES:readonly {readonly id:string;readonly label:string;readonly milliseconds:number}[];
+export function monitoringWindow(range:string,now:number,fromValue?:string,toValue?:string):{from:number;to:number};
+export function monitoringPlotData(points:MonitoringSeries['points']):[number[],(number|null)[]];
+export function monitoringPreviousWindow(coverage:Pick<MonitoringSeries['coverage'],'from'|'to'>):{from:number;to:number};
+export function monitoringComparisonData(current:MonitoringSeries,previous:MonitoringSeries):{shift:number;times:number[];data:[number[],(number|null)[],(number|null)[]]};
+export function monitoringPeriod(coverage:Pick<MonitoringSeries['coverage'],'from'|'to'>):string;
+export function monitoringAxisTime(value:number,includeDate?:boolean):string;
+export function monitoringPointMeaning(series:Pick<MonitoringSeries,'kind'|'coverage'|'points'>,at:number):string;
+export function monitoringValue(value:number|null,unit:MonitoringUnit):string;
+export function monitoringTime(value:number|null):string;
+export function monitoringStatus(status:MonitoringStatus|string):string;
+export function monitoringHistoricalStatus(series:Pick<MonitoringSeries,'status'|'lastAt'|'coverage'>,asOf:number):string;
+export function monitoringErrorText(error:unknown):string;
+export function monitoringAccessLost(error:unknown):boolean;

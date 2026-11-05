@@ -89,3 +89,14 @@ modules/connect.previous-*
 modules/connect.*.failed
 
 /scripts/app-art/
+
+# Required pinned chart runtime; keep all other generated dist output excluded.
+!vendor/uplot/dist/
+vendor/uplot/dist/*
+!vendor/uplot/dist/uPlot.esm.js
+!vendor/uplot/dist/uPlot.cjs.js
+!vendor/uplot/dist/uPlot.d.ts
+!vendor/uplot/dist/uPlot.min.css
+
+# The maintained custody test imports this stdlib-only helper during build.
+!deploy/connect/windows-backup-key.py

@@ -1,4 +1,4 @@
-import { createDialog, isDialogFocusTarget, type DialogReturnTarget } from './dialogs';
+import { createDialog, isDialogFocusTarget, type DialogReturnTarget, type WorldDialog } from './dialogs';
 import { createOtsovEditorHost } from './otsov-editor-handoff.mjs';
 import type { WorldProjectEditorPort } from './types';
 import { createBrowserAssistHost } from './browser-assist-pilot.mjs';
@@ -6,14 +6,20 @@ import { mountAppInvitationCarrier } from './app-invitation-carrier.mjs';
 import './app-stage.css';
 import { button, el, emptyState, iconButton } from './dom';
 import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLaunchLocation,isScopedRuntimeProfile,
-  validateAppEntry, type AppLaunchIntent, type AppLaunchPresentation, type AppLaunchRequest, type AppResolvedEntry } from './app-launch.mjs';
+  validateAppEntry,validateAppHostSession,validateAppLaunchBinding,sameAppLaunchBinding, type AppLaunchIntent, type AppLaunchPresentation, type AppLaunchRequest, type AppResolvedEntry } from './app-launch.mjs';
 import { createAppBootRecovery } from './app-boot-recovery.mjs';
+import { refreshAppStageLive } from './app-stage-live.mjs';
 import { createAppRuntimeDisplay, type RuntimeDisplayHandle } from './app-runtime-display.mjs';
 import { createWidgetRuntimeControls } from './app-widget-runtime-controls.mjs';
 import { createAppRuntimePhaseTrace, type RuntimePhase } from './app-runtime-phase-trace.mjs';
 import { createAppWorkGuard } from './app-work-guard.mjs';
+import type {AppRuntimeCloseRequest} from './app-runtime-close.mjs';
+import type {WidgetRuntimeOwner} from './app-widget-runtime-controls.mjs';
+import type {MonitoringDialogHandle} from './monitoring-dialog';
+import { createGlassWidgetHost, type GlassWidgetMode } from '../../vendor/optical-glass/src/widget-context.js';
 import { createRelayIdentityBridge } from './app-relay-identity-bridge.mjs';
-import type { AppLaunchBinding } from './app-launch.mjs';
+import {createAppHostSessionRenewal} from './app-host-session-renewal.mjs';
+import type { AppLaunchBinding,AppHostSession } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
 import type { WorldApi, WorldAppRecord, WorldAssistantContext } from './types';
@@ -40,12 +46,16 @@ export interface AppStageOptions {
   readNativeVoice?: (options?: { retry?: boolean }) => Promise<{ client:any; mount:any } | null>;
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
-  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;launchBinding?:AppLaunchBinding;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
-  renew?:((parameters:{appId:string;handle:string;requestId:string;expectedAccountId:string;shortSessionHandoff?:true})=>Promise<{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedRenewalBindingDigest?:string;scopedCleanup?:(()=>Promise<void>)|undefined}>)|undefined;
+  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;runtimeOrigin?:string;launchBinding?:AppLaunchBinding;hostSession?:AppHostSession;hostSessionExpiresAt?:number;hostSessionCleanup?:()=>Promise<void>;runtimeProfile?:string;scopedCloseHandle?:string;scopedFrameId?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
+  cleanupForReply?:((reply:unknown)=>(()=>Promise<void>)|null)|undefined;
+  renew?:((parameters:{appId:string;handle:string;requestId:string;expectedAccountId:string;frameId?:string;currentEntryPath?:string;shortSessionHandoff?:true})=>Promise<{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedFrameId?:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedRenewalBindingDigest?:string;scopedCleanup?:(()=>Promise<void>)|undefined}>)|undefined;
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   /** Explicit navigation to a fresh server-resolved Source entry, never a silent rebind. */
   onOpenCurrentEntry?(entry: AppResolvedEntry): void | Promise<void>;
   onBack(): void; onAccount(): Promise<void>;
+  /** A retained owner keeps transport alive while its route is not presented. */
+  isPresented?():boolean;
+  onRequestClose?(request:AppRuntimeCloseRequest):Promise<void>;
   onFullscreenChange?(stage: HTMLElement, expanded: boolean): void;
   onModalChange?(modal: HTMLDialogElement, open: boolean): void;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
@@ -57,10 +67,17 @@ export interface AppStageOptions {
 }
 export interface AppStageHandle {
   /** Local presentation port. It transfers one UI button, never the iframe. */
-  mountRuntimeControls?(host:HTMLElement,owner:DialogReturnTarget):boolean;
+  mountRuntimeControls?(host:HTMLElement,owner:WidgetRuntimeOwner):boolean;
+  /** Presentation only. Source permissions and the running frame stay unchanged. */
+  setWidgetMode?(mode:GlassWidgetMode):void;
+  syncPresentation?():void;
   ready: Promise<void>; matches(intent: AppLaunchIntent): boolean; updateRoute(intent: AppLaunchIntent): void;
+  /** Fresh Root scope to present the same document; never a Source-ready claim. */
+  resume?(intent:AppLaunchIntent):Promise<boolean>;
   updateApp(app: WorldAppRecord): void; updateCommunity(group: { communityId: string; name: string } | null): void;
-  entry(): AppResolvedEntry | null; flush(): Promise<void>; hasUnsavedChanges(): boolean; requiresCloseCheck(): boolean; hasUnconfirmedWork(): boolean; dispose(): void;
+  invalidateLive?(options?:{reset:boolean}):Promise<void>;
+  renewHostSession?(reason:'reset'|'near-expiry'):Promise<boolean>;
+  entry(): AppResolvedEntry | null; flush(options?:{allowMonitoringDurablePending?:boolean}): Promise<void>; hasUnsavedChanges(): boolean; requiresCloseCheck(): boolean; hasUnconfirmedWork(): boolean; dispose(): void;
   assistantContext(): WorldAssistantContext | null;
   browserAssist(): import('./types').WorldBrowserAssist | null;
   openProjectEditor:WorldProjectEditorPort;
@@ -92,18 +109,23 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let presentationVersion = 0, applyingPresentation = false;
   let displayEpoch = 0, entryRecoveryEpoch = 0, entryRecoveryPending = false, releaseRuntimeDisplay: (() => void) | null = null;
   let runtimeDisplay: RuntimeDisplayHandle | null = null;
+  let widgetMode:GlassWidgetMode='interactive',widgetContext:ReturnType<typeof createGlassWidgetHost>|null=null;
+  let hostRenewal:ReturnType<typeof createAppHostSessionRenewal>|null=null;
   let externalAvailability: 'unknown' | 'available' | 'unavailable' = 'unknown';
+  let liveReadSequence=0,liveAuthorityEpoch=0,liveAuthorityDenied=false;
   let feedback: AppFeedbackHandle | null = null;
   let reviews: AppReviewsHandle | null = null;
+  let monitoringPanel:MonitoringDialogHandle|null=null,monitoringOpening=false,monitoringOpenEpoch=0;
   let lastVisiblePresentation = initial.presentation;
   let group: { communityId: string; name: string } | null = null;
   const controller = new AbortController(), view = host.ownerDocument.defaultView!;
   const matches = (next: AppLaunchIntent): boolean => sameAppLaunchLocation(initial, next, selectedEntry);
   const current = (): boolean => {
     if (disposed || !options.isCurrent()) return false;
-    if (options.presentation === 'widget') return true;
+    if (options.presentation === 'widget'||options.isPresented) return true;
     try { const next = parseAppLaunchRoute(view.location.hash); return !!next && matches(next); } catch { return false; }
   };
+  const presented=():boolean=>current()&&(options.isPresented?.()??true);
   const screen = el('section', 'sa-stage'); screen.setAttribute('aria-label', 'Приложение'); screen.dataset.pwaIgnore = '';
   if (options.presentation === 'widget') screen.classList.add('sa-widget-stage');
   const header = el('header', 'sa-toolbar'), title = el('div', 'sa-title'), name = el('h2', '', app.name);
@@ -155,51 +177,54 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const feedbackHost = el('div');
   const reviewsHost = el('div');
   const report = button('Сообщить проблему', 'flag', 'sw-button-quiet', () => {
-    if (!current()) return;
+    if (!presented()) return;
     if (!moreBody.hidden) closeMore(true);
-    feedback ??= mountAppFeedback(feedbackHost, { api: options.api, accountId, appId: app.appId, title: app.name, isCurrent: current,
-      onModalChange: (modal, open) => { if (!open || current()) options.onModalChange?.(modal, open); } });
+    feedback ??= mountAppFeedback(feedbackHost, { api: options.api, accountId, appId: app.appId, title: app.name, isCurrent: presented,
+      onModalChange: (modal, open) => { if (!open || presented()) options.onModalChange?.(modal, open); } });
     feedback.open();
   });
   report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';
   report.dataset.stageControl = 'feedback';
   const field = iconButton('Разместить на поле', 'plus', () => {
-    if (!current() || field.disabled || !saved) return;
+    if (!presented() || field.disabled || !saved) return;
     field.disabled = true;
     const returnToMore = field.parentElement === moreBody;
     closeMore(returnToMore);
     void fullscreen.leave().then(async () => {
-      if (!current()) return;
-      if (!await saved?.ensureSaved() || !current()) {
-        if (current()) showMessage('Добавление не завершено. Проверьте сохранённый вход и повторите.');
+      if (!presented()) return;
+      if (!await saved?.ensureSaved() || !presented()) {
+        if (presented()) showMessage('Добавление не завершено. Проверьте сохранённый вход и повторите.');
         return;
       }
       if (returnToMore) more.focus();
       showMessage('Вход сохранён в аккаунте. Размещаем соту на вашем поле.');
       options.onPlaceInField?.(app);
     })
-      .catch(() => { if (current()) showMessage('Не удалось подтвердить добавление. Проверьте сохранённые и повторите.'); })
-      .finally(() => { if (current()) field.disabled = false; });
+      .catch(() => { if (presented()) showMessage('Не удалось подтвердить добавление. Проверьте сохранённые и повторите.'); })
+      .finally(() => { if (presented()) field.disabled = false; });
   });
   field.dataset.stageControl = 'field'; field.hidden = !options.onPlaceInField; field.disabled = true;
   const widget = button('Живое окно', 'pin', 'sw-button-quiet', () => {
-    if (!current() || !selectedEntry) return;
+    if (!presented() || !selectedEntry) return;
     closeMore(); options.onWidget?.(app, parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId,
       domainId: selectedEntry.domainId, path: selectedEntry.path }))!);
   });
   widget.dataset.stageControl = 'widget'; widget.hidden = !options.onWidget; widget.disabled = true;
   const moreHost = el('div', 'sa-more'), moreBody = el('div', 'sa-more-body'); moreBody.hidden = true;
+  let moreSheet:WorldDialog|null=null,closeRuntimeButton:HTMLButtonElement|null=null;
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
   const shortToolbar = view.matchMedia('(max-width: 720px),(max-height: 480px)');
   const compactToolbar = (): boolean => options.minimalChrome === true || shortToolbar.matches;
   function showMessage(text: string, owner: 'manual' | 'runtime' | 'renewal' = 'manual'): void { if (current()) { message.textContent = text; message.hidden = !text; messageOwner = owner; } }
   function closeMore(focus = false): void {
-    moreBody.hidden = true; more.setAttribute('aria-expanded', 'false'); if (focus && current()) more.focus();
+    if(moreSheet){moreSheet.close({restoreFocus:focus});return;}
+    moreBody.hidden = true; more.setAttribute('aria-expanded', 'false'); if (focus && presented()) more.focus();
   }
   function fitMore(): void {
     if (options.presentation === 'widget') return;
-    if (!current()) { closeMore(); return; }
+    if (!presented()) { closeMore(); return; }
+    if(moreSheet)return;
     const active = host.ownerDocument.activeElement;
     if (compactToolbar() && active?.closest('.sw-topbar,.sw-mobile-nav') && !active.getClientRects().length) more.focus();
     if (!compactToolbar() || moreBody.hidden) {
@@ -222,7 +247,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     moreBody.style.maxHeight = `${Math.max(0, Math.floor(bottom - rect.top))}px`;
   }
   function syncShortToolbar(): void {
-    if (options.presentation === 'widget' || !current()) return;
+    if (options.presentation === 'widget' || !presented()) return;
     const controls = [field, report], target = compactToolbar() ? moreBody : header;
     if (controls.some(control => control.parentElement !== target)) {
       const restoreFocus = controls.some(control => control.contains(host.ownerDocument.activeElement));
@@ -235,20 +260,38 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   function focusDiscussionControl(): void {
     (discuss.parentElement === moreBody && moreBody.hidden ? more : discuss).focus();
   }
-  const back = iconButton(options.minimalChrome ? 'Закрыть приложение' : 'Назад', options.minimalChrome ? 'close' : 'back', () => { if (current()) options.onBack(); });
+  const backAction=()=>{if(presented())options.onBack();};
+  const back = options.isPresented?button('Полотно','back','sw-button-quiet',backAction):iconButton(options.minimalChrome?'Закрыть приложение':'Назад',options.minimalChrome?'close':'back',backAction);
   if (options.minimalChrome) { screen.classList.add('of-app-surface'); back.classList.add('of-app-close'); }
   const modes = el('div', 'sa-mode-switch'); modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Работа с приложением');
   const application = button('Приложение', 'grid', '', () => {
-    if (current()) { closeMore(); void navigatePresentation(undefined, true); }
+    if (presented()) { closeMore(); void navigatePresentation(undefined, true); }
   });
   application.dataset.stageControl = 'application';
   const discuss = button('Обсуждение', 'chat', '', () => {
-    if (current()) { closeMore(); void navigatePresentation({ panel: 'discussion' }, true); }
+    if (presented()) { closeMore(); void navigatePresentation({ panel: 'discussion' }, true); }
   });
   discuss.setAttribute('aria-controls', panel.id); discuss.dataset.stageControl = 'discussion';
   modes.append(application, discuss);
   const more = iconButton('Действия с приложением', 'more', () => {
-    if (!current()) return;
+    if (!presented()) return;
+    if(options.minimalChrome&&options.presentation!=='widget'){
+      if(moreSheet){closeMore(true);return;}
+      const sheet=createDialog('Действия с приложением',()=>{
+        if(moreSheet!==sheet)return;moreSheet=null;
+        if(closeRuntimeButton)moreBody.append(closeRuntimeButton);
+        moreBody.hidden=true;moreBody.classList.remove('glass-ui__action-list','sa-actions-content');moreHost.append(moreBody);
+        more.setAttribute('aria-expanded','false');options.onModalChange?.(sheet.element,false);
+      },{isCurrent:presented,resolve:()=>more});
+      moreSheet=sheet;sheet.element.classList.add('sa-actions-sheet','sw-form-dialog');
+      moreBody.hidden=false;moreBody.classList.add('glass-ui__action-list','sa-actions-content');
+      for(const property of ['max-height','max-width','translate'])moreBody.style.removeProperty(property);
+      sheet.body.append(moreBody);
+      if(closeRuntimeButton){const footer=el('div','sw-dialog-form-actions sa-actions-footer');footer.append(closeRuntimeButton);sheet.element.append(footer);}
+      more.setAttribute('aria-expanded','true');options.onModalChange?.(sheet.element,true);
+      Array.from(moreBody.querySelectorAll<HTMLButtonElement>('button:not([hidden]):not(:disabled)')).find(control=>control.getClientRects().length>0)?.focus();
+      return;
+    }
     const open = moreBody.hidden; moreBody.hidden = !open; more.setAttribute('aria-expanded', String(open));
     fitMore();
     if (open) Array.from(moreBody.querySelectorAll<HTMLButtonElement>('button:not([hidden]):not(:disabled)'))
@@ -257,7 +300,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   more.setAttribute('aria-controls', moreBody.id); more.setAttribute('aria-expanded', 'false'); more.dataset.stageControl = 'more';
   const expand = iconButton('На весь экран', 'expand', () => { closeMore(); void fullscreen.toggle(); });
   expand.dataset.stageControl = 'fullscreen';
-  const fullscreen = mountAppFullscreen({ screen, isCurrent: current, onChange: state => {
+  const fullscreen = mountAppFullscreen({ screen, isCurrent: presented, onChange: state => {
     const label = state.active ? 'Вернуть обычный вид' : 'На весь экран';
     expand.title = label; expand.setAttribute('aria-label', label); expand.setAttribute('aria-pressed', String(state.active));
     expand.disabled = state.pending;
@@ -267,7 +310,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const refresh = button('Обновить приложение', 'refresh', 'sw-button-quiet', () => { closeMore(true); void launchRuntime(false, () => true, true); });
   refresh.dataset.stageControl = 'refresh';
   const external = button('Открыть отдельно', 'external', 'sw-button-quiet', () => {
-    if (!current() || external.disabled || externalAvailability !== 'available') return;
+    if (!presented() || external.disabled || externalAvailability !== 'available') return;
     closeMore(true); external.disabled = externalRecovery.disabled = true; external.setAttribute('aria-busy', 'true'); showMessage('');
     // Do not await a route, flush or API read before this user-gesture popup.
     void launcher.openExternal(() => {
@@ -278,7 +321,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       } catch { /* The launcher still owns an isolated or already closed popup. */ }
       return destination;
     }).then(result => {
-      if (!current()) return;
+      if (!presented()) return;
       captureEntry();
       if (result === 'blocked') showMessage('Разрешите новую вкладку для Сот и нажмите «Открыть отдельно» ещё раз.');
       if (result === 'unavailable') {
@@ -286,7 +329,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         showMessage('Отдельный сайт пока не подключён. Это приложение доступно внутри Сот.');
       }
     }).catch(reason => { const failure = appLaunchFailure(reason); showMessage(`${failure.title}. ${failure.detail}`); })
-      .finally(() => { if (current()) { external.disabled = externalRecovery.disabled = false; external.removeAttribute('aria-busy'); } });
+      .finally(() => { if (presented()) { external.disabled = externalRecovery.disabled = false; external.removeAttribute('aria-busy'); } });
   });
   external.dataset.stageControl = 'external'; external.hidden = voiceResolved;
   // Preserve the existing explicit gesture while optional voice metadata is
@@ -301,45 +344,54 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   function checkExternalAvailability(): void {
     const epoch = displayEpoch;
     void launcher.canOpenExternal().then(available => {
-      if (current() && epoch === displayEpoch) { externalAvailability = available ? 'available' : 'unavailable'; syncExternalControls(); }
+      if (presented() && epoch === displayEpoch) { externalAvailability = available ? 'available' : 'unavailable'; syncExternalControls(); }
     }).catch(() => { /* Unknown availability stays hidden; no fallback or grant is guessed. */ });
   }
   const dismissRuntimeNotice = button('Скрыть сообщение', 'close', 'sw-button-quiet sa-recovery-retry', () => {
-    if (current() && runtimeDisplay?.dismiss()) name.focus();
+    if (presented() && runtimeDisplay?.dismiss()) name.focus();
   });
   dismissRuntimeNotice.dataset.stageControl = 'runtime-dismiss'; dismissRuntimeNotice.hidden = true;
   const settings = button('Настройки приложения', 'settings', 'sw-button-quiet', () => {
-    closeMore(true); if (current()) void fullscreen.leave().then(() => { if (current()) options.onSettings(app, updateApp); });
+    closeMore(true); if (presented()) void fullscreen.leave().then(() => { if (presented()) options.onSettings(app, updateApp); });
   });
+  const monitoringAction=button('Состояние и управление','activity','sw-button-quiet',()=>{
+    closeMore();if(!presented()||app.ownerAccountId!==accountId)return;
+    if(monitoringPanel){monitoringPanel.focus();return;}if(monitoringOpening)return;monitoringOpening=true;const ticket=++monitoringOpenEpoch;
+    void import('./monitoring-dialog').then(({openMonitoringDialog})=>{
+      if(!presented()||ticket!==monitoringOpenEpoch||app.ownerAccountId!==accountId)return;
+      monitoringPanel=openMonitoringDialog({api:options.api,accountId,scope:{kind:'app',appId:app.appId},isCurrent:()=>current()&&!liveAuthorityDenied&&app.ownerAccountId===accountId,title:app.name,
+        returnTarget:{isCurrent:presented,resolve:()=>more},onClosed:()=>{monitoringPanel=null;},...(options.onModalChange?{onModalChange:options.onModalChange}:{})});
+    }).catch(()=>{if(presented()&&ticket===monitoringOpenEpoch)showMessage('Не удалось открыть показатели. Попробуйте ещё раз.');}).finally(()=>{if(ticket===monitoringOpenEpoch)monitoringOpening=false;});
+  });monitoringAction.dataset.stageControl='monitoring';
   const archives = button('Архив владельца', 'history', 'sw-button-quiet', () => {
-    closeMore(true); if (current()) void navigatePresentation({ panel: 'discussion', administrative: true }, true);
+    closeMore(true); if (presented()) void navigatePresentation({ panel: 'discussion', administrative: true }, true);
   });
   const community = button('Сообщество', 'people', 'sw-button-quiet', () => {
-    closeMore(true); if (current() && group) options.onCommunity?.(group.communityId);
+    closeMore(true); if (presented() && group) options.onCommunity?.(group.communityId);
   }); community.hidden = true;
   const publicReviews = button('Отзывы', 'list', 'sw-button-quiet', () => {
-    closeMore(); if (!current()) return;
-    reviews ??= mountAppReviews(reviewsHost, { api: options.api, appId: app.appId, title: app.name, isCurrent: current,
-      entry: () => selectedEntry ? { domainId: selectedEntry.domainId, path: selectedEntry.path } : null, onClose: () => { if (current()) more.focus(); } });
+    closeMore(); if (!presented()) return;
+    reviews ??= mountAppReviews(reviewsHost, { api: options.api, appId: app.appId, title: app.name, isCurrent: presented,
+      entry: () => selectedEntry ? { domainId: selectedEntry.domainId, path: selectedEntry.path } : null, onClose: () => { if (presented()) more.focus(); } });
     reviews.open();
   }); publicReviews.dataset.stageControl = 'reviews';
   const otherAccount = button('Другой аккаунт', 'person', 'sw-button-quiet', () => {
-    closeMore(true); if (!current() || accountPending) return;
+    closeMore(true); if (!presented() || accountPending) return;
     accountPending = true; otherAccount.disabled = true;
-    void fullscreen.leave().then(() => current() ? options.onAccount() : undefined).catch(() => showMessage('Не удалось открыть аккаунт. Попробуйте ещё раз.'))
-      .finally(() => { if (current()) { accountPending = false; otherAccount.disabled = false; } });
+    void fullscreen.leave().then(() => presented() ? options.onAccount() : undefined).catch(() => showMessage('Не удалось открыть аккаунт. Попробуйте ещё раз.'))
+      .finally(() => { if (presented()) { accountPending = false; otherAccount.disabled = false; } });
   });
   const bookmark = el('div', 'sa-bookmark'); bookmark.hidden = true;
   bookmark.append(el('p', 'sa-bookmark-label', 'Закладка в «Моём»'), savedHost);
   const diagnostics = button('Диагностика загрузки', 'info', 'sw-button-quiet', openRuntimeDiagnostics);
   diagnostics.hidden = options.presentation === 'widget';
-  moreBody.append(bookmark, widget, publicReviews, external, refresh, workStatus, diagnostics, community, settings, archives, otherAccount); moreHost.append(more, moreBody);
+  moreBody.append(bookmark, widget, publicReviews, monitoringAction, settings, external, refresh, workStatus, diagnostics, community, archives, otherAccount); moreHost.append(more, moreBody);
   function openRuntimeDiagnostics(): void {
-    if (!current() || options.presentation === 'widget' || diagnosticOpen) return;
+    if (!presented() || options.presentation === 'widget' || diagnosticOpen) return;
     closeMore(); runtimeTrace.sample(); diagnosticOpen = true;
     const dialog = createDialog('Диагностика загрузки', () => {
       diagnosticOpen = false; closeDiagnostic = renderDiagnostic = null; options.onModalChange?.(dialog.element, false);
-    }, {isCurrent:current,resolve:()=>more});
+    }, {isCurrent:presented,resolve:()=>more});
     dialog.body.classList.add('sa-runtime-diagnostics');
     closeDiagnostic = () => dialog.close({restoreFocus:false}); options.onModalChange?.(dialog.element, true);
     const explanation = el('p', '', 'Включите запись, затем нажмите обычную кнопку «Обновить приложение» или «Открыть приложение заново». События не подтверждают готовность или доступ.');
@@ -351,7 +403,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     const arm = button('Записать следующее открытие', undefined, 'sw-button-primary', () => { if (runtimeTrace.arm()) dialog.close(); });
     const copy = button('Копировать безопасный отчёт', undefined, 'sw-button-quiet', () => {
       copy.disabled = true;
-      void runtimeTrace.copy().then(ok => { if (current() && diagnosticOpen) { status.textContent = ok ? 'Безопасный отчёт скопирован.' : 'Копирование недоступно. Можно выделить отчёт вручную.'; copy.disabled = !runtimeTrace.snapshot(); } });
+      void runtimeTrace.copy().then(ok => { if (presented() && diagnosticOpen) { status.textContent = ok ? 'Безопасный отчёт скопирован.' : 'Копирование недоступно. Можно выделить отчёт вручную.'; copy.disabled = !runtimeTrace.snapshot(); } });
     });
     const clear = button('Очистить', undefined, 'sw-button-quiet', () => runtimeTrace.clear());
     const actions = el('div','sw-dialog-actions'); actions.append(arm,copy,clear);
@@ -383,16 +435,16 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let closeAssistDialog: (() => void) | null = null;
   const askAssist = (text: string, signal?: AbortSignal): Promise<boolean> => {
     closeAssistDialog?.();
-    if (!current() || signal?.aborted) return Promise.resolve(false);
+    if (!presented() || signal?.aborted) return Promise.resolve(false);
     return new Promise(resolve => {
       let done = false;
       const finish = (accepted: boolean) => {
         if (done) return; done = true; view.clearTimeout(timer); signal?.removeEventListener('abort', cancel);
-        closeAssistDialog = null; resolve(accepted && current()); dialog.close();
+        closeAssistDialog = null; resolve(accepted && presented()); dialog.close();
       };
       const cancel = () => finish(false);
       const dialog = createDialog('Помощник в приложении', () => { options.onModalChange?.(dialog.element, false); finish(false); },
-        { isCurrent: current, resolve: () => assistToggle }, screen);
+        { isCurrent: presented, resolve: () => assistToggle }, screen);
       const timer = view.setTimeout(cancel, 60000);
       closeAssistDialog = cancel; signal?.addEventListener('abort', cancel, { once: true });
       dialog.body.append(el('p', '', text), el('p', 'sw-muted', 'Подпись действия предоставлена приложением; проверьте его смысл.'),
@@ -405,7 +457,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
 
   const assist = createBrowserAssistHost({ view, readPeer: () => {
     const frame = runtime.querySelector('iframe'), pin = launcher.binding(), entry = launcher.entry();
-    return current() && options.presentation !== 'widget' && frame?.contentWindow && pin && entry ? {
+    return presented() && options.presentation !== 'widget' && frame?.contentWindow && pin && entry ? {
       window: frame.contentWindow, binding: { appId: app.appId, origin: entry.origin, domainId: entry.domainId,
         targetRevision: pin.targetRevision, targetDigest: pin.targetDigest, generation: frameGeneration, channel: assistChannel },
     } : null;
@@ -418,16 +470,16 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (assistOn) { stopAssist(); return; }
     const epoch = ++assistEpoch; assistToggle.disabled = true;
     void assist.probe().then(async available => {
-      if (epoch !== assistEpoch || !current()) return;
+      if (epoch !== assistEpoch || !presented()) return;
       if (!available) { showMessage('Управление недоступно: автор приложения ещё не включил SDK помощника.'); return; }
       if (!await askAssist(`Разрешить помощнику видеть отмеченные автором элементы приложения «${app.name}» в этом окне? Каждое нажатие и ввод требуют отдельного подтверждения. Доступ завершится при смене приложения, аккаунта или окна.`)) return;
-      if (epoch !== assistEpoch || !current()) return;
+      if (epoch !== assistEpoch || !presented()) return;
       assist.enable(); assistOn = true; assistToggle.textContent = 'Помощник в приложении: включён'; assistToggle.setAttribute('aria-pressed', 'true');
     }).catch(() => { stopAssist(); showMessage('Не удалось включить помощника. Откройте приложение заново.'); })
       .finally(() => { if (!disposed) assistToggle.disabled = false; });
   });
   assistToggle.setAttribute('aria-pressed', 'false'); assistToggle.hidden = options.presentation === 'widget'; moreBody.append(assistToggle);
-  const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding() || closeAssistDialog && !current()) stopAssist(); }, 250);
+  const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding() || closeAssistDialog && !presented()) stopAssist(); }, 250);
   header.append(back, title, modes, field, report, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, savedReplacementHost, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   syncShortToolbar();
@@ -436,16 +488,21 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     resolveEntry: parameters => options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...parameters }),
     resolveExternalEntry: parameters => options.api.request<{ entry: AppResolvedEntry | null }>('apps.entry.get', { ...parameters, current: true, surface: 'native' }),
     abandonScoped:parameters=>options.api.request('apps.scoped.close',{...parameters}),
+    abandonHost:parameters=>options.api.request('apps.session.close',{...parameters,expectedAccountId:accountId}),
   });
-  let relayPeer: { frame: HTMLIFrameElement; entry: AppResolvedEntry; binding: AppLaunchBinding } | null = null;
+  let relayPeer: { frame: HTMLIFrameElement; entry: AppResolvedEntry; binding: AppLaunchBinding;hostFrameId:string|null;runtimeScope:{instanceId:string;runtimeOrigin:string}|null } | null = null;
   const relayIdentity = createRelayIdentityBridge({ view, isCurrent: current,
-    getFrame: () => runtime.querySelector('iframe') === relayPeer?.frame ? relayPeer.frame : null,
+    getFrame: () => runtime.querySelector('iframe') === relayPeer?.frame
+      &&(relayPeer.hostFrameId===null||launcher.hostSession()?.hostSession.frameId===relayPeer.hostFrameId)?relayPeer.frame:null,
     getEntry: () => relayPeer?.entry ?? null, getBinding: () => relayPeer?.binding ?? null,
+    getRuntimeScope: () => relayPeer?.runtimeScope ?? null,
+    getHostSession:()=>{const value=launcher.hostSession()?.hostSession;return value&&value.frameId===relayPeer?.hostFrameId
+      ?{frameId:value.frameId,lease:value.lease,revision:value.revision}:null;},
     request: value => options.api.request('apps.relay.identity', { ...value, expectedAccountId: accountId }),
     close: value => options.api.request('apps.relay.identity.close', { ...value, expectedAccountId: accountId }) });
   const readCapturePeer=():ProjectCapturePeer|null=>{
     const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source),frame=runtime.querySelector('iframe');
-    return current()&&!runtimePending&&source&&binding&&frame?.contentWindow&&selectedEntry&&frameGeneration>0
+    return presented()&&!runtimePending&&source&&binding&&frame?.contentWindow&&selectedEntry&&frameGeneration>0
       ?{approved:true,window:frame.contentWindow,origin:selectedEntry.origin,sourceId:source.id,
         appId:app.appId,accountId,generation:frameGeneration,slot:binding.slot,title:app.name}:null;
   };
@@ -460,6 +517,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let renewalFrame:HTMLIFrameElement|null=null;
   let lastRuntimeLaunchAt=0;
   const readRenewBinding=()=>{
+    if(liveAuthorityDenied)return null;
     const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);return binding&&source?{...binding,source}:null;
   };
   const renewal=createScopedSlotRenewal({isCurrent:current,readBinding:readRenewBinding,
@@ -495,8 +553,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let releaseCaptureLease:(()=>void)|null=null;
   const projectCapture=mountProjectCaptureBridge({view,readPeer:readCapturePeer,
     onCaptureActive(active){if(active){releaseCaptureLease??=renewal.beginCaptureLease();}else{releaseCaptureLease?.();releaseCaptureLease=null;}},
-    async preparePeer(signal){if(signal.aborted||!current()||runtimePending)return false;
-      const ready=options.renew?await renewal.ensure(190000):true;return ready&&!signal.aborted&&current()&&!runtimePending;},
+    async preparePeer(signal){if(signal.aborted||!presented()||runtimePending)return false;
+      const ready=options.renew?await renewal.ensure(190000):true;return ready&&!signal.aborted&&presented()&&!runtimePending;},
     async assertPeer(peer,signal){
       const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);
       if(signal.aborted||!current()||!binding||!source||peer.slot!==binding.slot)return false;
@@ -513,13 +571,13 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   runtimeActions.setAttribute('aria-label', 'Восстановление окна приложения');
   runtimeActions.append(recoveryRetry, currentEntryRetry, externalRecovery, dismissRuntimeNotice); message.after(runtimeActions);
   const widgetRuntimeControls = options.presentation === 'widget' ? createWidgetRuntimeControls({
-    view,screen,message,runtime,runtimeActions,current,
+    view,screen,message,runtime,runtimeActions,current:presented,
     capture:()=>{
       const binding=launcher.scopedCapture();return {epoch:displayEpoch,frame:runtime.querySelector('iframe'),
-        scoped:!!binding,slot:binding?.slot,handle:binding?.handle,source:captureSourcePin(binding?.source)};
+        generation:frameGeneration,scoped:!!binding,slot:binding?.slot,handle:binding?.handle,source:captureSourcePin(binding?.source)};
     },
     matchesCapture:value=>{
-      if(!current()||value.epoch!==displayEpoch||value.frame!==runtime.querySelector('iframe'))return false;
+      if(!current()||value.epoch!==displayEpoch||value.generation!==frameGeneration||value.frame!==runtime.querySelector('iframe'))return false;
       const fresh=launcher.scopedCapture();if(!value.scoped||!fresh)return value.scoped===!!fresh;
       const before=value.source,after=captureSourcePin(fresh.source);
       return !!before&&!!after&&value.slot===fresh.slot&&value.handle===fresh.handle
@@ -528,18 +586,18 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     canAct:()=>current()&&!runtimePending,
     createDialog,iconButton,button,el,isFocusTarget:isDialogFocusTarget,
     retry:recoveryRetry,currentEntry:currentEntryRetry,external,dismiss:dismissRuntimeNotice,
-    onModalChange:(modal,open)=>{if(!open||current())options.onModalChange?.(modal,open);},
+    onModalChange:(modal,open)=>{if(!open||presented())options.onModalChange?.(modal,open);},
   }):null;
   const mainRuntimeControls = options.presentation === 'widget' ? null : createWidgetRuntimeControls({
-    presentation:'main',returnTarget:{isCurrent:current,resolve:()=>name},
+    presentation:'main',returnTarget:{isCurrent:presented,resolve:()=>name,...(options.onRequestClose?{requestClose:options.onRequestClose}:{})},
     ...(options.minimalChrome ? {mainControlHost:moreBody} : {}),
-    view,screen,message,runtime,runtimeActions,current,externalRecovery,
+    view,screen,message,runtime,runtimeActions,current:presented,externalRecovery,
     capture:()=>{
       const binding=launcher.scopedCapture();return {epoch:displayEpoch,frame:runtime.querySelector('iframe'),
-        scoped:!!binding,slot:binding?.slot,handle:binding?.handle,source:captureSourcePin(binding?.source)};
+        generation:frameGeneration,scoped:!!binding,slot:binding?.slot,handle:binding?.handle,source:captureSourcePin(binding?.source)};
     },
     matchesCapture:value=>{
-      if(!current()||value.epoch!==displayEpoch||value.frame!==runtime.querySelector('iframe'))return false;
+      if(!current()||value.epoch!==displayEpoch||value.generation!==frameGeneration||value.frame!==runtime.querySelector('iframe'))return false;
       const fresh=launcher.scopedCapture();if(!value.scoped||!fresh)return value.scoped===!!fresh;
       const before=value.source,after=captureSourcePin(fresh.source);
       return !!before&&!!after&&value.slot===fresh.slot&&value.handle===fresh.handle
@@ -548,11 +606,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     canAct:()=>current()&&!runtimePending,
     createDialog,iconButton,button,el,isFocusTarget:isDialogFocusTarget,
     retry:recoveryRetry,currentEntry:currentEntryRetry,external,dismiss:dismissRuntimeNotice,
-    onModalChange:(modal,open)=>{if(!open||current())options.onModalChange?.(modal,open);},
+    onModalChange:(modal,open)=>{if(!open||presented())options.onModalChange?.(modal,open);},
   });
+  if(options.onRequestClose){const closeMain=button('Закрыть приложение','close','sw-button-quiet',()=>{if(!presented())return;closeMore();void mainRuntimeControls?.requestClose();});closeMain.dataset.stageControl='close-runtime';closeRuntimeButton=closeMain;moreBody.append(closeMain);}
   async function openCurrentEntry(): Promise<void> {
-    if (!current() || runtimePending || entryRecoveryPending || currentEntryRetry.hidden || !options.onOpenCurrentEntry) return;
-    const epoch = entryRecoveryEpoch, live = () => current() && epoch === entryRecoveryEpoch;
+    if (!presented() || runtimePending || entryRecoveryPending || currentEntryRetry.hidden || !options.onOpenCurrentEntry) return;
+    const epoch = entryRecoveryEpoch, live = () => presented() && epoch === entryRecoveryEpoch;
     entryRecoveryPending = true; currentEntryRetry.disabled = true;
     try {
       await discussion?.flush(); await feedback?.flush(); await appWork.flush();
@@ -591,7 +650,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   async function navigatePresentation(presentation?: AppLaunchPresentation, focus = false): Promise<void> {
     const generation = ++routeGeneration;
     await discussion?.flush();
-    if (!current() || generation !== routeGeneration) return;
+    if (!presented() || generation !== routeGeneration) return;
     if (discussion?.hasUnsavedChanges()) { showMessage('Скопируйте черновик: браузер пока не смог его сохранить.'); return; }
     const next = routeWith(presentation); options.onNavigate(next); updateRoute(next);
     if (focus) { if (presentation) discussion?.focus(); else focusDiscussionControl(); }
@@ -603,7 +662,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     discuss.setAttribute('aria-expanded', String(visible));
     discuss.setAttribute('aria-pressed', String(visible)); application.setAttribute('aria-pressed', String(!visible));
     runtime.inert = visible && narrow.matches;
-    discussion?.setVisible(visible && host.ownerDocument.visibilityState === 'visible');
+    discussion?.setVisible(visible && presented() && host.ownerDocument.visibilityState === 'visible');
   }
   async function openDiscussion(): Promise<void> {
     if (!current()) return;
@@ -635,7 +694,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(selection.messageId ? { messageId: selection.messageId } : {}),
         ...(selection.administrative ? { administrative: true } : {}) }); },
       onClose: () => { void navigatePresentation(undefined, true); },
-      onReadConfirmed: receipt => { if (current()) options.onDiscussionRead?.(receipt); },
+      onReadConfirmed: receipt => { if (presented()) options.onDiscussionRead?.(receipt); },
       messageLink: (conversationId, messageId) => {
         const url = new URL(view.location.href);
         url.hash = formatAppLaunchRoute(selectedEntry ?? initial.target, selectedEntry ? undefined : initial.communityId, { panel: 'discussion', conversationId, messageId,
@@ -651,18 +710,19 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     selectedEntry = entry;
     field.disabled = false;
     widget.disabled = false;
-    const pinned = routeWith(intent.presentation); options.onNavigate(pinned, { replace: true }); intent = pinned;
+    const pinned = routeWith(intent.presentation); if(presented())options.onNavigate(pinned, { replace: true }); intent = pinned;
     bookmark.hidden = false; savedHost.hidden = false;
     saved = mountAppSaved(savedHost, { api: options.api, accountId, entry, isCurrent: current, asBookmark: true, replacementHost: savedReplacementHost,
-      dialogReturnTarget: { isCurrent: current, resolve: () => !savedReplacementHost.hidden ? savedReplacementHost.querySelector<HTMLButtonElement>('button') ?? more : moreBody.hidden ? more : savedHost.querySelector<HTMLButtonElement>('button') ?? more } });
+      dialogReturnTarget: { isCurrent: presented, resolve: () => !savedReplacementHost.hidden ? savedReplacementHost.querySelector<HTMLButtonElement>('button') ?? more : moreBody.hidden ? more : savedHost.querySelector<HTMLButtonElement>('button') ?? more } });
     if (discussion) void discussion.updateEntry(entry).catch(() => showMessage('Не удалось обновить обсуждение. Откройте его ещё раз.'));
     // A local-only panel is mounted only once resolution has settled. It is
     // never upgraded using a later guess from optional catalogue metadata.
     ensureDiscussion(); showPanel();
-    options.onRemember?.(pinned, app);
+    if(presented())options.onRemember?.(pinned, app);
   }
   function resetRuntimeDisplay(): void {
     runtimeTrace.reset();
+    widgetContext?.dispose();widgetContext=null;delete screen.dataset.widgetContext;
     displayEpoch++; releaseRuntimeDisplay?.(); releaseRuntimeDisplay = null;
     runtime.setAttribute('aria-busy', 'false');
   }
@@ -699,7 +759,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     };
     const loaded = () => { if (live()) { frameGeneration++; stopAssist(); } };
     frame.addEventListener('load', loaded, { signal: controller.signal });
-    const display = createAppRuntimeDisplay({ view, frame, origin: entry!.origin, isCurrent: live, readiness, onChange: state => {
+    const display = createAppRuntimeDisplay({ view, frame, origin: launcher.runtimeOrigin() ?? entry!.origin, isCurrent: live, readiness, onChange: state => {
       if (!live()) return;
       runtime.setAttribute('aria-busy', String(state.busy));
       // Other account/renewal errors own their message and are never erased by
@@ -720,7 +780,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     };
   }
   async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true, diagnosticManual = false): Promise<void> {
-    const alive = () => current() && (!automatic || recoveryCurrent());
+    const authorityEpoch=liveAuthorityEpoch;
+    const alive = () => current() && authorityEpoch===liveAuthorityEpoch && (!automatic || recoveryCurrent());
     if (!alive() || runtimePending) return;
     const existingFrame = runtime.querySelector('iframe');
     if (existingFrame && appWork.requiresCheck()) {
@@ -765,22 +826,66 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       externalAvailability = 'unknown'; external.hidden = true;
       checkExternalAvailability();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
+      const browserOrigin = launcher.runtimeOrigin()!;
       const voiceFrame=nativeVoice?.mount.appId===app.appId&&nativeVoice.mount.parentOrigin===view.location.origin
         &&new URL(url).origin===nativeVoice.mount.frameOrigin&&new URL(url).pathname==='/soty-voice';
       frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(isScopedRuntimeProfile(launcher.runtimeProfile())||voiceFrame?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer';
-      runtimeTrace.attach(frame,launcher.entry()!.origin);
+      runtimeTrace.attach(frame,browserOrigin);
       frame.src = url;
       if(nativeVoice?.mount.appId===app.appId&&nativeVoice.mount.parentOrigin===view.location.origin&&new URL(url).origin===nativeVoice.mount.frameOrigin&&!isScopedRuntimeProfile(launcher.runtimeProfile()))frame.allow='microphone '+nativeVoice.mount.frameOrigin+'; autoplay '+nativeVoice.mount.frameOrigin;
       frameGeneration++;
       lastRuntimeLaunchAt=Date.now();
-      if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
+      if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:browserOrigin,binding:launcher.binding()});
       watchRuntimeDisplay(frame);
       if (relayIdentity.hasActive()) { await relayIdentity.clear(); if (!alive()) return; }
       const peerEntry = launcher.entry(), peerBinding = launcher.latestBinding();
+      hostRenewal?.dispose();hostRenewal=null;
       runtime.replaceChildren(frame);
-      relayPeer = peerEntry && peerBinding ? { frame, entry: peerEntry, binding: peerBinding } : null;
+      if(options.presentation==='widget')widgetContext=createGlassWidgetHost(frame,{origin:browserOrigin,initialMode:widgetMode,view,
+        isCurrent:()=>current()&&runtime.querySelector('iframe')===frame,
+        onReset:()=>{delete screen.dataset.widgetContext;},
+        onReady:()=>{screen.dataset.widgetContext='ready';}});
+      liveAuthorityDenied=false;
+      relayPeer = peerEntry && peerBinding ? { frame, entry: peerEntry, binding: peerBinding,hostFrameId:launcher.hostSession()?.hostSession.frameId??null,
+        runtimeScope:peerEntry.origin!==browserOrigin?{instanceId:options.instanceId??'main',runtimeOrigin:browserOrigin}:null } : null;
       relayIdentity.resume();
-      appWork.attach(frame, launcher.entry()!.origin);
+      appWork.attach(frame, browserOrigin);
+      const hostBinding=launcher.hostSession();
+      if(hostBinding){
+        const slot=hostBinding.slot,authority=liveAuthorityEpoch;
+        const hostCurrent=()=>current()&&authority===liveAuthorityEpoch&&runtime.querySelector('iframe')===frame;
+        hostRenewal=createAppHostSessionRenewal({shellUrl:view.location.href,isCurrent:hostCurrent,
+          schedule:(action,delay)=>view.setTimeout(action,delay),cancel:timer=>view.clearTimeout(timer),
+          ...(options.cleanupForReply?{cleanupForReply:options.cleanupForReply}:{}),
+          readBinding:()=>{const value=launcher.hostSession();return hostCurrent()&&value?.slot===slot?value:null;},
+          context:args=>options.api.request('apps.session.context',{appId:app.appId,...args,expectedAccountId:accountId}),
+          request:args=>options.api.request('apps.session.renew',{appId:app.appId,...args,expectedAccountId:accountId}),
+          confirm:args=>options.api.request('apps.session.confirm',{appId:app.appId,...args,expectedAccountId:accountId}),
+          close:args=>options.api.request('apps.session.close',{appId:app.appId,...args,expectedAccountId:accountId}),
+          commit:(previous,next)=>hostCurrent()&&launcher.commitHostSession(previous,next),
+          bootstrap:(reply,{signal})=>new Promise<void>(resolve=>{
+            const carrier=el('iframe','sa-host-session-carrier');carrier.hidden=true;carrier.tabIndex=-1;carrier.referrerPolicy='no-referrer';
+            carrier.setAttribute('aria-hidden','true');carrier.setAttribute('sandbox','allow-scripts allow-same-origin');
+            let done=false,timer:number|null=null;
+            const finish=()=>{if(done)return;done=true;if(timer!==null)view.clearTimeout(timer);view.removeEventListener('message',receive);
+              signal.removeEventListener('abort',finish);carrier.remove();resolve();};
+            const receive=(event:MessageEvent)=>{const data=event.data;
+              if(hostCurrent()&&event.source===carrier.contentWindow&&event.origin===browserOrigin&&!event.ports?.length
+                &&data&&typeof data==='object'&&!Array.isArray(data)&&Object.keys(data).sort().join(',')==='requestId,schema'
+                &&data.schema==='soty.app-host-session-wakeup.v1'&&data.requestId===reply.hostSessionRequestId)finish();};
+            if(signal.aborted){finish();return;}
+            view.addEventListener('message',receive);signal.addEventListener('abort',finish,{once:true});timer=view.setTimeout(finish,10000);
+            carrier.src=reply.launchUrl;screen.append(carrier);
+          }),
+          onState:(state,error)=>{
+            if(!hostCurrent())return;
+            if(state==='denied'){void denyRuntime(error).catch(()=>{});return;}
+            if(state==='pending'&&(!message.textContent||messageOwner==='runtime'||messageOwner==='renewal'))showMessage('Восстанавливаем соединение…','renewal');
+            else if(state==='confirmed'&&messageOwner==='renewal')showMessage(runtimeDisplay?.snapshot().message??'','runtime');
+            else if(state==='unavailable'&&messageOwner==='renewal')showMessage('Соединение пока недоступно. Повторим при подключении.','renewal');
+          }});
+        hostRenewal.start();
+      }
       runtimeTrace.inserted();
     } catch (reason) {
       relayIdentity.resume();
@@ -835,7 +940,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
             // different, still-mounted conversation. Keep the former panel
             // accessible so the person can copy or resolve its own draft.
             const restored = routeWith(lastVisiblePresentation);
-            intent = restored; options.onNavigate(restored, { replace: true });
+            intent = restored; if(presented())options.onNavigate(restored, { replace: true });
             showMessage('Скопируйте черновик или разрешите его конфликт перед переходом.');
           }
         }
@@ -858,7 +963,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     app = value; name.textContent = value.name; name.title = value.name;
     subtitle.textContent = value.deviceLabel ? `На устройстве «${value.deviceLabel}»` : 'Приложение в Сотах';
     const frame = runtime.querySelector('iframe'); if (frame) frame.title = value.name;
-    settings.hidden = archives.hidden = value.ownerAccountId !== accountId;
+    settings.hidden = archives.hidden = monitoringAction.hidden = value.ownerAccountId !== accountId;
+    if(value.ownerAccountId!==accountId){monitoringOpenEpoch++;monitoringOpening=false;monitoringPanel?.forceClose();monitoringPanel=null;}
     // The discussion already resolves and polls its own exact-entry authority.
     // Late initial metadata and title/device changes must not clear a loaded
     // conversation. Observed grant/policy changes still refresh immediately.
@@ -870,11 +976,74 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     group = value && value.communityId === initial.communityId ? value : null; community.hidden = !group;
     if (group) { community.querySelector('span')!.textContent = group.name; community.setAttribute('aria-label', `Сообщество ${group.name}`); }
   }
+  async function denyRuntime(reason:unknown):Promise<void>{
+        if(!current())return;
+        hostRenewal?.dispose();hostRenewal=null;
+        liveAuthorityDenied=true;liveAuthorityEpoch++;frameGeneration++;runtimePending=false;
+        monitoringOpenEpoch++;monitoringOpening=false;monitoringPanel?.forceClose();monitoringPanel=null;
+        recovery.cancel();entryRecoveryEpoch++;entryRecoveryPending=false;resetRuntimeDisplay();stopAssist();editorHost.close();
+        saved?.setEntryVerified(false);relayPeer=null;
+        const failure=appLaunchFailure(reason);
+        runtime.replaceChildren(emptyState(failure.title,failure.detail,undefined,'app'));
+        name.textContent='Приложение недоступно';name.title='Приложение недоступно';subtitle.textContent='';
+        externalAvailability='unavailable';external.hidden=true;externalRecovery.hidden=true;currentEntryRetry.hidden=true;
+        recoveryRetry.hidden=false;recoveryRetry.disabled=false;refresh.disabled=false;
+        showMessage(`${failure.title}. ${failure.detail}`);showPanel();
+        // The discussion owns account-local drafts and rechecks its own exact-entry authority.
+        await Promise.allSettled([relayIdentity.clear(),discussion?.refresh()]);
+  }
+  async function invalidateLive(invalidation?:{reset:boolean}):Promise<void>{
+    if(invalidation?.reset)relayIdentity.reset();
+    const sequence=++liveReadSequence,entry=selectedEntry?{...selectedEntry}:null;
+    await refreshAppStageLive({api:options.api,accountId,appId:app.appId,entry,
+      isCurrent:()=>current()&&sequence===liveReadSequence,readEntry:()=>selectedEntry,
+      onMetadata:value=>updateApp({...app,...value}),
+      async onDenied(reason){if(current()&&sequence===liveReadSequence)await denyRuntime(reason);}});
+  }
+  async function resume(next:AppLaunchIntent):Promise<boolean>{
+    await ready;if(!current()||!matches(next))return false;
+    await invalidateLive();if(!current()||liveAuthorityDenied)return false;
+    const frame=runtime.querySelector('iframe'),generation=frameGeneration,hostBinding=launcher.hostSession(),scoped=launcher.scopedCapture();
+    const sameScoped=()=>{const after=launcher.scopedCapture(),beforePin=captureSourcePin(scoped?.source),afterPin=captureSourcePin(after?.source);
+      return scoped===null?after===null:!!after&&after.slot===scoped.slot&&after.handle===scoped.handle&&after.frameId===scoped.frameId
+        &&!!beforePin&&!!afterPin&&beforePin.id===afterPin.id&&beforePin.version===afterPin.version&&beforePin.digest===afterPin.digest;};
+    const fresh=()=>current()&&runtime.querySelector('iframe')===frame&&frameGeneration===generation
+      &&(hostBinding?launcher.hostSession()===hostBinding:sameScoped());
+    if(!frame){if(!runtimeStarted)return true;throw Error('app_resume_unavailable');}
+    try{
+      if(hostBinding){
+        const proof=hostBinding.hostSession,value=await options.api.request<Record<string,unknown>>('apps.session.context',
+          {expectedAccountId:accountId,appId:app.appId,frameId:proof.frameId,lease:proof.lease,revision:proof.revision,currentEntryPath:hostBinding.entry.path});
+        if(!fresh())throw Error('app_resume_stale');
+        const session=validateAppHostSession(value.hostSession),pin=validateAppLaunchBinding(value.launchBinding),entry=validateAppEntry(value.entry,
+          {appId:hostBinding.entry.appId,domainId:hostBinding.entry.domainId,path:hostBinding.entry.path},view.location.href);
+        if(Object.keys(value).some(key=>!['ok','schema','state','hostSession','hostSessionExpiresAt','entry','launchBinding','runtimeOrigin'].includes(key))
+          ||value.ok!==undefined&&value.ok!==true||value.schema!=='soty.app-host-session-context.v1'||!['current','renew-required','admitting'].includes(String(value.state))
+          ||session.frameId!==proof.frameId||session.lease!==proof.lease||session.revision!==proof.revision||session.expiresAt<Date.now()||session.expiresAt<proof.expiresAt
+          ||entry.origin!==hostBinding.entry.origin||value.runtimeOrigin!==hostBinding.runtimeOrigin||!sameAppLaunchBinding(pin,hostBinding.launchBinding))throw Error('app_resume_invalid_context');
+        if(value.state==='current'){if(!Number.isSafeInteger(value.hostSessionExpiresAt)||Number(value.hostSessionExpiresAt)<=Date.now()||Number(value.hostSessionExpiresAt)>session.expiresAt)throw Error('app_resume_invalid_context');return true;}
+        if(value.hostSessionExpiresAt!==null)throw Error('app_resume_invalid_context');
+        if(value.state==='admitting')return true;
+        if(!await hostRenewal?.renew('reset'))throw Error('app_resume_unconfirmed');return current()&&!liveAuthorityDenied&&runtime.querySelector('iframe')===frame&&frameGeneration===generation;
+      }
+      const source=captureSourcePin(scoped?.source);if(!scoped||!source)throw Error('app_resume_unavailable');
+      const context=await options.api.request<unknown>('apps.scoped.context',{expectedAccountId:accountId,appId:app.appId,handle:scoped.handle});
+      if(!fresh())throw Error('app_resume_stale');
+      if(!matchesScopedCaptureContext(context,{appId:app.appId,source}))throw Error('app_resume_invalid_context');return true;
+    }catch(error){
+      if(!fresh())throw Error('app_resume_stale');
+      const code=error&&typeof error==='object'&&'code'in error?String(error.code):'';
+      if(['apps_access_denied','app_access_revoked','app_policy_changed','app_source_changed','app_host_session_changed','app_host_session_closed','scoped_embed_source_changed','scoped_embed_authority_changed'].includes(code)){
+        await denyRuntime(error);return false;
+      }
+      throw error;
+    }
+  }
   host.ownerDocument.addEventListener('pointerdown', event => {
-    if (!moreBody.hidden && event.target instanceof view.Node && !moreHost.contains(event.target)) closeMore();
+    if (!moreBody.hidden && event.target instanceof view.Node && !moreHost.contains(event.target)&&!moreSheet?.element.contains(event.target)) closeMore();
   }, { signal: controller.signal });
   host.ownerDocument.addEventListener('keydown', event => {
-    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !current()) return;
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !presented()) return;
     if (!moreBody.hidden) { event.preventDefault(); closeMore(true); return; }
     if (runtimeActions.contains(host.ownerDocument.activeElement) && runtimeDisplay?.dismiss()) { event.preventDefault(); name.focus(); return; }
     if (options.minimalChrome && !host.ownerDocument.querySelector('dialog[open]') && !screen.matches(':fullscreen') && !screen.classList.contains('is-window-expanded')
@@ -890,26 +1059,29 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   view.visualViewport?.addEventListener('scroll', fitMore, { signal: controller.signal });
   view.addEventListener('message', event => {
     if (isAppExternalRequest(event, { frameWindow: runtime.querySelector('iframe')?.contentWindow ?? null,
-      origin: selectedEntry?.origin, current: current(), activated: view.navigator.userActivation?.isActive === true })) external.click();
+      origin: launcher.runtimeOrigin() ?? selectedEntry?.origin, current: presented(), activated: view.navigator.userActivation?.isActive === true })) external.click();
   }, { signal: controller.signal });
   updateApp(app);
   // A ready descriptor keeps admission synchronous; pending host voice metadata
   // waits in this stage while the field and optional app metadata stay usable.
   const ready = initial.presentation ? openDiscussion() : launchRuntime();
-  return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
+  return { ready, matches, updateRoute, updateApp, updateCommunity, invalidateLive,
+    resume,renewHostSession:reason=>{if(reason==='reset')relayIdentity.reset();return hostRenewal?.renew(reason)??Promise.resolve(false);},entry: () => current() ? selectedEntry : null,
     mountRuntimeControls:(header,owner)=>widgetRuntimeControls?.attach(header,owner)??false,
+    setWidgetMode(mode){widgetMode=mode;widgetContext?.setMode(mode);},
+    syncPresentation(){showPanel();if(presented()){syncShortToolbar();void monitoringPanel?.resume();}else{monitoringOpenEpoch++;monitoringOpening=false;monitoringPanel?.suspend();closeMore();stopAssist();closeDiagnostic?.();void fullscreen.leave();}},
     browserAssist: () => current() && assistOn ? assist : null,
     openProjectEditor:(artifact,request)=>editorHost.open(artifact,request),
     assistantContext: () => {
-      if (!current() || !selectedEntry) return null;
+      if (!current() || !selectedEntry || liveAuthorityDenied) return null;
       const binding = launcher.scopedCapture();
       return { appId: app.appId, name: app.name, path: selectedEntry.path.split(/[?#]/u)[0]!, status: app.status,
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
-    flush: async () => { await discussion?.flush(); await feedback?.flush(); await appWork.flush(); },
-    hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges() || appWork.hasUnsavedChanges(),
-    requiresCloseCheck: () => appWork.requiresCheck(),
-    hasUnconfirmedWork: () => appWork.hasUnconfirmedWork(),
-    dispose() { if (disposed) return; relayIdentity.dispose(); appWork.dispose(); editorHost.close(); mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    flush: async (flushOptions) => { await monitoringPanel?.flush({allowDurablePending:flushOptions?.allowMonitoringDurablePending===true});await discussion?.flush(); await feedback?.flush(); if(!liveAuthorityDenied)await appWork.flush(); },
+    hasUnsavedChanges: () => !!monitoringPanel?.hasUnsavedChanges()||!!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges() || !liveAuthorityDenied&&appWork.hasUnsavedChanges(),
+    requiresCloseCheck: () => !liveAuthorityDenied&&appWork.requiresCheck(),
+    hasUnconfirmedWork: () => !!monitoringPanel?.hasUnconfirmedWork()||!!runtime.querySelector('iframe')&&!appWork.requiresCheck(),
+    dispose() { if (disposed) return;monitoringPanel?.forceClose();monitoringPanel=null;closeMore(); hostRenewal?.dispose();hostRenewal=null;relayIdentity.dispose(); appWork.dispose(); editorHost.close(); mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

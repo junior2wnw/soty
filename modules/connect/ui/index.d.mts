@@ -1,5 +1,5 @@
 export interface ConnectIntent { kind: 'contact' | 'device'; id: string; }
-export type ConnectTab = 'profile' | 'people' | 'devices' | 'recovery' | 'data' | 'profiles';
+export type ConnectTab = 'profile' | 'people' | 'devices' | 'recovery' | 'data' | 'profiles' | 'connect';
 export function parseConnectLink(value: string, origin?: string): ConnectIntent | null;
 export function openConnectPanel(options: {
   client: unknown; label?: string; productName?: string;
@@ -10,8 +10,10 @@ export function openConnectPanel(options: {
   onRename?: (label: string) => void | Promise<void>;
   onEditProfile?: () => void;
   onOpenDataTools?: () => void | Promise<void>;
+  /** Host work-safety only. Provided hooks must return true; unknown destinations stay null until SDK verification. */
+  beforeProfileChange?: (change:{fromAccountId:string|null;toAccountId:string|null}) => boolean | Promise<boolean>;
   onContactCall?: (contact: { peerAccountId: string; label: string }) => void | Promise<void>;
   onContactMessage?: (contact: { peerAccountId: string; relationshipId: string; label: string }) => void | Promise<void>;
   snapshotDescription?: string; initialIntent?: ConnectIntent | null; initialTab?: ConnectTab;
   bootstrapOnOpen?: boolean;
-}): { close(): void; refresh(): Promise<void> };
+}): { readonly element: HTMLDialogElement; close(): void; refresh(): Promise<void> };

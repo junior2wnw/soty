@@ -171,7 +171,7 @@ test('all nine independent empty/v1/v2 pairs are read-only and disclose only for
     const result = await readStorageFormat(root); assert.deepEqual(result, currentObservation(format(notes, capabilities)));
     assertStorageCompatible({ Id: 'sha256:' + '1'.repeat(64), Config: { Labels: { [storageReaderLabel]: currentStorageReaders } } }, result);
     assert.deepEqual(await Promise.all(Object.keys(stores).map(store => persistent(root, store))), before);
-    assert.deepEqual(Object.keys(result).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'ok', 'rooms', 'schema', 'world']);
+    assert.deepEqual(Object.keys(result).sort(), ['appAgentDirectory', 'appRegistration', 'apps', 'appsEndpoint', 'appsFrameContinuity', 'canvasObjects', 'canvasPages', 'canvasVault', 'canvasWidgets', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'invitations', 'materials', 'monitoring', 'notes', 'ok', 'referrals', 'rooms', 'schema', 'universalPublication', 'world']);
   }
 });
 

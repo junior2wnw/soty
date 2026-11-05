@@ -62,6 +62,12 @@ function selectedWire(value) {
     profileCount: value.profileCount, registryDigest: value.registryDigest,
     ...(value.resourceMigrationConfigured===undefined?{}:{resourceMigrationConfigured:value.resourceMigrationConfigured}) };
 }
+function monitoringWire(value) {
+  record(value, ['mode', 'schemaVersion', 'installed']);
+  check(['reader', 'writer'].includes(value.mode) && value.schemaVersion === 1 && typeof value.installed === 'boolean'
+    && (value.mode !== 'writer' || value.installed));
+  return { mode: value.mode, schemaVersion: value.schemaVersion, installed: value.installed };
+}
 /** Static reviewed Source pins only; neither liveness nor a native project grant. */
 export function captureSelectedPreparedness({ profiles = [], migrationConfigured = false,resourceMigrationConfigured } = {}) {
   check(Array.isArray(profiles) && profiles.length <= 64 && typeof migrationConfigured === 'boolean');
@@ -76,18 +82,20 @@ export function captureSelectedPreparedness({ profiles = [], migrationConfigured
 /** Sanitize an exact bounded measurement, never turn its metadata into authority. */
 export function validateUniversalPreparedness(value) {
   try {
-    record(value, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews'], ['selected']);
+    record(value, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews'], ['selected', 'monitoring']);
     check(value.schema === UNIVERSAL_RUNTIME_SCHEMA && [value.compiledLegacyMode, value.universalConfigured, value.reviewsConfigured, value.humanHttpEnabled]
       .every(item => typeof item === 'boolean'));
     const human = humanWire(value.human), reviews = reviewsWire(value.reviews);
     const selected = value.selected === undefined ? undefined : selectedWire(value.selected);
+    const monitoring = value.monitoring === undefined ? undefined : monitoringWire(value.monitoring);
     check(value.humanHttpEnabled === human.configured && (!value.reviewsConfigured || value.universalConfigured)
       && (!value.humanHttpEnabled || value.universalConfigured)
       && (!value.compiledLegacyMode || !value.universalConfigured && !value.reviewsConfigured && !value.humanHttpEnabled)
       && (value.reviewsConfigured || reviews.providerCount === 0 && reviews.bindingCount === 0));
     check(!selected || value.universalConfigured && !value.compiledLegacyMode && (!selected.configured || value.humanHttpEnabled));
     const result = { schema: value.schema, compiledLegacyMode: value.compiledLegacyMode, universalConfigured: value.universalConfigured,
-      reviewsConfigured: value.reviewsConfigured, humanHttpEnabled: value.humanHttpEnabled, human, reviews, ...(selected ? { selected } : {}) };
+      reviewsConfigured: value.reviewsConfigured, humanHttpEnabled: value.humanHttpEnabled, human, reviews, ...(selected ? { selected } : {}),
+      ...(monitoring ? { monitoring } : {}) };
     check(Buffer.byteLength(canonicalJson(result)) <= UNIVERSAL_RUNTIME_MAX_BYTES); return freezeDeep(result);
   } catch { throw new UniversalPreparednessError(); }
 }
@@ -124,7 +132,7 @@ export function captureHumanPreparedness(profile) {
 /** Pure host measurement after service/HTTP construction. No IO, DB, network or deployment imports. */
 export function captureUniversalPreparedness({ compiledLegacyMode, universalConfigured, reviewsConfigured,
   humanProfile, humanHttpEnabled, reviewsPreparedness, reviewsConfiguration = { providers: [], bindings: [] },
-  selectedProfiles = [], selectedMigrationConfigured = false, selectedResourceMigrationConfigured,selectedRegistryConfigured = false }) {
+  selectedProfiles = [], selectedMigrationConfigured = false, selectedResourceMigrationConfigured,selectedRegistryConfigured = false, monitoring }) {
   let service;
   try {
     let reviews;
@@ -139,6 +147,7 @@ export function captureUniversalPreparedness({ compiledLegacyMode, universalConf
     check(typeof selectedRegistryConfigured === 'boolean' && typeof selectedMigrationConfigured === 'boolean' && Array.isArray(selectedProfiles));
     return validateUniversalPreparedness({ schema: UNIVERSAL_RUNTIME_SCHEMA, compiledLegacyMode, universalConfigured, reviewsConfigured,
       humanHttpEnabled, human: captureHumanPreparedness(humanProfile), reviews,
+      ...(monitoring === undefined ? {} : { monitoring }),
       ...(selectedProfiles.length || selectedMigrationConfigured || selectedRegistryConfigured || selectedResourceMigrationConfigured!==undefined ? {
         selected: captureSelectedPreparedness({ profiles: selectedProfiles, migrationConfigured: selectedMigrationConfigured,
           ...(selectedResourceMigrationConfigured===undefined?{}:{resourceMigrationConfigured:selectedResourceMigrationConfigured}) }),

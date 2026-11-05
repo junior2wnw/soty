@@ -150,38 +150,61 @@ export async function captureSelectedDisplay(maxBytes, signal) {
   } finally { stop(); video.srcObject = null; signal?.removeEventListener('abort', stop); }
 }
 
-export function createFeedbackRecorder({ maxBytes, maxSeconds = 120, signal, onTick = () => {} }) {
-  let stream = null, recorder = null, timer, cancelled = false, ended = false, rejectResult;
-  const stopTracks = () => { stream?.getTracks().forEach(track => track.stop()); stream = null; clearInterval(timer); };
-  const cancel = () => { cancelled = true; if (recorder?.state === 'recording') recorder.stop(); stopTracks(); rejectResult?.(new DOMException('Cancelled', 'AbortError')); };
-  signal?.addEventListener('abort', cancel, { once: true });
+export function createFeedbackRecorder({ maxBytes, maxSeconds = 120, signal, onTick = () => {}, output = 'attachment' }) {
+  let stream = null, recorder = null, timer, deadline, cancelled = false, ended = false, started = false, rejectResult;
+  let startedAt = 0;
+  const now = () => performance.now();
+  const stopTracks = () => { stream?.getTracks().forEach(track => track.stop()); stream = null; clearInterval(timer); clearTimeout(deadline); };
+  const stop = () => { if (recorder?.state === 'recording') recorder.stop(); };
+  const cancel = () => { cancelled = true; stop(); stopTracks(); rejectResult?.(new DOMException('Cancelled', 'AbortError')); };
   async function start() {
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined'
-      || typeof MediaRecorder.isTypeSupported !== 'function') throw new Error('feedback_record_unavailable');
-    aborted(signal);
-    // Match the actual server's bounded Opus profile before requesting a mic.
-    const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus'].find(value => MediaRecorder.isTypeSupported(value));
-    if (!mime) throw new Error('feedback_record_unavailable');
+    if (started) throw new Error('feedback_record_failed');
+    started = true;
+    signal?.addEventListener('abort', cancel, { once: true });
     try {
+      if (!globalThis.navigator?.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined'
+        || typeof MediaRecorder.isTypeSupported !== 'function') throw new Error('feedback_record_unavailable');
+      aborted(signal); if (cancelled) throw new DOMException('Cancelled', 'AbortError');
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || !Number.isFinite(maxSeconds) || maxSeconds <= 0
+        || !['attachment', 'blob'].includes(output)) throw new Error('feedback_record_failed');
+      // Match the actual server's bounded Opus profile before requesting a mic.
+      const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus'].find(value => MediaRecorder.isTypeSupported(value));
+      if (!mime) throw new Error('feedback_record_unavailable');
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (cancelled || signal?.aborted) { stopTracks(); throw new DOMException('Cancelled', 'AbortError'); }
       recorder = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 48000 });
       return await new Promise((resolve, reject) => {
         rejectResult = reject; const parts = []; let bytes = 0, seconds = 0, overflow = false;
         recorder.ondataavailable = event => { if (!event.data.size || cancelled) return; bytes += event.data.size;
-          if (bytes > maxBytes) { overflow = true; if (recorder.state === 'recording') recorder.stop(); } else parts.push(event.data); };
-        recorder.onerror = () => { stopTracks(); reject(new Error('feedback_record_failed')); };
+          if (bytes > maxBytes) { overflow = true; stop(); } else parts.push(event.data); };
+        recorder.onerror = () => { stop(); stopTracks(); reject(new Error('feedback_record_failed')); };
         recorder.onstop = async () => {
           stopTracks(); ended = true;
           try { if (cancelled || signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
+            // A suspended page cannot enforce a wall-clock stop while JS is frozen.
+            // Never return an overlong capture as if it met the advertised limit.
+            if (now() - startedAt > maxSeconds * 1000) throw new Error('feedback_record_failed');
             if (overflow) throw new Error('feedback_attachment_bytes'); if (!parts.length) throw new Error('feedback_record_empty');
-            resolve(await blobAttachment(new Blob(parts, { type: mime.split(';')[0] }), 'audio', 'voice.' + mime.split('/')[1].split(';')[0], signal));
+            const blob = new Blob(parts, { type: mime.split(';')[0] });
+            resolve(output === 'blob' ? blob : await blobAttachment(blob, 'audio', 'voice.' + mime.split('/')[1].split(';')[0], signal));
           } catch (error) { reject(error); }
         };
-        recorder.start(500); onTick(0);
-        timer = setInterval(() => { onTick(++seconds); if (seconds >= maxSeconds && recorder.state === 'recording') recorder.stop(); }, 1000);
+        startedAt = now(); recorder.start(500); onTick(0);
+        if (!cancelled && recorder.state === 'recording') {
+          timer = setInterval(() => {
+            const elapsed = Math.max(0, now() - startedAt), next = Math.min(maxSeconds, Math.floor(elapsed / 1000));
+            if (next !== seconds) { seconds = next; onTick(seconds); }
+            if (elapsed >= maxSeconds * 1000) stop();
+          }, 250);
+          // Reserve a quarter-second for normal task scheduling/codec buffering.
+          deadline = setTimeout(stop, Math.max(0, maxSeconds * 1000 - Math.min(250, maxSeconds * 100)));
+        }
       });
-    } finally { ended = true; stopTracks(); signal?.removeEventListener('abort', cancel); }
+    } finally {
+      ended = true; stop(); stopTracks(); signal?.removeEventListener('abort', cancel);
+      if (recorder) { recorder.ondataavailable = recorder.onerror = recorder.onstop = null; recorder = null; }
+      rejectResult = null;
+    }
   }
-  return { start, stop() { if (recorder?.state === 'recording') recorder.stop(); }, cancel, active: () => !ended && !!stream };
+  return { start, stop, cancel, active: () => !ended && !!stream };
 }

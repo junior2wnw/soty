@@ -15,7 +15,7 @@ type Identity = { accountId: string; deviceId: string } | null;
 type Pending = { generation: number; identity: Identity; retries: number };
 // Binding ownership only, not authority or a cross-instance resource quota.
 const bound = new WeakSet<CallIdentityLifecycle>();
-const viewKeys = ['schema', 'accountId', 'deviceId', 'label', 'current', 'profiles', 'pendingEnrollment', 'pendingRecovery', 'recoveryPrepared', 'notificationError'];
+const viewKeys = ['schema', 'localRevision', 'accountId', 'deviceId', 'label', 'current', 'profiles', 'pendingEnrollment', 'pendingRecovery', 'recoveryPrepared', 'notificationError'];
 const profileKeys = ['accountId', 'deviceId', 'label', 'active', 'revoked', 'vaultRevision', 'createdAt'];
 
 function fields(value: unknown, allowed: string[]): Record<string, unknown> | null {
@@ -36,6 +36,8 @@ const id = (value: unknown): value is string => typeof value === 'string' && val
 function identity(value: unknown): Identity {
   const view = fields(value, viewKeys), current = fields(view?.current, profileKeys);
   if (!view || view.schema !== 'connect.local-view.v1' || view.notificationError !== null || !current
+    // Older public views omit metadata; an active current SDK view has a committed revision.
+    || Object.hasOwn(view, 'localRevision') && (typeof view.localRevision !== 'number' || !Number.isSafeInteger(view.localRevision) || view.localRevision < 0)
     || !id(view.accountId) || !id(view.deviceId) || current.accountId !== view.accountId || current.deviceId !== view.deviceId
     || current.active !== true || current.revoked !== false) return null;
   return Object.freeze({ accountId: view.accountId, deviceId: view.deviceId });

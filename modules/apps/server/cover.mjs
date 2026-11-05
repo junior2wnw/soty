@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { appId, assertApps, textId } from './protocol.mjs';
 import { runtimeTargetDigest, selectedRuntimeProfile, supportedRuntimeProfile } from './schema.mjs';
 import { synchronous } from './engagement-transaction.mjs';
+import {targetFromRow} from './endpoint-targets.mjs';
 
 export const appCoverOperations = new Set(['apps.cover.status','apps.cover.prepare','apps.cover.prepareFromVersion',
   'apps.cover.commit','apps.cover.restore','apps.cover.remove','apps.cover.read','apps.cover.versions','apps.cover.cancel']);
@@ -46,9 +47,7 @@ export function createAppCoverAdapter({ db, assertActor, withAuthorityFence, res
     const policy = db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(id);
     const target = policy && db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(id, policy.active_target_revision);
     assertApps(policy && target && policy.owner_account_id === app.owner_account_id && target.owner_account_id === app.owner_account_id
-      && supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest({ appId: id, revision: target.revision,
-        ownerAccountId: app.owner_account_id, connectorKey: target.connector_key, port: target.port,
-        entryPath: target.entry_path, profile: target.profile })
+      && supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest(targetFromRow(db,target))
       && db.prepare('SELECT owner_account_id FROM app_devices WHERE connector_key=?').get(target.connector_key)?.owner_account_id === app.owner_account_id,
     'apps_registry_corrupt', 500);
     let entry = resolveEntry({ actor, appId: id });

@@ -36,7 +36,7 @@ function fixture(config = {}) {
   const state = { camera: { x: 40, y: -20, scale: .7 }, changes: 0, commits: 0, inspections: [], activations: [],
     previews: 0, moves: 0, rejectCapture: false, missing: false };
   let gesture = null, pinch = null, pendingPointer = null, inPointerFrame = false, moving = null, contextPreview = null,
-    suppressClickUntil = 0, destroyed = false, arranging = false, selectedId = 'first', lastInspection = null;
+    suppressClickUntil = 0, destroyed = false, arranging = false, selectedId = 'first', lastInspection = null,spacePanning=false,objectFocus=config.focusedShortcut?{shortcutId:config.focusedShortcut}:null;
   const pointers = new Map(), captures = new Set(), timers = new Map(); let timer = 0, now = 1000;
   const performance = { now: () => now };
   const setTimeout = (callback, delay) => { timers.set(++timer, { callback, delay }); return timer; }, clearTimeout = id => timers.delete(id);
@@ -63,10 +63,12 @@ function fixture(config = {}) {
   viewport.releasePointerCapture = id => captures.delete(id);
   viewport.contains = node => { for (let item = node; item; item = item.parentElement) if (item === viewport) return true; return false; };
   const target = new Element('node', viewport); target.dataset = { shortcutId: 'first', preview: String(!!config.preview) };
-  const node = { shortcutId: 'first', contextId: 'space', slot: [0, 0], kind: 'app', entity: { entity: { kind: 'app', id: 'app' }, title: 'Application' } };
+  const node = { shortcutId: 'first', contextId: 'space', slot: [0, 0], kind: 'app',x:-100,y:-120,width:200,height:240,entity: { entity: { kind: 'app', id: 'app' }, title: 'Application' } };
+  const fieldDocument={contexts:[{contextId:'space'}],shortcuts:[{shortcutId:'first'}]};
   const nodeElements = new Map([['first', target]]);
   const layout = { nodes: [node], contexts: [{ contextId: 'space', x: 0, y: 0, body: { left: -10000, right: 10000, top: -10000, bottom: 10000 } }] };
   const available = id => !state.missing && id === node.shortcutId ? node : undefined;
+  const activeNode=available;
   const camera = () => state.camera, viewportSize = () => ({ width: 390, height: 620 });
   const setCamera = next => { state.camera = normalizeFieldCamera(next); state.changes++; };
   const render = () => {}, emit = () => {}, schedule = () => {}, announce = () => {}, remember = () => {};
@@ -179,6 +181,10 @@ test('preview-sized nodes retain zoom-to-preview context behavior, and absent in
   assert.equal(p.event('context').defaultPrevented, true); assert.equal(p.state.previews, 1); assert.equal(p.state.inspections.length, 0);
   const f = fixture({ inspect: false }); f.event('down'); f.fireTimers(); f.event('up');
   assert.equal(f.state.inspections.length, 0); assert.equal(f.snapshot().arranging, false); assert.equal(f.state.moves, 0); assert.equal(f.state.commits, 0); clean(f);
+});
+test('a tiny object already in readable focus opens its real inspector; another object focus cannot bypass preview sizing',()=>{
+  const focused=fixture({preview:true,focusedShortcut:'first'});focused.event('context');assert.equal(focused.state.inspections.length,1);assert.equal(focused.state.previews,0);
+  const other=fixture({preview:true,focusedShortcut:'other'});other.event('context');assert.equal(other.state.inspections.length,0);assert.equal(other.state.previews,1);
 });
 
 test('background double click zooms around its actual pointer without an activation, delayed click or layout write', () => {

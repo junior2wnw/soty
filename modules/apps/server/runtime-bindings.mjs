@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, runtimePath, textId, connectorKey, FRAME_BYTES } from './protocol.mjs';
 import { RUNTIME_PROFILE, selectedRuntimeProfile, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
+import { SELF_IP_PROFILE, ENDPOINT_SCHEMA, normalizeSelfEndpoint } from './endpoint-targets.mjs';
 
 export const RUNTIME_BINDING_LIMITS = Object.freeze({ apps: 100, pending: 4, ackMs: 5_000, preparationMs: 30_000, sendBytes: 4 * 1024 * 1024 });
 const controlTypes = new Set(['binding-ack', 'binding-rejected', 'bound-observation', 'target-prepared', 'target-rejected']);
-const bindingErrors = new Set(['invalid_app_port', 'invalid_app_path', 'unsupported_profile']);
+const bindingErrors = new Set(['invalid_app_port', 'invalid_app_path', 'unsupported_profile', 'apps_endpoint_interface_unavailable']);
 const preparationErrors = new Set([...bindingErrors, 'app_prepare_busy']);
 const nonce = () => randomBytes(32).toString('base64url');
 const opaque = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value);
@@ -15,7 +16,7 @@ const shape = (value, keys) => value && typeof value === 'object' && !Array.isAr
 const pins = target => ({ appId: target.appId, revision: target.revision, digest: target.digest, profile: target.profile });
 const pinsMatch = (value, target) => value.appId === target.appId && value.revision === target.revision && value.digest === target.digest && value.profile === target.profile;
 const fingerprint = target => JSON.stringify([target.appId, target.revision, target.ownerAccountId, target.connectorKey,
-  target.port, target.entryPath, target.profile, target.digest]);
+  target.port, target.entryPath, target.profile, target.digest, target.endpoint ?? null]);
 
 /** Socket-owned configuration admission. Database authority remains with the
  * caller; an ACK is configuration evidence, never HTTP health or permission. */
@@ -55,11 +56,16 @@ export function createRuntimeBindings({ channels, send, now = Date.now, blockedP
     assertApps(positive(value.revision) && digest(value.digest) && value.connectorKey === state.key
       && typeof value.profile === 'string' && value.profile.length <= 80 && typeof value.entryPath === 'string'
       && value.entryPath.length <= 8192 && Number.isSafeInteger(value.port), 'app_invalid_binding_target', 500);
+    const endpoint = value.profile === SELF_IP_PROFILE ? normalizeSelfEndpoint(value.endpoint) : undefined;
+    assertApps(endpoint ? value.schema === ENDPOINT_SCHEMA : value.schema === undefined && value.endpoint === undefined, 'app_invalid_binding_target', 500);
     const target = Object.freeze({ appId: id, revision: value.revision, ownerAccountId, connectorKey: state.key,
-      port: value.port, entryPath: value.entryPath, profile: value.profile, digest: value.digest });
+      port: value.port, entryPath: value.entryPath, profile: value.profile, digest: value.digest,
+      ...(endpoint ? { schema: ENDPOINT_SCHEMA, endpoint } : {}) });
     assertApps(target.digest === runtimeTargetDigest(target), 'app_invalid_binding_digest', 500);
     let error = null;
-    if (target.profile !== RUNTIME_PROFILE) {
+    if (target.profile === SELF_IP_PROFILE) {
+      if (!state.channel.runtimeProfiles?.includes(SELF_IP_PROFILE)) error = 'unsupported_profile';
+    } else if (target.profile !== RUNTIME_PROFILE) {
       try {
         if (!selectedRuntimeProfile(target.profile) || !state.channel.runtimeProfiles?.includes(target.profile)
           || typeof scopedTarget !== 'function' || scopedTarget(target, { candidate }) !== true) error = 'unsupported_profile';
@@ -273,6 +279,13 @@ export function createRuntimeBindings({ channels, send, now = Date.now, blockedP
     for (const state of [...activeStates]) try { drop(state.channel); } catch (error) { firstError ??= error; }
     if (firstError) throw firstError;
   }
+  function refreshRejected(channel) {
+    const state = states.get(channel); if (!state || !current(state)) return;
+    for (const entry of state.bindings.values()) {
+      if (entry.target.profile === SELF_IP_PROFILE && !channel.selfInventory?.addresses.some(item => item.address === entry.target.endpoint.address)) invalidate(state, entry);
+      else if (entry.status === 'rejected') entry.status = 'unavailable';
+    }
+  }
   return Object.freeze({ sync, handleFrame, requireBinding, assertBindingCurrent, openPins, getState,
-    prepareTarget, verifyPreparedTarget, drop, close });
+    prepareTarget, verifyPreparedTarget, refreshRejected, drop, close });
 }

@@ -13,6 +13,9 @@ import { createCapabilitiesService } from '../../modules/capabilities/server/ind
 import { createPublicDiscovery } from '../../modules/capabilities/server/discovery.mjs';
 import { fixtureDocumentation } from '../../modules/capabilities/test/support/documentation.mjs';
 import { AccessError } from '../../modules/capabilities/server/validation.mjs';
+import {buildCapabilitiesOpenApi} from '../capabilities-openapi.js';
+import {createMcpTools,capabilityMcpToolCatalog} from '../capabilities-mcp-tools.js';
+import {APP_AGENT_DIRECTORY_MCP_TOOLS} from '../app-agent-directory-mcp.js';
 
 const BASE = '/api/capabilities/v1';
 const NOTE = `${BASE}/catalog/notes.createDraft/versions/1`;
@@ -31,7 +34,7 @@ function directory(t) {
   return folder;
 }
 
-async function fixture(t, { entries = BUILTIN_CAPABILITIES, origin = 'https://soty.test', full = false, view } = {}) {
+async function fixture(t, { entries = BUILTIN_CAPABILITIES, origin = 'https://soty.test', full = false, view,openApi,mcpTools } = {}) {
   const folder = directory();
   let app;
   const server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
@@ -52,7 +55,7 @@ async function fixture(t, { entries = BUILTIN_CAPABILITIES, origin = 'https://so
   } else {
     app = express(); app.disable('x-powered-by');
     const catalog = view || createPublicDiscovery({ catalog: createCatalog(entries), documentation: fixtureDocumentation(entries) });
-    attachCapabilitiesDiscovery(app, { catalog, origin });
+    attachCapabilitiesDiscovery(app, { catalog, origin,...(openApi?{openApi}:{}),...(mcpTools?{mcpTools}:{}) });
     app.use((_req, res) => res.status(200).send('ROOT_SPA_MARKER'));
   }
   const call = (target, { method = 'GET', headers = {} } = {}) => new Promise((done, reject) => {
@@ -245,4 +248,17 @@ test('HTTP output bounds and unexpected errors fail closed without leaking inter
   assert.deepEqual(large.json(), { error: { code: 'projection_too_large' } }); assert.equal(large.headers.etag, undefined);
   const error = await f.call(NOTE); assert.equal(error.status, 500);
   assert.deepEqual(error.json(), { error: { code: 'internal_error' } }); assert.ok(!error.text.includes('SENSITIVE_INTERNAL_MARKER'));
+});
+
+test('public MCP inventory uses the exact mounted tool catalog; old static metadata is a failing control',async t=>{
+  const service={authenticateCredential(){assert.fail('listing metadata never authenticates or grants execution');}},directoryMcp={tools:APP_AGENT_DIRECTORY_MCP_TOOLS};
+  const mounted=createMcpTools({service,operations:{},context:{origin:'https://soty.test'},directoryMcp}).list({}).tools;
+  const catalog=capabilityMcpToolCatalog({directoryMcp});assert.deepEqual(mounted,catalog);
+  const staticDocument=buildCapabilitiesOpenApi({mcpConfigured:true}),expected=mounted.map(tool=>tool.name);
+  assert.throws(()=>assert.deepEqual(staticDocument['x-soty-mcp'].tools,expected),'negative control catches the previously missing mounted directory tools');
+  const f=await fixture(t,{openApi:staticDocument,mcpTools:catalog}),response=await f.call(`${BASE}/openapi.json`);
+  assert.equal(response.status,200);assert.deepEqual(response.json()['x-soty-mcp'].tools,expected);
+  assert.notDeepEqual(staticDocument['x-soty-mcp'].tools,expected,'host descriptor is cloned rather than silently mutated');
+  assert.throws(()=>capabilityMcpToolCatalog({externalTools:[catalog[0]]}),/mcp_catalog_invalid/);
+  assert.throws(()=>attachCapabilitiesDiscovery(express(),{catalog:{},mcpTools:[...catalog,catalog[0]]}),{code:'discovery_mcp_catalog_invalid'});
 });

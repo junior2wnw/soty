@@ -31,6 +31,8 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
   const operations = new Set(['call.join', 'call.microphone', 'call.leave', 'call.inbox', 'call.decline',
     'call.camera', 'call.camera.cancel', 'call.ice.get']);
   const calls = new Map(), scopes = new Map(), refs = new Map(), sockets = new Map();
+  const membershipRechecks = new Set();
+  let membershipRecheckQueued = false;
   let closed = false, wss = null, timer = null, epoch = 0, unsubscribeDevice, unsubscribeMembership;
   const now = () => { const value = clock(); check(Number.isSafeInteger(value) && value >= 0); return value; };
   const publicMember = member => ({ accountId: member.actor.accountId, deviceId: member.actor.deviceId,
@@ -255,11 +257,22 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
       }
     });
     unsubscribeMembership = getWorld().subscribeMembership(event => {
-      for (const call of [...calls.values()]) if (call.mode === 'group' && call.targetId === event.communityId) {
-        for (const member of [...call.members.values()]) {
-          try { current(member.actor, call, () => true); } catch { drop(call, member, 'human_call_membership_changed'); }
+      if (closed) return;
+      if ([...calls.values()].some(call => call.mode === 'group' && call.targetId === event.communityId)) membershipRechecks.add(event.communityId);
+      if (!membershipRechecks.size || membershipRecheckQueued) return;
+      membershipRecheckQueued = true;
+      // World commits inside another signed Connect request. Retained call actors
+      // need fresh fences after that request exits, before the next socket IO.
+      queueMicrotask(() => {
+        membershipRecheckQueued = false;
+        const communities = new Set(membershipRechecks); membershipRechecks.clear();
+        if (closed) return;
+        for (const call of [...calls.values()]) if (call.mode === 'group' && communities.has(call.targetId)) {
+          for (const member of [...call.members.values()]) {
+            try { current(member.actor, call, () => true); } catch { drop(call, member, 'human_call_membership_changed'); }
+          }
         }
-      }
+      });
     });
     server.on('connection', (socket, request, callId) => {
       let call = calls.get(callId), bound = null, windowAt = now(), frames = 0, bytes = 0;
@@ -384,6 +397,7 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
   }
   function close() {
     if (closed) return; closed = true; clearInterval(timer); unsubscribeDevice?.(); unsubscribeMembership?.();
+    membershipRechecks.clear();
     for (const call of [...calls.values()]) for (const member of [...call.members.values()]) drop(call, member);
     for (const socket of [...sockets.keys()]) rejectSocket(socket);
     refs.clear(); scopes.clear(); ice.close();
