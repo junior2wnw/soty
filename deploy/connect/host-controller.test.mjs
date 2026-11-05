@@ -419,7 +419,7 @@ test('legacy v1/v2 receipts cannot settle delayed START or automatic-restart res
     const f = await fixture(); f.engine.ignore = 'start';
     await assert.rejects(f.create().run());
     const state = await f.readState(), operation = state.transaction.operation;
-    assert.equal(operation.storageGuard.schema, 'soty.storage-start.v8'); assert.equal(operation.storageGuard.world, 'empty');
+    assert.equal(operation.storageGuard.schema, 'soty.storage-start.v10'); assert.equal(operation.storageGuard.world, 'empty');
     operation.storageGuard = historicalV3StartReceipt(operation.storageGuard);
     assert.equal(operation.kind, 'start'); assert.equal(operation.storageGuard.schema, 'soty.storage-start.v3');
     operation.storageGuard.schema = `soty.storage-start.v${version}`;
@@ -444,7 +444,7 @@ test('recovered v3 START receipt rechecks current Apps format and never repeats 
   const f = await fixture(); f.engine.ignore = 'start';
   await assert.rejects(f.create().run());
   const state = await f.readState(), operation = state.transaction.operation;
-  assert.equal(operation.storageGuard.schema, 'soty.storage-start.v8'); assert.equal(operation.storageGuard.world, 'empty');
+  assert.equal(operation.storageGuard.schema, 'soty.storage-start.v10'); assert.equal(operation.storageGuard.world, 'empty');
   operation.storageGuard = historicalV3StartReceipt(operation.storageGuard);
   assert.equal(operation.storageGuard.schema, 'soty.storage-start.v3'); assert.equal(operation.storageGuard.apps, 'empty');
   await atomicState(path.join(f.config.stateDir, 'host-state.json'), state);
