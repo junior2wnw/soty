@@ -7,11 +7,11 @@
     "nodeEngine": ">=24.15.0",
     "testedNode": "24.19.0"
   },
-  "sourceCommit": "dca49ea264bc312706c42920bf244db990706ac9",
+  "sourceCommit": "e2082df13546b9da1354133d3f007c2156305006",
   "artifact": {
-    "url": "/sdk/source-app/84cb887a4eddb01934465a2be6b8d58a378f7f9e63d42d1d406ac8c3f3438e65.tgz",
-    "sha256": "84cb887a4eddb01934465a2be6b8d58a378f7f9e63d42d1d406ac8c3f3438e65",
-    "bytes": 227725
+    "url": "/sdk/source-app/694ac64eb39af4c9431aa2295a043cb2f5aae362f8df70f9c4f33ee83d74d749.tgz",
+    "sha256": "694ac64eb39af4c9431aa2295a043cb2f5aae362f8df70f9c4f33ee83d74d749",
+    "bytes": 227722
   },
   "admission": {
     "required": true,
