@@ -446,3 +446,101 @@ export async function registerMountOrderRegressions({ releaseModuleFile, tarModu
 }
 
 await registerMountOrderRegressions({releaseModuleFile:fileURLToPath(new URL("./gpg-release-backup.mjs",import.meta.url)),tarModuleFile:fileURLToPath(new URL("./gpg-tar.mjs",import.meta.url))});
+
+// Optional compression: keep the original62 tests byte-for-byte above this point.
+const compressionTar=await import('./gpg-tar.mjs'),compressionBackup=await import('./gpg-release-backup.mjs');
+const compressionTarSource=await readFile(new URL('./gpg-tar.mjs',import.meta.url),'utf8');
+const compressionBackupSource=await readFile(new URL('./gpg-release-backup.mjs',import.meta.url),'utf8');
+function compressionSpan(source,start,end){const first=source.indexOf(start),last=source.indexOf(end,first+start.length);assert.ok(first>=0&&last>first);return source.slice(first,last);}
+function compressionPlanPort(value){
+  const source=compressionSpan(compressionBackupSource,'async function readPlan(', '\nexport {readPlan,stdinKey}');
+  // Windows cannot enforce POSIX0600. This port executes the actual plan logic;
+  // the genuine Linux0600/CLI test below covers its real IO and ordering.
+  const bytes=JSON.stringify(value),open=async()=>({stat:async()=>({isFile:()=>true,size:Buffer.byteLength(bytes),mode:0o600}),readFile:async()=>bytes,close:async()=>{}});
+  return new Function('open','constants','bad','compressionMode',source+'\nreturn readPlan;')(
+    open,{O_RDONLY:0,O_NOFOLLOW:0},compressionTar.bad,compressionTar.compressionMode)('synthetic-plan-port');
+}
+const compressionPlan={operation:'backup',containerId:CONTAINER,image:IMAGE,operationId:ID,directory:'/synthetic/no-write'};
+test('BK-ZLIB PLAN accepts explicit zlib/none while leaving an absent default and other plan schemas unchanged',async()=>{
+  const legacy=await compressionPlanPort(compressionPlan);assert.deepEqual(legacy,compressionPlan);assert.equal(Object.hasOwn(legacy,'compression'),false);
+  assert.deepEqual(await compressionPlanPort({...compressionPlan,compression:'zlib'}),{...compressionPlan,compression:'zlib'});
+  assert.deepEqual(await compressionPlanPort({...compressionPlan,compression:'none'}),{...compressionPlan,compression:'none'});
+  for(const compression of ['zip','bzip2','ZLIB','',null,false,0,{},[]])await assert.rejects(compressionPlanPort({...compressionPlan,compression}));
+  for(const operation of ['verify','restore-isolated'])await assert.rejects(compressionPlanPort({operation,file:'/synthetic/no-read',expectedSha256:'a'.repeat(64),compression:'zlib'}),{code:'backup_plan_invalid'});
+});
+test('BK-ZLIB ARGS keeps default GPG argv exact and changes only the explicit compression profile',()=>{
+  const commonLine=compressionTarSource.split(/\r?\n/u).find(line=>line.startsWith('const common='));
+  const common=new Function('return '+commonLine.slice('const common='.length))();
+  const argsLine=compressionTarSource.split(/\r?\n/u).find(line=>line.trimStart().startsWith('const args='));
+  const args=(mode,compression)=>new Function('common','home','mode','compression','return '+argsLine.trim().slice('const args='.length))(common,'/synthetic/gnupg',mode,compression);
+  const expected=[...common,'--homedir','/synthetic/gnupg','--symmetric','--cipher-algo','AES256','--force-mdc','--compress-algo','none','--s2k-mode','3','--s2k-digest-algo','SHA256','--s2k-count','65011712','--output','-'];
+  assert.deepEqual(args('encrypt','none'),expected,'NONE must retain every previous encryption argument');
+  const zipped=args('encrypt','zlib');assert.equal(zipped[zipped.indexOf('--compress-algo')+1],'zlib');assert.equal(zipped[zipped.indexOf('--compress-level')+1],'6');
+  const remove=zipped.indexOf('--compress-level');zipped.splice(remove,2);zipped[zipped.indexOf('--compress-algo')+1]='none';assert.deepEqual(zipped,expected,'AES256/MDC/S2K and all other arguments are unchanged');
+  assert.deepEqual(args('decrypt','zlib'),[...common,'--homedir','/synthetic/gnupg','--decrypt','--output','-'],'GPG decrypt discovers standard OpenPGP compression itself');
+});
+test('BK-ZLIB FORWARD actual backupStopped sends the selected profile to both streams and retains the receipt shape',async()=>{
+  const source=compressionSpan(compressionBackupSource,'export async function backupStopped(', '\nfunction writeChunk(').replace(/^export /u,'');
+  const observed=[];const original={Mounts:[]};
+  const backup=new Function('compressionMode','CONTAINER','bad','validate','keyBytes','limits','sourceFence','sourceState','pinnedImage','artifactDirectory','readonlyArchive','encryptTar','configArchive','lstat','sameStat','verifyTar','path','randomBytes',source+'\nreturn backupStopped;')(
+    compressionTar.compressionMode,/^[a-f0-9]{64}$/u,compressionTar.bad,()=>{},keyBytes,()=>({}),async()=>original,()=> 'source-checkpoint',async()=>{},async()=>{},
+    async()=>({child:{stdout:Readable.from([])},done:Promise.resolve(),cleanup:async()=>{}}),
+    async options=>{observed.push(options.compression);return{sha256:'a'.repeat(64),bytes:100};},()=>Readable.from([]),async()=>({}),()=>true,
+    async()=>({entries:3,fileBytes:12,inventorySha256:'b'.repeat(64)}),path,()=>Buffer.alloc(16));
+  const defaults=await backup({...compressionPlan,key:KEY},{});assert.deepEqual(Object.keys(defaults).sort(),['configuration','encrypted','ok','operationId','sourceCheckpointSha256','volume']);
+  observed.length=0;const zipped=await backup({...compressionPlan,key:KEY,compression:'zlib'},{});assert.deepEqual(observed,['zlib','zlib']);assert.deepEqual(Object.keys(zipped).sort(),Object.keys(defaults).sort());
+  assert.deepEqual(Object.keys(zipped.volume).sort(),['bytes','entries','fileBytes','inventorySha256','sha256']);assert.deepEqual(Object.keys(zipped.configuration).sort(),Object.keys(zipped.volume).sort());
+});
+test('BK-ZLIB invalid profiles reject before stream/filesystem/engine effects',async t=>{
+  const dir=await ownedFixture(t),file=path.join(dir,'must-not-exist.gpg');let consumed=0;const calls=[];
+  const input={async *[Symbol.asyncIterator](){consumed++;yield tar();}};
+  const engine=new Proxy({},{get:(_target,name)=>async()=>{calls.push(name);throw Error('engine_must_not_be_called');}});
+  for(const compression of ['zip','bzip2',null,false,{},[]]){
+    await assert.rejects(encryptTar({file,key:KEY,input,compression}),{code:'backup_compression_invalid'});
+    await assert.rejects(backupStopped({...compressionPlan,key:KEY,compression},engine),{code:'backup_compression_invalid'});
+  }
+  assert.equal(consumed,0);assert.deepEqual(calls,[]);await assert.rejects(lstat(file),{code:'ENOENT'});await assert.rejects(lstat(file+'.partial'),{code:'ENOENT'});
+});
+async function independentZlibCipher(t,bytes){
+  const dir=await ownedFixture(t),home=path.join(dir,'gpg');await mkdir(home,{mode:0o700});
+  t.after(()=>child(['/usr/bin/gpgconf','--homedir',home,'--kill','gpg-agent'],{stdio:['ignore','pipe','ignore']}).catch(()=>{}));
+  const cipher=await child(['/usr/bin/gpg','--no-options','--homedir',home,'--batch','--yes','--pinentry-mode','loopback','--no-symkey-cache','--passphrase-fd','3','--symmetric','--cipher-algo','AES256','--force-mdc','--compress-algo','zlib','--compress-level','6','--s2k-count','1024','--output','-'],{input:bytes});
+  const file=path.join(dir,'independent-zlib.gpg');await writeFile(file,cipher,{mode:0o600});return{file,cipher,expectedSha256:sha(cipher)};
+}
+test('BK-ZLIB genuine Linux0600 plan admission and malformed profile fail before reading key stdin',linux,async t=>{
+  const dir=await ownedFixture(t),file=path.join(dir,'backup.json');
+  for(const value of [compressionPlan,{...compressionPlan,compression:'none'},{...compressionPlan,compression:'zlib'}]){await writeFile(file,JSON.stringify(value),{mode:0o600});assert.deepEqual(await compressionBackup.readPlan(file),value);}
+  await writeFile(file,JSON.stringify({...compressionPlan,compression:'zip'}),{mode:0o600});
+  const process=spawn(globalThis.process.execPath,[fileURLToPath(new URL('./gpg-release-backup.mjs',import.meta.url)),'--plan',file],{stdio:['pipe','pipe','pipe']});let timedOut=false;const output=[];process.stdout.on('data',b=>output.push(b));process.stderr.resume();process.stdin.on('error',()=>{});
+  // Leave stdin open and send no key. A misplaced validation would hang here.
+  const timer=setTimeout(()=>{timedOut=true;process.kill('SIGKILL');},5000);let code;
+  try{code=await new Promise((resolve,reject)=>{process.once('error',reject);process.once('close',resolve);});}finally{clearTimeout(timer);process.stdin.destroy();}
+  assert.equal(timedOut,false);assert.equal(code,1);assert.deepEqual(JSON.parse(Buffer.concat(output).toString('utf8')),{ok:false,code:'backup_operation_failed'});
+});
+test('BK-ZLIB actual NONE and explicit zlib restore exactly the same complete raw tar and inventory',linux,async t=>{
+  const dir=await ownedFixture(t),bytes=tar([{name:'metadata.json',bytes:Buffer.from('{"onlySynthetic":true,"acl":["read","admin"]}')},{name:'проверка-é.txt',bytes:Buffer.alloc(256*1024,65)},{name:'empty.bin'}]);
+  const baseline=inventory(bytes),results=[];
+  for(const compression of [undefined,'zlib']){
+    const file=path.join(dir,compression??'default-none')+'.gpg',encrypted=await encryptTar({file,key:KEY,input:Readable.from([bytes]),...(compression?{compression}:{})});
+    const first=await verifyTar({file,key:KEY,expectedSha256:encrypted.sha256});const restored=[];
+    const second=await verifyTar({file,key:KEY,expectedSha256:encrypted.sha256,sink:chunk=>{restored.push(Buffer.from(chunk));}});
+    assert.equal(first.authenticated,true);assert.equal(first.plainSha256,sha(bytes));assert.equal(second.plainSha256,first.plainSha256);assert.equal(first.inventorySha256,baseline.inventorySha256);assert.equal(second.inventorySha256,first.inventorySha256);assert.deepEqual(Buffer.concat(restored),bytes);assert.equal(first.entries,baseline.entries);assert.equal(first.fileBytes,baseline.fileBytes);
+    results.push({encrypted,first});
+  }
+  assert.deepEqual(Object.keys(results[0].encrypted).sort(),Object.keys(results[1].encrypted).sort());assert.equal(results[0].first.inventorySha256,results[1].first.inventorySha256);assert.ok(results[1].encrypted.bytes<results[0].encrypted.bytes/4,'explicit ZLIB must actually compress the highly repetitive synthetic payload');
+  t.diagnostic(JSON.stringify({plainBytes:bytes.length,noneCipherBytes:results[0].encrypted.bytes,zlibCipherBytes:results[1].encrypted.bytes,rawSha256:sha(bytes),inventorySha256:baseline.inventorySha256}));
+});
+test('BK-ZLIB small independently compressed ciphertext cannot bypass decompressed caps or CREATE a target',linux,async t=>{
+  const bytes=tar([{name:'large.bin',bytes:Buffer.alloc(128*1024,65)}]),artifact=await independentZlibCipher(t,bytes),calls=[];
+  assert.ok(artifact.cipher.length<bytes.length/10);assert.equal((await verifyTar({...artifact,key:KEY})).plainBytes,bytes.length);
+  const engine=new Proxy({},{get:(_target,method)=>async()=>{calls.push(method);throw Error('engine_must_not_be_called');}});
+  for(const cap of [{plainBytes:bytes.length-1},{fileBytes:1024},{totalBytes:1024},{entries:1}])await assert.rejects(restoreIsolated({...artifact,key:KEY,image:IMAGE,operationId:ID,cap},engine));
+  assert.deepEqual(calls,[],'All decompressed admission checks precede even target image/volume CREATE ports');
+  t.diagnostic(JSON.stringify({plainBytes:bytes.length,cipherBytes:artifact.cipher.length,limitedCases:4,engineCalls:calls.length}));
+});
+test('BK-ZLIB compressed wrong-key and recomputed-hash MDC corruption stay before every target port',linux,async t=>{
+  const artifact=await independentZlibCipher(t,tar()),calls=[],engine=new Proxy({},{get:(_target,method)=>async()=>{calls.push(method);throw Error('engine_must_not_be_called');}});
+  await assert.rejects(restoreIsolated({...artifact,key:Buffer.from('B'.repeat(64)),image:IMAGE,operationId:ID},engine));
+  const changed=Buffer.from(artifact.cipher);changed[changed.length-8]^=1;const file=artifact.file+'.modified';await writeFile(file,changed,{mode:0o600});
+  await assert.rejects(restoreIsolated({file,expectedSha256:sha(changed),key:KEY,image:IMAGE,operationId:ID},engine));assert.deepEqual(calls,[]);
+});

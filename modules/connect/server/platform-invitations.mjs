@@ -4,6 +4,11 @@ export const PLATFORM_INVITATION_OPERATIONS = ['platform.admission.get', 'platfo
 const lifetime = 7 * 24 * 60 * 60_000;
 const hash = token => createHash('sha256').update(token).digest('base64url');
 
+export function normalizePlatformAdminAccountIds(value, check = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }); }) {
+  check(Array.isArray(value) && value.length <= 32 && value.every(id => typeof id === 'string' && /^acct_[A-Za-z0-9_-]{32}$/u.test(id)), 'invalid_platform_admins');
+  return [...new Set(value)].sort();
+}
+
 /** Called only inside Connect's signed action transaction and active account fence. */
 export function createPlatformInvitations({ get, all, run, assert, exactArgs, textId, adminAccountIds }) {
   const admins = new Set(adminAccountIds);
@@ -82,5 +87,5 @@ export function createPlatformInvitations({ get, all, run, assert, exactArgs, te
     // Account insert, token consumption and device installation share one transaction.
     run('UPDATE platform_invitations SET redeemed_at=?,redeemed_account_id=? WHERE id=?', timestamp, accountId, row.id);
   }
-  return { dispatch, admit, readAdmissionReceipt };
+  return { dispatch, admit, readAdmissionReceipt, adminAccessSha256: () => createHash('sha256').update(JSON.stringify([...admins].sort())).digest('hex') };
 }

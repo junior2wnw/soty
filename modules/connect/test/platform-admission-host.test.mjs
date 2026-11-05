@@ -22,7 +22,7 @@ async function fixture(t){
  const own=await invoke(service,owner,'bootstrap',{label:'Synthetic operator',encryptionPublicJwk:owner.encryptionPublicJwk});await invoke(service,stranger,'bootstrap',{label:'Synthetic member',encryptionPublicJwk:stranger.encryptionPublicJwk});service.close();service=open([own.accountId]);
  const capture=async keys=>{await invoke(service,keys,'monitoring.capture');return actor;};
  const dataHash=()=>{const db=new DatabaseSync(databasePath,{readOnly:true});try{return createHash('sha256').update(JSON.stringify(['platform_admission','platform_invitation_receipts','accounts','installations'].map(name=>[name,db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]))).digest('hex');}finally{db.close();}};
- return{get service(){return service;},owner,stranger,capture,dataHash,reopen(){service.close();service=open([own.accountId]);}};
+ return{get service(){return service;},owner,stranger,capture,dataHash,reopen(admins=[own.accountId]){service.close();service=open(admins);}};
 }
 
 test('host admission uses the canonical CAS and persistent receipt; receipt lookup cannot mutate data',async t=>{
@@ -56,4 +56,14 @@ test('the host-only receipt port is not an unsigned or additional signed RPC',as
  const f=await fixture(t);
  const request=await f.service.handle({origin,op:'platform.admission.receipt',args:{}});assert.equal(request.ok,false);
  const challenge=await f.service.handle({origin,op:'challenge',args:{operation:'platform.admission.receipt',digest:digestArgs({})}});assert.equal(challenge.ok,false);assert.equal(challenge.error.code,'unsupported_operation');
+});
+
+test('private platform admin fingerprint observes actual loaded Set, is readonly and adds no RPC',async t=>{
+ const f=await fixture(t),owner=await f.capture(f.owner),other=await f.capture(f.stranger),admins=[owner.accountId],hash=ids=>createHash('sha256').update(JSON.stringify([...new Set(ids)].sort())).digest('hex');
+ f.reopen(admins);const before=f.dataHash();assert.equal(f.service.platformAdminAccessSha256(),hash([owner.accountId]));admins[0]=other.accountId;
+ assert.equal(f.service.platformAdminAccessSha256(),hash([owner.accountId]));assert.equal(f.dataHash(),before);
+ const current=await f.capture(f.owner);assert.equal(f.service.platformAdmission({actor:current,op:'platform.admission.get'}).manageAllowed,true);
+ const unsigned=await f.service.handle({origin,op:'platformAdminAccessSha256',args:{}});assert.equal(unsigned.ok,false);
+ const challenge=await f.service.handle({origin,op:'challenge',args:{operation:'platformAdminAccessSha256',digest:digestArgs({})}});assert.equal(challenge.ok,false);assert.equal(challenge.error.code,'unsupported_operation');
+ f.reopen([]);const revoked=await f.capture(f.owner);assert.equal(f.service.platformAdminAccessSha256(),hash([]));assert.equal(f.service.platformAdmission({actor:revoked,op:'platform.admission.get'}).manageAllowed,false);
 });

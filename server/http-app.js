@@ -542,8 +542,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     selectedProfiles: scopedEmbedProfiles, selectedMigrationConfigured: allowScopedEmbedMigration,
       ...(allowSelectedResourceMigration||scopedEmbedProfiles.some(profile=>profile.schema==='soty.selected-human-embed.v2')?{selectedResourceMigrationConfigured:allowSelectedResourceMigration}:{}),
     selectedRegistryConfigured: scopedEmbedRegistryConfigured,
+    ...(typeof connect?.platformAdminAccessSha256==='function'?{platformAdminAccessSha256:connect.platformAdminAccessSha256()}:{}),
     ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
-    ...(monitoringState?{monitoring:{mode:monitoringState.mode,schemaVersion:monitoringState.schemaVersion,installed:typeof monitoringState.registryId==='string'}}:{}),
+    ...(monitoringState?{monitoring:{mode:monitoringState.mode,schemaVersion:monitoringState.schemaVersion,installed:typeof monitoringState.registryId==='string',...(monitoringState.accessSha256===undefined?{}:{accessSha256:monitoringState.accessSha256})}}:{}),
     });
   };
   let servicesCleanup;

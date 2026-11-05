@@ -4,7 +4,7 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrateDatabase, READER_EPOCH, SCHEMA_VERSION } from './schema.mjs';
-import { createPlatformInvitations, PLATFORM_INVITATION_OPERATIONS } from './platform-invitations.mjs';
+import { createPlatformInvitations, normalizePlatformAdminAccountIds, PLATFORM_INVITATION_OPERATIONS } from './platform-invitations.mjs';
 import {createEphemeralChallengeStore} from './ephemeral-challenges.mjs';
 
 export { READER_EPOCH, SCHEMA_VERSION };
@@ -174,7 +174,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   assert(typeof canRequestContact === 'function', 'invalid_contact_policy');
   assert(typeof onContactsChanged === 'function', 'invalid_contact_listener');
   assert(typeof initializePlatformInvitations === 'boolean', 'invalid_platform_initialization');
-  assert(Array.isArray(platformAdminAccountIds) && platformAdminAccountIds.length <= 32 && platformAdminAccountIds.every(id => typeof id === 'string' && /^acct_[A-Za-z0-9_-]{32}$/u.test(id)), 'invalid_platform_admins');
+  platformAdminAccountIds = normalizePlatformAdminAccountIds(platformAdminAccountIds, assert);
   assert(Array.isArray(extensions) && extensions.length <= 32, 'invalid_extensions');
   const extensionOperations = new Map(), extensionResultLimits = new Map(),ephemeralOperations=new Set();
   for (const extension of extensions) {
@@ -872,6 +872,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     withActorAuthorityFence,
     /** Host composition only; retains the original signed actor and canonical
      * admission policy/receipt. This does not register another incoming RPC. */
+    platformAdminAccessSha256: platformInvitations.adminAccessSha256,
     platformAdmission({ actor, op, args = {} }) {
       assert(['platform.admission.get', 'platform.admission.update', 'platform.admission.receipt'].includes(op), 'unsupported_operation');
       const argsJson = canonicalJson(args);

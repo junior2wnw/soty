@@ -43,6 +43,8 @@ export function createMonitoringModule({dataDir,databasePath,storageMode='reader
   check(typeof connect==='function'&&typeof apps==='function','monitoring_host_required',500);
   exact(platformPolicy,[],['readAccountIds','configureAccountIds','adminAccountIds']);
   const policies={};for(const right of['read','configure','admin']){const input=platformPolicy[right+'AccountIds']??[];check(Array.isArray(input)&&input.length<=32&&input.every(id=>typeof id==='string'&&/^acct_[A-Za-z0-9_-]{32}$/u.test(id)),'monitoring_platform_policy_invalid',500);policies[right]=new Set(input);}
+  // Fingerprint the same loaded Sets used by withAuthority, never a later Env read.
+  const accessSha256=digest(Object.fromEntries(['read','configure','admin'].map(right=>[right+'AccountIds',[...policies[right]].sort()])));
   let agentFrame=null;
   const inAgent=(actor,callback)=>{const previous=agentFrame;agentFrame=actor;try{return sync(callback());}finally{agentFrame=previous;}};
   const withAuthority=({actor,scope,right},callback)=>{
@@ -52,7 +54,7 @@ export function createMonitoringModule({dataDir,databasePath,storageMode='reader
   const service=createMonitoringService({databasePath:databasePath??path.join(dataDir||path.resolve('data'),'monitoring','monitoring.sqlite'),projectId:'soty',mode:storageMode,currentActor:actor=>connect()?.isActorActive(actor)===true,withAuthority,
     ...(definitions?{definitions}:{}),adminActions:adminActions??createCanonicalMonitoringActions({connect,publication}),...(collectorStatus?{collectorStatus}:{}),...(beforeCollectionChange?{beforeCollectionChange}:{}),...(clock?{clock}:{}),...(limits?{limits}:{}),...(onChange?{onChange}:{})});
   let capabilities;try{capabilities=createMonitoringCapabilities({service,connect,getCapabilities,inAgent,storageMode});}catch(error){service.close();throw error;}
-  return Object.freeze({service,operations:service.operations,execute:service.execute,observe:service.observe,observeBatch:service.observeBatch,collectionEnabled:service.collectionEnabled,storageIdentity:service.storageIdentity,
+  return Object.freeze({service,operations:service.operations,execute:service.execute,observe:service.observe,observeBatch:service.observeBatch,collectionEnabled:service.collectionEnabled,storageIdentity:()=>({...service.storageIdentity(),accessSha256}),
     extension:Object.freeze({operations:service.operations,execute:service.execute}),capabilities,
     composeExtension:existing=>composeMonitoringExtension(existing,service),close:service.close});
 }

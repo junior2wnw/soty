@@ -1,6 +1,6 @@
 import { DockerApi } from '../connector/docker-api.mjs';
 import { archiveHelperArgs } from './backup.mjs';
-import { bad,sha,limits,keyBytes,TarInventory,encryptTar,verifyTar } from './gpg-tar.mjs';
+import { bad,sha,limits,keyBytes,compressionMode,TarInventory,encryptTar,verifyTar } from './gpg-tar.mjs';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { constants,createReadStream } from 'node:fs';
@@ -155,18 +155,18 @@ async function* configArchive(original,cap,seen){
 }
 
 /** Explicit operator port. It never stops/starts/migrates the source. */
-export async function backupStopped({containerId,image,operationId,directory,key,cap={}},engine=new DockerApi()){
-  validate(operationId,image);keyBytes(key);
+export async function backupStopped({containerId,image,operationId,directory,key,cap={},compression='none'},engine=new DockerApi()){
+  compression=compressionMode(compression);validate(operationId,image);keyBytes(key);
   if(!CONTAINER.test(containerId??'')||!path.isAbsolute(directory??''))bad('backup_identity_invalid');
   const value=limits(cap),original=await sourceFence(engine,containerId),checkpoint=sourceState(original);
   await pinnedImage(engine,image);
   await artifactDirectory(directory,original,engine,image,operationId,value);
   const archive=await readonlyArchive(engine,containerId,operationId,'volume',image,value,randomBytes(16).toString('hex'));
   let volume;
-  try{volume=await encryptTar({file:path.join(directory,'volume.gpg'),key,input:archive.child.stdout,cap:value});await archive.done;}
+  try{volume=await encryptTar({file:path.join(directory,'volume.gpg'),key,input:archive.child.stdout,cap:value,compression});await archive.done;}
   finally{await archive.cleanup();}
   const seen=new Map();
-  const configuration=await encryptTar({file:path.join(directory,'configuration.gpg'),key,input:configArchive(original,value,seen),cap:value});
+  const configuration=await encryptTar({file:path.join(directory,'configuration.gpg'),key,input:configArchive(original,value,seen),cap:value,compression});
   for(const [file,stat] of seen)if(!sameStat(stat,await lstat(file,{bigint:true})))bad('backup_bind_changed');
   if(sourceState(await sourceFence(engine,containerId))!==checkpoint)bad('backup_source_changed');
   const volumeProof=await verifyTar({file:path.join(directory,'volume.gpg'),key,expectedSha256:volume.sha256,cap:value});
@@ -257,8 +257,9 @@ async function readPlan(file){
     const stat=await f.stat();if(!stat.isFile()||stat.size>65536||(stat.mode&0o077)!==0)bad('backup_plan_invalid');
     const value=JSON.parse(await f.readFile('utf8'));
     if(!value||typeof value!=='object'||Array.isArray(value))bad('backup_plan_invalid');
-    const allowed={backup:['operation','containerId','image','operationId','directory','cap'],verify:['operation','file','expectedSha256','cap'],'restore-isolated':['operation','file','expectedSha256','image','operationId','cap']}[value.operation];
+    const allowed={backup:['operation','containerId','image','operationId','directory','cap','compression'],verify:['operation','file','expectedSha256','cap'],'restore-isolated':['operation','file','expectedSha256','image','operationId','cap']}[value.operation];
     if(!allowed||Object.keys(value).some(k=>!allowed.includes(k)))bad('backup_plan_invalid');
+    if(value.operation==='backup')compressionMode(value.compression);
     return value;
   }finally{await f.close();}
 }

@@ -63,10 +63,12 @@ function selectedWire(value) {
     ...(value.resourceMigrationConfigured===undefined?{}:{resourceMigrationConfigured:value.resourceMigrationConfigured}) };
 }
 function monitoringWire(value) {
-  record(value, ['mode', 'schemaVersion', 'installed']);
+  record(value, ['mode', 'schemaVersion', 'installed'], ['accessSha256']);
   check(['reader', 'writer'].includes(value.mode) && value.schemaVersion === 1 && typeof value.installed === 'boolean'
     && (value.mode !== 'writer' || value.installed));
-  return { mode: value.mode, schemaVersion: value.schemaVersion, installed: value.installed };
+  check(value.accessSha256 === undefined || hex(value.accessSha256));
+  return { mode: value.mode, schemaVersion: value.schemaVersion, installed: value.installed,
+    ...(value.accessSha256 === undefined ? {} : { accessSha256: value.accessSha256 }) };
 }
 /** Static reviewed Source pins only; neither liveness nor a native project grant. */
 export function captureSelectedPreparedness({ profiles = [], migrationConfigured = false,resourceMigrationConfigured } = {}) {
@@ -82,12 +84,13 @@ export function captureSelectedPreparedness({ profiles = [], migrationConfigured
 /** Sanitize an exact bounded measurement, never turn its metadata into authority. */
 export function validateUniversalPreparedness(value) {
   try {
-    record(value, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews'], ['selected', 'monitoring']);
+    record(value, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews'], ['selected', 'monitoring', 'platformAdminAccessSha256']);
     check(value.schema === UNIVERSAL_RUNTIME_SCHEMA && [value.compiledLegacyMode, value.universalConfigured, value.reviewsConfigured, value.humanHttpEnabled]
       .every(item => typeof item === 'boolean'));
     const human = humanWire(value.human), reviews = reviewsWire(value.reviews);
     const selected = value.selected === undefined ? undefined : selectedWire(value.selected);
     const monitoring = value.monitoring === undefined ? undefined : monitoringWire(value.monitoring);
+    check(value.platformAdminAccessSha256 === undefined || hex(value.platformAdminAccessSha256));
     check(value.humanHttpEnabled === human.configured && (!value.reviewsConfigured || value.universalConfigured)
       && (!value.humanHttpEnabled || value.universalConfigured)
       && (!value.compiledLegacyMode || !value.universalConfigured && !value.reviewsConfigured && !value.humanHttpEnabled)
@@ -95,7 +98,7 @@ export function validateUniversalPreparedness(value) {
     check(!selected || value.universalConfigured && !value.compiledLegacyMode && (!selected.configured || value.humanHttpEnabled));
     const result = { schema: value.schema, compiledLegacyMode: value.compiledLegacyMode, universalConfigured: value.universalConfigured,
       reviewsConfigured: value.reviewsConfigured, humanHttpEnabled: value.humanHttpEnabled, human, reviews, ...(selected ? { selected } : {}),
-      ...(monitoring ? { monitoring } : {}) };
+      ...(monitoring ? { monitoring } : {}), ...(value.platformAdminAccessSha256 === undefined ? {} : { platformAdminAccessSha256: value.platformAdminAccessSha256 }) };
     check(Buffer.byteLength(canonicalJson(result)) <= UNIVERSAL_RUNTIME_MAX_BYTES); return freezeDeep(result);
   } catch { throw new UniversalPreparednessError(); }
 }
@@ -132,7 +135,7 @@ export function captureHumanPreparedness(profile) {
 /** Pure host measurement after service/HTTP construction. No IO, DB, network or deployment imports. */
 export function captureUniversalPreparedness({ compiledLegacyMode, universalConfigured, reviewsConfigured,
   humanProfile, humanHttpEnabled, reviewsPreparedness, reviewsConfiguration = { providers: [], bindings: [] },
-  selectedProfiles = [], selectedMigrationConfigured = false, selectedResourceMigrationConfigured,selectedRegistryConfigured = false, monitoring }) {
+  selectedProfiles = [], selectedMigrationConfigured = false, selectedResourceMigrationConfigured,selectedRegistryConfigured = false, monitoring, platformAdminAccessSha256 }) {
   let service;
   try {
     let reviews;
@@ -148,6 +151,7 @@ export function captureUniversalPreparedness({ compiledLegacyMode, universalConf
     return validateUniversalPreparedness({ schema: UNIVERSAL_RUNTIME_SCHEMA, compiledLegacyMode, universalConfigured, reviewsConfigured,
       humanHttpEnabled, human: captureHumanPreparedness(humanProfile), reviews,
       ...(monitoring === undefined ? {} : { monitoring }),
+      ...(platformAdminAccessSha256 === undefined ? {} : { platformAdminAccessSha256 }),
       ...(selectedProfiles.length || selectedMigrationConfigured || selectedRegistryConfigured || selectedResourceMigrationConfigured!==undefined ? {
         selected: captureSelectedPreparedness({ profiles: selectedProfiles, migrationConfigured: selectedMigrationConfigured,
           ...(selectedResourceMigrationConfigured===undefined?{}:{resourceMigrationConfigured:selectedResourceMigrationConfigured}) }),

@@ -11,6 +11,7 @@ export const GPG_LIMITS=Object.freeze({cipherBytes:5*1024**3,plainBytes:5*1024**
 export const bad=code=>{throw Object.assign(new Error(code),{code,stack:'Error: '+code});};
 export const sha=value=>createHash('sha256').update(value).digest('hex');
 export function limits(input={}){const value={...GPG_LIMITS,...input};if(Object.keys(input).some(k=>!Object.hasOwn(GPG_LIMITS,k))||Object.values(value).some(n=>!Number.isSafeInteger(n)||n<1))bad('backup_limits_invalid');return value;}
+export function compressionMode(value='none'){if(value!=='none'&&value!=='zlib')bad('backup_compression_invalid');return value;}
 export function keyBytes(value){if(!Buffer.isBuffer(value)||value.length!==64||value.some(b=>b>127)||!/^[A-Za-z0-9_-]{64}$/.test(value.toString('ascii')))bad('backup_key_invalid');return value;}
 const utf8=new TextDecoder('utf-8',{fatal:true});
 const TAR_MAGIC=Buffer.from('ustar\0','ascii'),TAR_VERSION=Buffer.from('00','ascii');
@@ -58,9 +59,9 @@ export class TarInventory extends Transform{
 }
 
 const common=['--no-options','--batch','--yes','--pinentry-mode','loopback','--no-symkey-cache','--passphrase-fd','3','--status-fd','4'];
-async function gpg(key,cap,mode,operation){if(process.platform!=='linux')bad('backup_platform_unavailable');keyBytes(key);const home=await mkdtemp(path.join(tmpdir(),'soty-gpg-owned-'));await chmod(home,0o700);const stamp=await lstat(home);let child,timer,status='',statusOverflow=false;
+async function gpg(key,cap,mode,operation,compression='none'){if(process.platform!=='linux')bad('backup_platform_unavailable');keyBytes(key);const home=await mkdtemp(path.join(tmpdir(),'soty-gpg-owned-'));await chmod(home,0o700);const stamp=await lstat(home);let child,timer,status='',statusOverflow=false;
   try{
-    const args=[...common,'--homedir',home,...(mode==='encrypt'?['--symmetric','--cipher-algo','AES256','--force-mdc','--compress-algo','none','--s2k-mode','3','--s2k-digest-algo','SHA256','--s2k-count','65011712']:['--decrypt']),'--output','-'];
+    const args=[...common,'--homedir',home,...(mode==='encrypt'?['--symmetric','--cipher-algo','AES256','--force-mdc','--compress-algo',compression,...(compression==='zlib'?['--compress-level','6']:[]),'--s2k-mode','3','--s2k-digest-algo','SHA256','--s2k-count','65011712']:['--decrypt']),'--output','-'];
     child=spawn('/usr/bin/gpg',args,{stdio:['pipe','pipe','ignore','pipe','pipe']});
     const closed=new Promise((resolve,reject)=>{child.once('error',()=>reject(Error('gpg_failed')));child.once('close',code=>code===0?resolve():reject(Error('gpg_failed')));});closed.catch(()=>{});
     child.stdio[4].on('data',chunk=>{if(status.length+chunk.length>65536){statusOverflow=true;child.kill('SIGKILL');}else status+=chunk.toString('ascii');});
@@ -76,9 +77,9 @@ async function gpg(key,cap,mode,operation){if(process.platform!=='linux')bad('ba
   }
 }
 export async function fileDigest(file,cap={}){const value=limits(cap),handle=await open(file,constants.O_RDONLY|constants.O_NOFOLLOW);try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.size>BigInt(value.cipherBytes))bad('backup_artifact_invalid');const h=createHash('sha256');let bytes=0;for await(const chunk of createReadStream(null,{fd:handle.fd,autoClose:false,start:0})){bytes+=chunk.length;if(bytes>value.cipherBytes)bad('backup_limit_exceeded');h.update(chunk);}const after=await handle.stat({bigint:true});if(BigInt(bytes)!==stat.size||stat.size!==after.size||stat.mtimeNs!==after.mtimeNs||stat.ctimeNs!==after.ctimeNs)bad('backup_artifact_changed');return {sha256:h.digest('hex'),bytes};}finally{await handle.close();}}
-export async function encryptTar({file,key,input,cap={}}){const value=limits(cap),partial=file+'.partial',inventory=new TarInventory(value);let result;
+export async function encryptTar({file,key,input,cap={},compression='none'}){compression=compressionMode(compression);const value=limits(cap),partial=file+'.partial',inventory=new TarInventory(value);let result;
   try{result=await gpg(key,value,'encrypt',async child=>{let bytes=0;const bound=new Transform({transform(chunk,_encoding,done){bytes+=chunk.length;done(bytes>value.cipherBytes?Error('cipher_limit'):null,chunk);}});const toGpg=pipeline(input,inventory,child.stdin),toDisk=pipeline(child.stdout,bound,createWriteStream(partial,{flags:'wx',mode:0o600}));
-      const all=await Promise.allSettled([toGpg,toDisk]);if(all.some(r=>r.status==='rejected'))bad('backup_encryption_failed');return inventory.finish();});
+      const all=await Promise.allSettled([toGpg,toDisk]);if(all.some(r=>r.status==='rejected'))bad('backup_encryption_failed');return inventory.finish();},compression);
     const f=await open(partial,'r+');await f.sync();await f.close();await link(partial,file);await unlink(partial);const parent=await open(path.dirname(file),'r');try{await parent.sync();}finally{await parent.close();}return {...result,...await fileDigest(file,value),encrypted:true};
   }catch{bad('backup_encryption_failed');}
 }

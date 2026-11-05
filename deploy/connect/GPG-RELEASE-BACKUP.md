@@ -419,3 +419,28 @@ Pagination is not an atomic Docker snapshot. The current restore's repeated owne
 Root measured a separate readonly API page8 pilot:1293 IDs,162 pages, maximum page685287 bytes,21066420 aggregate bytes,9.75s; the ID set matched an independent full-ID docker CLI inventory. This is Root-reported feasibility, not author execution or qualification of this exact helper. Independent review, Node cases and the complete actual Docker/GPG/DPAPI synthetic cycle still qualify V7.
 
 The old62 test assertions/declarations/skips/timeouts are retained exactly; only two extracted-function harness ports now receive the actual new helper and one synthetic endpoint changes to the exact paginated first URL. All29 mount-proof tests and production mount-proof code are byte-identical to sealed V6. New portable inventory tests cover complete enumeration, strict bounds/shapes, dropped irrelevant metadata, ignored cursors, later-page foreign named-volume/bind-alias consumers and the actual restore inspect fallback. No GPG algorithm/key custody/TAR code or capability policy changes.
+
+## Optional standard OpenPGP compression
+
+Only a `backup` plan may set `"compression":"zlib"`. The existing maintained
+plan reader validates exactly `none` or `zlib` before the helper reads key stdin,
+and before the connector's key/STOP path. An absent field retains `none`;
+explicit `none` has the same GPG arguments and receipt shape as the old default.
+No sender, key, operator, runtime policy or CLI fork is introduced.
+
+The explicit ZLIB profile uses standard OpenPGP ZLIB at fixed level6 before
+AES256/MDC encryption. Both DATA and configuration streams use the same selected
+profile. It changes ciphertext size, never the complete tar, files, metadata,
+inventory or restored bytes. All plaintext byte/file/entry/total/path limits and
+the wall/cipher limits remain unchanged. Compression is no reason to raise caps
+or treat compressed size as the plaintext bound. Existing verification and
+restore automatically decode the OpenPGP compression packet; do not add a
+compression field to those strict plan schemas. Receipts remain unchanged;
+the reviewed backup plan records the explicit profile choice.
+
+Qualify the new exact transitive source closure with genuine Linux GPG first,
+including compressed oversize, wrong-key/MDC rejection and full raw-tar equality.
+Then Root runs the same actual synthetic custody/backup/restore/readback route
+with explicit ZLIB. Earlier NONE qualification remains attached to its older
+sealed source. A live compression measurement is only a capacity estimate, not
+a stopped-writer backup or restore proof. Root still owns key/send and release.

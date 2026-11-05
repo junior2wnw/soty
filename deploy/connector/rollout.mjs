@@ -143,7 +143,7 @@ export class Rollout {
         }else{
           requireThat(!observed.monitoring||observed.monitoring.mode==='reader','universal_baseline_runtime_mismatch');
           const expected=captureUniversalPreparedness({compiledLegacyMode:true,universalConfigured:false,reviewsConfigured:false,humanHttpEnabled:false,humanProfile:null,
-            ...(observed.monitoring?{monitoring:observed.monitoring}:{})});
+            ...(observed.monitoring?{monitoring:observed.monitoring}:{}),...(observed.platformAdminAccessSha256===undefined?{}:{platformAdminAccessSha256:observed.platformAdminAccessSha256})});
           requireThat(hash(observed)===hash(expected),'universal_baseline_runtime_mismatch');
         }
       }
