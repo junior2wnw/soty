@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { migrateAppsSchema, inspectAppsSchema, runtimeTargetDigest, ensureInitialPublication } from '../server/schema.mjs';
 import { createEndpointRegistration } from '../server/endpoint-registration.mjs';
 import { SELF_IP_PROFILE, ENDPOINT_SCHEMA, endpointDigestTuple, normalizeSelfEndpoint, targetFromRow } from '../server/endpoint-targets.mjs';
 
-const root=fileURLToPath(new URL('../../../',import.meta.url));
-const historical=execFileSync('git',['show','HEAD:modules/apps/server/schema.mjs'],{cwd:root,encoding:'utf8',maxBuffer:1024*1024});
+// Literal canonical Git blob from 450204c317e56d1c092046ca9864a05fc985149b; never the current HEAD reader.
+const historicalBytes=readFileSync(new URL('./fixtures/apps-schema-before-self-ip-450204.mjs',import.meta.url));
+assert.equal(createHash('sha256').update(historicalBytes).digest('hex'),'834d2a270758c7bf3ce5c71d195eca6fd96643a6bc1ce8dbc387d0d3de2fe1c7','historical Apps schema byte pin');
+const historical=historicalBytes.toString('utf8');
 const oldSource=historical.replace(/from (['"])(\.{1,2}\/[^'"]+)\1/gu,(_all,_quote,specifier)=>`from ${JSON.stringify(new URL(specifier,new URL('../server/schema.mjs',import.meta.url)).href)}`);
 const old=await import('data:text/javascript;base64,'+Buffer.from(oldSource).toString('base64'));
 const fresh=(options,historical=false)=>{const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');(historical?old.migrateAppsSchema:migrateAppsSchema)(db,options);return db;};

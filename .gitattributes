@@ -26,3 +26,5 @@
 /vendor/uplot/** -text
 /modules/apps/test/fixtures/source-host-before-clock-margin.mjs -text
 /src/world/test-fixtures/canvas-vault-renderer-before-locked-preview.ts.txt -text
+/modules/apps/test/fixtures/apps-schema-before-self-ip-450204.mjs -text
+/src/world/test-fixtures/unified-field-state-before-free-placement-450204.mjs -text

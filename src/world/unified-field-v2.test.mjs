@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {execFileSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
 import {applyFieldCommand,createFieldHistory,recordFieldHistory,undoFieldHistory,compactFieldContext,nextFieldSlot} from './unified-field-state.mjs';
 import {layoutUnifiedField,fieldMovePreview,fieldSlotToPoint} from './unified-field-layout.mjs';
 import {fieldPresentationClip,fieldPointInPolygon,validateFieldPresentation} from './unified-field-presentation.mjs';
@@ -54,7 +53,9 @@ test('negative controls detect ignored free geometry and the original absence of
   const broken=source.replace(needle,'const width=metrics.radius * SQRT3,height=metrics.radius*2;');assert.notEqual(broken,source);
   const absolute=broken.replace(/from '(\.\.?\/[^']+)'/gu,(_match,path)=>`from '${new URL(path,url).href}'`),module=await import(`data:text/javascript;base64,${Buffer.from(absolute).toString('base64')}`);
   const document=add(legacy()).document;assert.throws(()=>assert.equal(module.layoutUnifiedField(document,entities).nodes[1].width,640),error=>error.code==='ERR_ASSERTION');
-  const root=fileURLToPath(new URL('../../',import.meta.url));const baseline=execFileSync('git',['show','450204c:src/world/unified-field-state.mjs'],{cwd:root,encoding:'utf8'});
+  const historicalBytes=readFileSync(new URL('./test-fixtures/unified-field-state-before-free-placement-450204.mjs',import.meta.url));
+  assert.equal(createHash('sha256').update(historicalBytes).digest('hex'),'8c63dbab5d4fa3308aa84aa3a981e4802aa7642eba468f9917706dbe1231fa3d','historical field state byte pin');
+  const baseline=historicalBytes.toString('utf8');
   const stateUrl=new URL('./unified-field-state.mjs',import.meta.url),old=baseline.replace(/from '(\.\.?\/[^']+)'/gu,(_match,path)=>`from '${new URL(path,stateUrl).href}'`),oldModule=await import(`data:text/javascript;base64,${Buffer.from(old).toString('base64')}`);
   assert.throws(()=>oldModule.applyFieldCommand(legacy(),{type:'place-shortcut',shortcutId:'app-old',contextId:'home',placement:free}),error=>error.code==='field_command_invalid');
   assert.equal(applyFieldCommand(legacy(),{type:'place-shortcut',shortcutId:'app-old',contextId:'home',placement:free}).document.schema,'soty.field.v2');
