@@ -41,7 +41,7 @@ test('actual monitoring data refuses a legacy9 image, and unknown or extra curre
  for(const value of [{...format,monitoring:2},{...format,monitoring:'1'},{...format,futureStore:1}])assert.throws(()=>checkedStorageFormat(value),{code:'storage_probe_invalid'});
  const legacy={...format,schema:'soty.storage-format.v9'};delete legacy.monitoring;checkedStorageFormat(legacy);
  assert.throws(()=>checkedStorageFormat({...legacy,monitoring:1}),{code:'storage_probe_invalid'});
- for(const value of [{...reader(10),version:11},{...reader(10),readers:{...reader(10).readers,monitoring:[2]}},{...reader(10),readers:{...reader(10).readers,monitoring:[1,1]}}])assert.throws(()=>storageReaders(image(value)),{code:'storage_reader_unknown'});
+ for(const value of [{...reader(10),version:12},{...reader(10),readers:{...reader(10).readers,monitoring:[2]}},{...reader(10),readers:{...reader(10).readers,monitoring:[1,1]}}])assert.throws(()=>storageReaders(image(value)),{code:'storage_reader_unknown'});
 });
 for(const[name,sql,code]of[
  ['future format','PRAGMA user_version=2','storage_format_unknown'],
@@ -80,5 +80,5 @@ test('maintained universal image gate accepts known9 and monitoring-aware10 read
  const f=await fixture(t,{empty:true,policy:true}),handle=await prepareUniversalPolicy({schema:UNIVERSAL_POLICY_SCHEMA,phase:'legacy-baseline',human:null,reviews:null},{shellOrigins:['https://monitoring.fixture.invalid'],fixtureRoot:f.root});
  t.after(()=>disposeUniversalPolicy(handle));
  for(const version of[9,10])assert.doesNotThrow(()=>assertUniversalImagePrerequisites(handle,{candidateImage:image(reader(version)),originalImage:image(reader(version))}));
- assert.throws(()=>assertUniversalImagePrerequisites(handle,{candidateImage:image(reader(11)),originalImage:image(reader(10))}),{code:'storage_reader_unknown'});
+ assert.throws(()=>assertUniversalImagePrerequisites(handle,{candidateImage:image(reader(12)),originalImage:image(reader(10))}),{code:'storage_reader_unknown'});
 });

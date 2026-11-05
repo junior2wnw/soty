@@ -77,6 +77,19 @@ test('pinned upstream provenance and explicit local SDF patch match verified SHA
   assert.equal(provenance.patches[2].id,'glass-native-visibility-1');assert.equal(provenance.patches[2].baseSha256,provenance.patches[1].resultSha256);
   assert.equal(provenance.patches[2].resultSha256,provenance.files[0].sha256);assert.equal(provenance.files[0].sha256,'8304ee1472a1a056f3c8df319c3a5334bf66da8e91ab4128399da6c99e09ab7c');
   for(const file of provenance.files)assert.equal(createHash('sha256').update(readFileSync(new URL(file.path,base))).digest('hex'),file.sha256,file.path);
+  const css=provenance.files.find(file=>file.path==='src/ui-kit.css'),doc=provenance.files.find(file=>file.path==='docs/UI_KIT.md');
+  assert.equal(provenance.styleRevision,'soty-native-pointer-boundary-1');assert.equal(provenance.cssPatches.length,1);
+  const pointer=provenance.cssPatches[0];assert.equal(pointer.id,'glass-native-pointer-boundary-1');assert.equal(pointer.path,css.path);
+  assert.equal(pointer.baseSha256,provenance.patches[4].resultSha256);assert.equal(pointer.resultSha256,css.sha256);
+  assert.equal(pointer.baseBytes,39355);assert.equal(pointer.resultBytes,css.bytes);assert.equal(pointer.resultBytes-pointer.baseBytes,268);
+  assert.equal(css.bytes,39623);assert.equal(css.sha256,'6a58c8f58e2d9cea8f71b60e78b3d8c24355732cfafcec7eef5d046d06144d23');
+  assert.equal(readFileSync(new URL(css.path,base)).length,css.bytes);
+  assert.equal(pointer.documentation.baseSha256,provenance.uiLayerPatch.files[doc.path]);assert.equal(pointer.documentation.resultSha256,doc.sha256);
+  assert.equal(pointer.documentation.baseBytes,39598);assert.equal(pointer.documentation.resultBytes,doc.bytes);assert.equal(readFileSync(new URL(doc.path,base)).length,doc.bytes);
+  assert.equal(pointer.evidence.oracleSha256,'5ba3337094146f606d19d8dab68fbb1f7a2e0d600d694d87cd879972f802ae82');
+  assert.deepEqual([pointer.evidence.oldBrowser.tests,pointer.evidence.oldBrowser.failed,pointer.evidence.oldBrowser.skipped],[2,2,0]);
+  assert.deepEqual([pointer.evidence.actualBrowser.tests,pointer.evidence.actualBrowser.passed,pointer.evidence.actualBrowser.failed,pointer.evidence.actualBrowser.skipped],[8,8,0,0]);
+  assert.match(readFileSync(new URL('../../.gitattributes',import.meta.url),'utf8'),/^\/vendor\/optical-glass\/src\/ui-kit\.css -text$/m);
   const descriptor=JSON.parse(readFileSync(new URL('module-descriptor.json',base),'utf8'));assert.equal(descriptor.license,null);assert.equal(descriptor.publicationPerformed,false);assert.equal(descriptor.frameworkDependencies.length,0);
 });
 

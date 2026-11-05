@@ -38,9 +38,19 @@ export async function markerPair(t) {
       peer.on('error', () => {}); peer.send(marker); peer.on('message', bytes => peer.send(`${marker}:${bytes}`));
     }));
   }
-  await new Promise(done => self.listen(0, address, done));
-  await new Promise((done, reject) => { loop.once('error', reject); loop.listen(self.address().port, '127.0.0.1', done); });
   t.after(async () => { for (const finish of held) finish(); for (const socket of peers) socket.destroy(); for (const peer of wss.clients) peer.terminate(); wss.close(); await Promise.all([self,loop].map(server => new Promise(done => server.close(done)))); });
+  const listen = (server, port, host) => new Promise((done, reject) => {
+    const ready = () => { server.off('error', failed); done(); };
+    const failed = error => { server.off('listening', ready); reject(error); };
+    server.once('listening', ready); server.once('error', failed); server.listen(port, host);
+  });
+  for (let attempt = 0; ; attempt++) {
+    try { await listen(self, 0, address); await listen(loop, self.address().port, '127.0.0.1'); break; }
+    catch (error) {
+      await Promise.all([self, loop].map(server => new Promise(done => server.close(done))));
+      if (error.code !== 'EADDRINUSE' || attempt === 7) throw error;
+    }
+  }
   return { address, port: self.address().port, seen, accepted, hold() { holdHead = true; }, holdGet(){holdGet=true;}, release() { holdHead = false; holdGet=false; for (const finish of held.splice(0)) finish(); } };
 }
 export function rawHttp(port, path, { host, cookie, origin, method='GET', body }={}) {

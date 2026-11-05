@@ -42,3 +42,13 @@ Local UI revision6 добавляет src/widget-context.js и adjacent types / 
 ## Shared native action list, 05.11.2026
 
 `.glass-ui__action-list` adds flat44px action rows inside one native Glass sheet. No iframe, event or permission changes; static native overlay remains the readable96% canonical material. Same additive CSS hunk is in isolated library; its pre-existing CSS prefix differs and was preserved. Vendored provenance records exact before/after; this is not an upstream/npm release. Browser/native focus/viewport controls are recorded separately.
+
+## Native pointer boundary registration, 06.11.2026
+
+`styleRevision=soty-native-pointer-boundary-1` records the already approved `glass-native-pointer-boundary-1`; Core remains `soty-core-3`, all three JS/SDF/visibility patches and both previous CSS patches retain their hashes. Public version1.4.0, upstream commit and license:null are preserved. No new style behavior is introduced here.
+
+Exact owned CSS: `f8fa7d920a1d06759fdf67befd17da4c51e81152ef64346cf084d06e3bd8671f` /39355 bytes → `6a58c8f58e2d9cea8f71b60e78b3d8c24355732cfafcec7eef5d046d06144d23` /39623 bytes. The earlier candidate has exactly one268-byte insertion; every original byte is retained. The zero-specificity `:where(.glass-ui[data-glass-ignore], .glass-ui [data-glass-ignore])` boundary resets inherited pointer suppression to auto; explicit native class/inline/descendant pointer rules keep precedence. This literal CSS has an exact `-text` attribute, like the pinned uPlot payload. Other upstream sources are not normalized.
+
+The accompanying existing `docs/UI_KIT.md` explanation is also registered: `537e0c9ba4cc7495870b8aaa15669eec0d0aabe77d6df340980702b49b60728a` /39598 bytes → `f902d6140d7bbcdb2da22283970c4354e55739248b39217ee25087ec715c8b0c` /40327 bytes. Its bytes are unchanged by this registration.
+
+Evidence: portable [browser oracle](../../src/world/glass-action-sizing.browser.mjs), SHA256 `5ba3337094146f606d19d8dab68fbb1f7a2e0d600d694d87cd879972f802ae82`. External audit reference `d14-glass-native-pointer-freeze-final.json`, SHA256 `19577a9329474f783355a3600782786740356ba5d7c23c57c097ea5d0a907451`. Run `old-native-pointer-final.tap.log`: OLD2FAIL/0SKIP, SHA256 `28c7022d3b7455e3a46b16728c3154df54d820aa2b1dbb6bbacddc65e1bd29d0`; run `actual-repo-glass-action-sizing.tap.log`: actual applied8PASS/0FAIL/0SKIP, SHA256 `c2eee522598c16451469e3a62f9be9db0964ef62ba033b783a37bffac1540c8c`. This reuses verified installed-Chrome pointer/uPlot evidence; it does not claim GPU/Android/IME acceptance or an upstream publication.

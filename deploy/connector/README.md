@@ -388,3 +388,51 @@ The private actual runtime capture may add `monitoring.accessSha256`, computed f
 `featurePlatformAdminAccess:{expected:[ids],desired:[ids]}` is a separate private named operation for the existing `SOTY_PLATFORM_ADMIN_ACCOUNT_IDS`. It never follows from Monitoring access. Unique bounded32 acct IDs reuse Connect's admin normalizer; no-op, malformed, extra/stale fields refuse. It requires features phase, SAME exact image, fresh actual runtime hash and loaded `platformInvitations.admins` fingerprint (`platformAdminAccessSha256`), not merely an Env declaration. The getter is host-only/read-only and adds no signed or unsigned RPC.
 
 The Core CSV delta may accompany the separately named Monitoring access/mode operations in one existing prepare/promote restart. All other configuration and the other role sets remain exact; public receipts contain only expected/desired hashes, never arrays. Missing/wrong loaded/candidate fingerprints deny. Current-account identity must be independently confirmed before creating the private desired plan. Legacy/code-only upgrades and Monitoring-only rights retain their existing behavior.
+
+
+### Pinned330 partial reader bridge
+
+Reader manifest11 keeps the exact21 manifest10 family keys and known formats.
+It adds `[]` meaning unsupported: absent stores may pass, nonempty unsupported
+formats refuse before START. Versions3–10 retain strict nonempty arrays; normal
+current readers and all storage-format/start observations remain v10. Two
+existing future-version controls advance11→12 with this explicit version change.
+The fixed bridge keeps330 old9 arrays, including Notes[1,2]; appsEndpoint and
+appsFrameContinuity are unsupported[]. New separate databases are genuinely
+read by the full frozen probe10, not inferred from a version marker.
+
+`build-reader-bridge.mjs --base-image <qualified-local-tag> --out <absent-dir>`
+uses installed esbuild to prepare a node-builtins-only context and source pins.
+It does not build/start Docker or invoke a key/deploy operator. Root must prove
+that the local tag resolves to policy base c5821dd1… before Docker build and
+pass that same tag as BASE_IMAGE. Build-only REVISION must be the reviewed
+40-hex bridge source commit; org.opencontainers.image.revision publishes that
+actual bridge revision. Core baseRevision330 stays separately pinned. Pure
+filesystem/crypto verification runs with --network=none; Root can also build
+with --network=none. The external receipt binds bridge source blobs, base image
+and bundle. The Dockerfile verifies the Node24.15.0 executable,
+original2309-byte index and bundle SHA. It copies original index byte-for-byte
+to adjacent server/index.reader-bridge-original.js, then places the sealed
+wrapper at server/index.js. Relative imports resolve in the same server folder.
+CMD, ENTRYPOINT, USER, ENV, VOLUME, dependencies, core/auth/services/contracts,
+dist and other base files stay inherited; no runtime package or privilege is added.
+
+At startup the wrapper verifies pins, copies selected storage into a fresh700
+private /tmp snapshot under the existing192MiB aggregate cap, reads full v10,
+and checks the fixed partial manifest before importing the preserved body.
+It must delete its owned private copy first. Source DATA/WAL/SHM is not opened
+for write. Unknown/corrupt storage, Notes3, endpoint/frame overlays, pin mismatch
+or cleanup failure prevent original import. Actual image identity/label remain
+the external maintained guard’s responsibility; the pure prestart declaration
+validator does not attest an image. No socket/network/environment change,
+migration, legacy flag or label-only bypass is introduced. Preserved /tmp
+storage configuration means actual capacity must include the temporary copy.
+
+Metadata and local tests are not image qualification. Root must still prove
+full base/bridge filetree equality except wrapper/relocated original/explicit
+bridge labels, inherited runtime configuration, genuine pinned-runtime negatives,
+all mandatory old suites, and full current-copy coldopen/reopen with schema/IDs/
+rows/ACL/integrity. Preserved host-policy/binds must actually work with330 core.
+The bridge offers old functions and preserves newer stores, not new features.
+Fresh latest-data encrypted checkpoint remains mandatory; actual restore of
+that checkpoint is required before M09 completion. T0 is not relabelled T1.

@@ -26,19 +26,24 @@ const formatVersion = schema => schema === 'soty.storage-format.v3' ? 3 : schema
 const versionsFor = (store, version) => version < 7 && store === 'apps' ? supported.apps.filter(value => value <= 11)
   : version < 8 && store === 'notes' ? supported.notes.filter(value => value <= 2) : supported[store];
 const knownFormat = (store, value, version) => value === 'empty' || versionsFor(store, version).includes(value);
-const knownReaders = (store, value, version) => Array.isArray(value) && value.length > 0 && value.length <= versionsFor(store, version).length
+const knownReaders = (store, value, version) => Array.isArray(value) && (value.length > 0 || version === 11) && value.length <= versionsFor(store, version).length
   && value.every(item => versionsFor(store, version).includes(item)) && new Set(value).size === value.length;
 
-export function storageReaders(image) {
-  requireThat(matches(IMAGE, image?.Id), 'storage_image_identity_invalid');
+function declaredStorageReaders(label) {
   let value;
-  const label = image.Config?.Labels?.[storageReaderLabel];
   requireThat(typeof label === 'string', 'storage_reader_unknown');
   try { value = JSON.parse(label); } catch { throw new SafeError('storage_reader_unknown'); }
-  requireThat(keys(value, 'readers,version') && [3, 4, 5, 6, 7,8,9,10].includes(value.version)
+  // Reader manifest11 adds explicit unsupported([]) capabilities only. It does
+  // not introduce storage-format11, storage-start11, or another stored format.
+  requireThat(keys(value, 'readers,version') && [3, 4, 5, 6, 7,8,9,10,11].includes(value.version)
     && keys(value.readers, storesFor(value.version).slice().sort().join(','))
     && storesFor(value.version).every(store => knownReaders(store, value.readers[store], value.version)), 'storage_reader_unknown');
   return value.readers;
+}
+
+export function storageReaders(image) {
+  requireThat(matches(IMAGE, image?.Id), 'storage_image_identity_invalid');
+  return declaredStorageReaders(image.Config?.Labels?.[storageReaderLabel]);
 }
 
 export function checkedStorageFormat(value) {
@@ -48,12 +53,21 @@ export function checkedStorageFormat(value) {
   return { ok: true, schema: value.schema, ...Object.fromEntries(storesFor(version).map(store => [store, value[store]])) };
 }
 
-export function assertStorageCompatible(image, value) {
-  const readers = storageReaders(image), format = checkedStorageFormat(value);
-  const version = formatVersion(format.schema);
+function compatibleStorageReaders(readers, value) {
+  const format = checkedStorageFormat(value), version = formatVersion(format.schema);
   requireThat(storesFor(version).every(store => version >= 7 && format[store] === 'empty'
     || Array.isArray(readers[store]) && (format[store] === 'empty' || readers[store].includes(format[store]))), 'storage_reader_incompatible');
   return format;
+}
+
+// Pure declaration validation for a pinned prestart reader. The external START
+// guard still obtains the actual image and validates its own reader label.
+export function assertStorageReaderManifestCompatible(label, value) {
+  return compatibleStorageReaders(declaredStorageReaders(label), value);
+}
+
+export function assertStorageCompatible(image, value) {
+  return compatibleStorageReaders(storageReaders(image), value);
 }
 
 function dataMount(runtime) {

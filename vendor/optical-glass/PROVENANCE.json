@@ -84,8 +84,8 @@
       "upstreamSha256": "c04b668aed5dda3fafc443247871318713241f64ad59edf7e3bf0f40f4470b1a"
     },
     {
-      "bytes": 39355,
-      "sha256": "f8fa7d920a1d06759fdf67befd17da4c51e81152ef64346cf084d06e3bd8671f",
+      "bytes": 39623,
+      "sha256": "6a58c8f58e2d9cea8f71b60e78b3d8c24355732cfafcec7eef5d046d06144d23",
       "path": "src/ui-kit.css",
       "upstreamSha256": "32a62c9ca68673e77b355be60a21d770e72dff1938eb8c4326bf66ff302b5ac7"
     },
@@ -135,8 +135,8 @@
       "path": "docs/SITE_INTEGRATION.md"
     },
     {
-      "bytes": 39598,
-      "sha256": "537e0c9ba4cc7495870b8aaa15669eec0d0aabe77d6df340980702b49b60728a",
+      "bytes": 40327,
+      "sha256": "f902d6140d7bbcdb2da22283970c4354e55739248b39217ee25087ec715c8b0c",
       "path": "docs/UI_KIT.md",
       "upstreamSha256": "fb3462678eba47f34590aca1bb9e60063e3031fd2b21b8aca44ef18620b7dedd"
     },
@@ -203,5 +203,49 @@
       "qualification": "UI-only two-mode channel with strict origin/window/envelope and per-load integer epoch ACK; no Source authority, SDK/app-work/core/UIJS changes. Additive CSS explicit glance/editor/actions; same iframe DOM; Source readable plate retained, decoration removed only in normal-colors glance. No publication."
     }
   },
-  "actionListRevision": "soty-native-action-list-1"
+  "actionListRevision": "soty-native-action-list-1",
+  "styleRevision": "soty-native-pointer-boundary-1",
+  "cssPatches": [
+    {
+      "id": "glass-native-pointer-boundary-1",
+      "path": "src/ui-kit.css",
+      "baseSha256": "f8fa7d920a1d06759fdf67befd17da4c51e81152ef64346cf084d06e3bd8671f",
+      "resultSha256": "6a58c8f58e2d9cea8f71b60e78b3d8c24355732cfafcec7eef5d046d06144d23",
+      "baseBytes": 39355,
+      "resultBytes": 39623,
+      "bytesAdded": 268,
+      "description": "Zero-specificity opt-in at the ignored native boundary stops inherited Glass-container pointer suppression; explicit component and descendant pointer rules retain precedence. No new CSS change is made by this provenance registration.",
+      "lineEndings": "Freeze these already accepted literal CSS bytes with the exact Git -text path; do not normalize upstream files.",
+      "documentation": {
+        "path": "docs/UI_KIT.md",
+        "baseSha256": "537e0c9ba4cc7495870b8aaa15669eec0d0aabe77d6df340980702b49b60728a",
+        "resultSha256": "f902d6140d7bbcdb2da22283970c4354e55739248b39217ee25087ec715c8b0c",
+        "baseBytes": 39598,
+        "resultBytes": 40327,
+        "description": "The existing boundary-reset qualification is recorded; documentation bytes are unchanged."
+      },
+      "evidence": {
+        "sourceFreezeSha256": "19577a9329474f783355a3600782786740356ba5d7c23c57c097ea5d0a907451",
+        "approvedAtUtc": "2026-11-05T19:12:24.780252+00:00",
+        "oracleSha256": "5ba3337094146f606d19d8dab68fbb1f7a2e0d600d694d87cd879972f802ae82",
+        "oldBrowser": {
+          "sha256": "28c7022d3b7455e3a46b16728c3154df54d820aa2b1dbb6bbacddc65e1bd29d0",
+          "tests": 2,
+          "failed": 2,
+          "skipped": 0,
+          "runId": "old-native-pointer-final.tap.log"
+        },
+        "actualBrowser": {
+          "sha256": "c2eee522598c16451469e3a62f9be9db0964ef62ba033b783a37bffac1540c8c",
+          "tests": 8,
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "runId": "actual-repo-glass-action-sizing.tap.log"
+        },
+        "sourceFreezeAuditReference": "d14-glass-native-pointer-freeze-final.json",
+        "oraclePath": "src/world/glass-action-sizing.browser.mjs"
+      }
+    }
+  ]
 }

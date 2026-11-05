@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {join,resolve,sep} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {indexedNativePort} from '../../modules/notes/test/indexed-native-port.mjs';
 import * as local from './canvas-vault-local.mjs';
@@ -125,7 +125,7 @@ async function serverFixture(t,service=createCanvasVaultService){
   const actorActive=actor=>[owner.deviceId,friend.deviceId].includes(actor?.deviceId),withActorAuthorityFence=(actor,callback)=>{if(!issued.has(actor))throw new CanvasObjectError('connect_authority_actor_invalid',403);return callback();};
   objects=createCanvasObjectsService({databasePath:join(folder,'objects.sqlite'),projectId,actorActive,withActorAuthorityFence,withProtectionAuthority:(request,callback)=>vault.withProtectionAuthority(request,callback)});
   vault=service({databasePath:join(folder,'vault.sqlite'),projectId,actorActive,withActorAuthorityFence,withProtectionTarget:(request,callback)=>objects.withProtectionTarget(request,callback),withObjectAuthority:(request,callback)=>objects.withObjectAuthority(request,callback),withRuntimeTarget:(request,callback)=>objects.withRuntimeProtectionTarget(request,callback)});objects.registerProvider(vault.provider);
-  t.after(async()=>{vault.close();objects.close();assert.equal(resolve(folder).startsWith(resolve(tmpdir())+'\\'),true);await rm(folder,{recursive:true,force:true});});
+  t.after(async()=>{vault.close();objects.close();assert.equal(resolve(folder).startsWith(resolve(tmpdir())+sep),true);await rm(folder,{recursive:true,force:true});});
   const call=(op,args,actor=owner)=>vault.execute({actor,op:'canvas.vault.'+op,args:{expectedAccountId:actor.accountId,...args}});
   const objectCall=(op,args)=>objects.execute({actor:owner,op:'canvas.objects.'+op,args:{expectedAccountId:accountId,...args}});
   const create=binding=>objectCall('create',{requestId:'independent_object_'+(++serial),binding,presentation:{mask:{shape:'rect'},fontSize:16},visibility:{audience:'private',accountIds:[],communityIds:[]},hidden:{owner:false,others:false},protection:{kind:'password'}}).current;
