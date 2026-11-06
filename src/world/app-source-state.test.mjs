@@ -623,10 +623,14 @@ async function compactSourceMethodsUnderPorts(sourceModel, api, store, quickDeta
   const file = ts.createSourceFile('app-settings.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const mount = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'mountAppSettings');
   assert.ok(mount?.body, 'actual mountAppSettings must exist');
-  const functions = ['perform', 'promoteSource', 'mutation'].map(name => {
+  const functions = ['perform', 'promoteSource', 'mutation', 'checkSource'].map(name => {
     const matches = mount.body.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
     assert.equal(matches.length, 1, `actual ${name} declaration`); return matches[0].getText(file);
   });
+  const rendering=mount.body.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='renderSource');
+  const buttonStatements=rendering.body.statements.map(node=>node.getText(file))
+    .filter(text=>/^(?:text\(sourceCheck|disable\(sourceCheck|sourceCheck\.setAttribute)/u.test(text));
+  assert.equal(buttonStatements.length,3,'actual Source-check label, availability and busy state');
   const declarations = mount.body.statements.filter(ts.isVariableStatement).flatMap(node => [...node.declarationList.declarations]);
   const guards = declarations.filter(node => ts.isIdentifier(node.name) && node.name.text === 'sourceCurrent');
   assert.equal(guards.length, 1, 'actual sourceCurrent declaration');
@@ -639,8 +643,8 @@ async function compactSourceMethodsUnderPorts(sourceModel, api, store, quickDeta
   const code = `module.exports = ports => {
     const { sourceModel, api, store, quickDetails, dispatchAppSettingsIntent } = ports;
     const document = { visibilityState: 'visible' }, advanced = { open: true }, sourceDetails = { open: true };
-    const current = () => true, sourcePromote = {}, sourceHistory = { open: false }, model = null;
-    const disabled = () => false, render = () => {}, settingsError = reason => String(reason?.code ?? reason);
+    const current = () => true, sourcePromote = {}, sourceCheck = { span: { textContent: '' }, querySelector() { return this.span; }, setAttribute() {} }, sourceForm = { reportValidity: () => true }, sourceHistory = { open: false }, model = null;
+    const disabled = node => node === sourceCheck && !sourceModel.read().canPrepare && !sourceModel.read().canReapply, render = () => {}, settingsError = reason => String(reason?.code ?? reason);
     let selectedSection = 'hosting', busy = false, refreshing = false, refreshGeneration = 0, inspectionGeneration = 0, copyGeneration = 0;
     let error = '', copyFallback = null, sourcePrimaryAction = 'recheck', sourceGeneration = 0;
     let sourceError = '', sourceNotice = '', sourceRechecking = false, hadPreparation = true;
@@ -649,7 +653,12 @@ async function compactSourceMethodsUnderPorts(sourceModel, api, store, quickDeta
     const loadSourceHistory = () => { throw new Error('unexpected history request'); };
     ${guard}
     ${functions.join('\n')}
-    return { invoke: promoteSource, leaveHosting() { selectedSection = 'about'; }, parents: { advanced, sourceDetails },
+    return { invoke: promoteSource, check: checkSource, button(blocked = busy) {
+      const state=sourceModel.read(),hasPreparation=Boolean(state.preparation&&state.remainingMs>0),selectedDevice={},devicesLoaded=true,deviceError='';
+      const text=(node,value)=>{node.textContent=value;},disable=(node,value)=>{node.disabled=value;};
+      ${buttonStatements.join('\n')}
+      return { label:sourceCheck.span.textContent,disabled:sourceCheck.disabled };
+    }, leaveHosting() { selectedSection = 'about'; }, parents: { advanced, sourceDetails },
       read: () => ({ sourceError, error, readbacks, busy, sourceNotice }) };
   };`;
   const compiled = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -697,4 +706,81 @@ test('component methods: remaining in the Hosting section rechecks and uses its 
   assert.equal(result.methods.read().readbacks, 1); assert.equal(result.methods.read().sourceError, '');
   assert.equal(result.methods.read().busy, false); assert.equal(result.saved.state.read().pending, null);
   assert.equal(result.afterRelease[0].args.preparationId, 'n'.repeat(43));
+});
+
+function unchangedSelectedFixture() {
+  const f=pairedFixture(),snapshot=copy(f.snapshot);
+  snapshot.source.revision=3;snapshot.publication.activeTargetRevision=3;f.source.observe(snapshot);
+  const next=normalizeAppSourceTarget(Object.fromEntries(Object.keys(target()).map(key=>[key,({...snapshot.source,revision:4,digest:'d'.repeat(64)})[key]])));
+  return{...f,snapshot,next};
+}
+
+test('component methods: explicit unchanged Source reapply prepares revision4 with the normal owner flow and both consents',async()=>{
+  const f=unchangedSelectedFixture(),saved=storeFixture(),calls=[];
+  assert.equal(f.source.read().canPrepare,false,'ordinary unchanged prepare remains unavailable');
+  const api={async request(op,args){calls.push({op,args:copy(args)});assert.equal(op,'apps.source.prepare');
+    assert.equal(args.expectedTargetRevision,3);assert.deepEqual(args.source,{hostDeviceId:f.snapshot.source.hostDeviceId,
+      connectorId:f.snapshot.source.connectorId,port:f.snapshot.source.port,entryPath:f.snapshot.source.entryPath,profile:f.snapshot.source.profile});
+    assert.deepEqual(args.nativeEntry,{origin:f.pair.origin,targetRevision:f.pair.target.revision});
+    assert.equal(Object.hasOwn(args,'reapply'),false);return prepared(args,f.next,{nativeEntry:f.pair});}};
+  const methods=await compactSourceMethodsUnderPorts(f.source,api,saved.state,null);await methods.check();
+  assert.equal(calls.length,1,'the explicit same-profile action must reach the unchanged normal preparation API');
+  assert.equal(f.source.read().preparation.target.revision,4);assert.equal(f.source.read().dirty,true);
+  assert.equal(f.source.read().canPromote,false);f.source.patch({exposureConfirmed:true});assert.equal(f.source.read().canPromote,false);
+  f.source.patch({nativeConfirmed:true});const intent=f.source.promoteIntent();
+  assert.equal(intent.args.exposureAck.scope,'authenticated-workspace');assert.equal(intent.args.nativeExposureAck.targetRevision,f.pair.target.revision);
+  const result=await dispatchAppSettingsIntent({...intent,state:saved.state,isCurrent:()=>true,api:{request:async()=>receipt(saved.state.read().pending)}});
+  assert.equal(result.status,'accepted');assert.equal(saved.state.read().pending,null);
+  f.source.observe({...f.snapshot,source:{...f.snapshot.source,...f.next},publication:{...f.snapshot.publication,activeTargetRevision:4,policyEpoch:9}});
+  assert.equal(f.source.read().conflict,true,'an unacknowledged external current change retires the local reapply intent');
+  assert.equal(f.source.read().canPrepare,false);
+});
+
+test('Source reapply retains ordinary no-change, profile, rights and public Native consent boundaries',async()=>{
+  for(const snapshot of [inspection(),{...inspection(),source:{...inspection().source,profile:'soty.selected-human-embed.v1'}}]){
+    const f=fixture(snapshot);assert.equal(f.source.read().canReapply,false);
+    assert.throws(()=>f.source.requestReapply(),{code:'app_source_reapply_unavailable'});
+    await assert.rejects(f.prepare(),{code:'app_source_unchanged'});
+  }
+  for(const mutation of [s=>{s.app.state='revoked';},s=>{s.actions.canEdit=false;},s=>{s.actions.canPublish=false;}]){
+    const f=unchangedSelectedFixture(),snapshot=copy(f.snapshot);mutation(snapshot);f.source.observe(snapshot);
+    assert.equal(f.source.read().canReapply,false);assert.throws(()=>f.source.requestReapply());
+  }
+  const f=unchangedSelectedFixture();f.source.observe(f.snapshot,{publicationDirty:true});assert.equal(f.source.read().canReapply,false);
+  assert.throws(()=>f.source.patch({reapply:true}));
+});
+
+test('Source reapply private intent clears on reset, edit, history, invalidation, disposal and stale current data',()=>{
+  for(const kind of ['reset','edit','history','invalidate','dispose','stale','permission']){
+    const f=unchangedSelectedFixture();f.source.requestReapply();assert.equal(f.source.read().canPrepare,true);
+    if(kind==='reset')f.source.reset();
+    if(kind==='edit'){f.source.patch({port:'6000'});f.source.patch({port:String(f.snapshot.source.port)});}
+    if(kind==='history')f.source.selectHistory(normalizeAppSourceTarget(Object.fromEntries(Object.keys(target()).map(key=>[key,f.snapshot.source[key]]))));
+    if(kind==='invalidate')f.source.invalidatePreparation();
+    if(kind==='dispose')f.source.dispose();
+    if(kind==='stale')f.source.observe({...f.snapshot,source:{...f.snapshot.source,revision:4},publication:{...f.snapshot.publication,activeTargetRevision:4}});
+    if(kind==='permission')f.source.observe({...f.snapshot,actions:{canEdit:true,canPublish:false}});
+    assert.equal(f.source.read().canPrepare,false,kind);assert.equal(f.source.read().preparation,null,kind);
+    if(kind==='stale'){assert.equal(f.source.read().conflict,true);f.source.reset();assert.equal(f.source.read().canPrepare,false);}
+  }
+});
+
+test('actual Source check button advertises explicit reapply, blocks pending work and retires stale account replies',async()=>{
+  const f=unchangedSelectedFixture(),saved=storeFixture(),gate=deferred();let args;
+  const methods=await compactSourceMethodsUnderPorts(f.source,{request:async(_op,value)=>{args=value;return gate.promise;}},saved.state,null);
+  assert.equal(methods.button().label,'Обновить подключение');assert.equal(methods.button().disabled,false);
+  assert.equal(methods.button(true).disabled,true);
+  const checking=methods.check();assert.equal(f.source.read().preparing,true);assert.equal(methods.button().label,'Проверяем…');
+  assert.equal(methods.button().disabled,true);methods.leaveHosting();gate.resolve(prepared(args,f.next,{nativeEntry:f.pair}));await checking;
+  assert.equal(f.source.read().preparation,null);assert.equal(f.source.read().dirty,false);assert.equal(f.source.read().canPrepare,false);
+  assert.equal(saved.values.size,0);
+});
+
+test('a confirmed same-profile receipt resets reapply without automatically allocating another revision',async()=>{
+  const f=unchangedSelectedFixture(),saved=storeFixture();f.source.requestReapply();
+  await f.prepare(f.next,{nativeEntry:f.pair});f.source.patch({exposureConfirmed:true,nativeConfirmed:true});
+  const pending=await saved.state.prepare(f.source.promoteIntent());await saved.state.acknowledge(pending,receipt(pending));
+  const current={...f.snapshot,source:{...f.snapshot.source,...f.next},publication:{...f.snapshot.publication,activeTargetRevision:4,policyEpoch:9}};
+  f.source.observe(current,{completed:pending});assert.equal(f.source.read().dirty,false);assert.equal(f.source.read().conflict,false);
+  assert.equal(f.source.read().canPrepare,false);assert.equal(f.source.read().canReapply,true);assert.equal(f.source.read().preparation,null);
 });

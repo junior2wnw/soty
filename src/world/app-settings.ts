@@ -210,6 +210,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     sourceError = ''; sourceNotice = ''; hadPreparation = Boolean(sourceModel.read().preparation);
     await perform(async () => {
       try {
+        if (sourceModel!.read().canReapply) sourceModel!.requestReapply();
         const operation = sourceModel!.prepare({ api, isCurrent: sourceCurrent }); render();
         const result = await operation;
         if (current() && generation === sourceGeneration && result.status === 'ready') hadPreparation = true;
@@ -770,8 +771,8 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     sourcePromote.hidden = sourceResult.hidden;
     sourcePrimaryAction = hasPreparation ? 'promote' : 'recheck';
     text(sourcePromote.querySelector('span')!, sourceRechecking ? 'Перепроверяем…' : sourcePrimaryAction === 'recheck' ? 'Перепроверить и переключить' : draft.mode === 'history' ? 'Вернуть этот источник' : 'Переключить');
-    text(sourceCheck.querySelector('span')!, state.preparing ? 'Проверяем…' : hasPreparation || hadPreparation ? 'Проверить ещё раз' : 'Проверить');
-    disable(sourceCheck, blocked || staleInspection || !state.canPrepare || !selectedDevice || !devicesLoaded || Boolean(deviceError));
+    text(sourceCheck.querySelector('span')!, state.preparing ? 'Проверяем…' : state.canReapply ? 'Обновить подключение' : hasPreparation || hadPreparation ? 'Проверить ещё раз' : 'Проверить');
+    disable(sourceCheck, blocked || staleInspection || !(state.canPrepare || state.canReapply) || !selectedDevice || !devicesLoaded || Boolean(deviceError));
     disable(sourcePromote, blocked || staleInspection || !(sourcePrimaryAction === 'recheck' ? state.canRecheckPromote : state.canPromote));
     sourcePromote.setAttribute('aria-busy', String(sourceRechecking));
     sourceCheck.setAttribute('aria-busy', String(state.preparing));

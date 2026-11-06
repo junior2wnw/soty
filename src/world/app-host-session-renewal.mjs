@@ -87,7 +87,9 @@ export function createAppHostSessionRenewal({readBinding,isCurrent,context,reque
         if(!commit(binding,value))return false;binding=readBinding();owned=binding;if(!binding||!live(binding))return false;
       }
       if(value.state==='admitting'){notify('pending');return false;}
-      if(reason==='near-expiry'&&value.state==='current'&&value.hostSessionExpiresAt-clock()>30000)return true;
+      if(reason==='near-expiry'&&value.state==='current'&&value.hostSessionExpiresAt-clock()>30000){
+        notify('confirmed');return true;
+      }
       action=pending={binding,requestId:randomId(),reply:null,controller:new AbortController()};
     }else action=pending;
     if(!live(action.binding))return false;

@@ -109,6 +109,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     port: String(value.source.port), entryPath: value.source.entryPath, profile: value.source.profile,...(value.source.endpoint?{endpoint:clone(value.source.endpoint),endpointAddress:value.source.endpoint.address}:{}), launchPolicy: value.publication.launchPolicy,
     exposureConfirmed: false, nativeEntryMode: 'keep', nativeDomainId: null, nativeConfirmed: false, sourceDomainId: null, targetRevision: null });
   let draft = fresh(snapshot), selected = null, prepared = null, inFlight = null, publicationDirty = false;
+  let reapplyRequested = false, reapplyConflict = false;
   let historyGeneration = 0, historyFlight = null, history = { loading: false, targets: [], nextCursor: null, stale: false };
   let historyCurrent = null, historyConflict = false;
   let lastClock = 0, clockBroken = false;
@@ -117,9 +118,9 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     if (clockBroken || !Number.isFinite(result) || result < lastClock) { clockBroken = true; return null; }
     lastClock = result; return result;
   };
-  const dirty = () => (draft.mode === 'history' ? draft.targetRevision !== base.source.revision : !equal(tuple(draft), tuple(base.source)))
+  const dirty = () => reapplyRequested || reapplyConflict || (draft.mode === 'history' ? draft.targetRevision !== base.source.revision : !equal(tuple(draft), tuple(base.source)))
     || draft.launchPolicy !== base.publication.launchPolicy || draft.nativeEntryMode === 'remove' || draft.sourceDomainId !== null;
-  const conflict = () => historyConflict || (dirty() && !equal(baseIdentity(base), baseIdentity(snapshot)));
+  const conflict = () => historyConflict || reapplyConflict || (dirty() && !equal(baseIdentity(base), baseIdentity(snapshot)));
   const noChange = () => draft.nativeEntryMode !== 'remove' && draft.sourceDomainId === null
     && (draft.mode === 'history' ? draft.targetRevision === snapshot.source.revision : equal(tuple(draft), tuple(snapshot.source)));
   const sourceEntry = () => sourceEntryChoices(snapshot).find(alias => alias.domainId === draft.sourceDomainId) ?? null;
@@ -155,9 +156,12 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     if (at === null || at < prepared.receivedAt || at >= prepared.deadline) prepared.expired = true;
     return prepared.expired ? 0 : Math.max(0, prepared.deadline - at);
   };
-  const eligible = () => !disposed && snapshot.app.state === 'enabled' && snapshot.actions.canEdit && snapshot.actions.canPublish
-    && !publicationDirty && !conflict() && !noChange() && integrationAvailable() && activationAllowed()
+  const sourceAllowed = () => !disposed && snapshot.app.state === 'enabled' && snapshot.actions.canEdit && snapshot.actions.canPublish
+    && !publicationDirty && !conflict() && integrationAvailable() && activationAllowed()
     && (!nativeReviewRequired() || draft.nativeEntryMode === 'remove' || nativeKeepAllowed());
+  const eligible = () => sourceAllowed() && (!noChange() || reapplyRequested);
+  const canReapply = () => sourceAllowed() && !inFlight && !reapplyRequested && noChange()
+    && draft.mode === 'new' && draft.profile === 'soty.selected-human-embed.v2';
   function invalidatePreparation() { generation++; prepared = null; draft.exposureConfirmed = false; draft.nativeConfirmed = false; }
   const reviewAvailable = () => eligible() && !!prepared && prepared.generation === generation;
   function ready() { return eligible() && !!prepared && prepared.generation === generation && remaining() > 0; }
@@ -237,18 +241,22 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       && (draft.mode === 'history' ? draft.targetRevision === pending.expectedSource.revision
         && equal(pins(selected), pins(pending.expectedSource)) : equal(tuple(draft), tuple(pending.expectedSource)));
   }
-  function resetDraft() { invalidatePreparation(); base = clone(snapshot); draft = fresh(snapshot); selected = null; }
+  function resetDraft() { invalidatePreparation(); reapplyRequested = false; reapplyConflict = false; base = clone(snapshot); draft = fresh(snapshot); selected = null; }
   function reset() { historyGeneration++; resetDraft(); }
   const controller = {
     read() {
       const remainingMs = remaining();
       return clone({ snapshot, base, draft, dirty: dirty(), conflict: conflict(), publicationDirty, preparing: !!inFlight,
-        preparation: prepared?.value ?? null, remainingMs, canPrepare: eligible() && !inFlight,
+        preparation: prepared?.value ?? null, remainingMs, canPrepare: eligible() && !inFlight, canReapply: canReapply(),
         canPromote: ready() && consentReady(), canRecheckPromote: canRecheck(), history,
         nativeEntry: nativeEntry(), nativeReviewRequired: nativeReviewRequired(), initialNativeReview: initialNativeReview(),
         nativeChoices: initialNativeReview() ? initialNativeChoices(snapshot) : [], nativeKeepAllowed: nativeKeepAllowed(), nativeReviewOrigins: nativeReviewOrigins(),
         sourceEntry: sourceEntry(), sourceEntryAction: sourceEntryAction(), sourceEntryChoices: sourceEntryChoices(snapshot),
         sourceEntryActivationSupported: snapshot.source.sourceEntryActivation === true, sourceEntryActivationUnsupported: activationUnsupported() });
+    },
+    requestReapply() {
+      check(canReapply(), 'app_source_reapply_unavailable');
+      invalidatePreparation(); reapplyRequested = true;
     },
     patch(value) {
       check(!disposed && exact(value, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile', 'endpoint', 'endpointAddress', 'launchPolicy', 'exposureConfirmed', 'nativeEntryMode', 'nativeDomainId', 'nativeConfirmed', 'sourceDomainId']));
@@ -274,7 +282,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
         || (Object.hasOwn(value, 'nativeDomainId') && value.nativeDomainId !== draft.nativeDomainId)
         || (Object.hasOwn(value, 'sourceDomainId') && value.sourceDomainId !== draft.sourceDomainId)
         || (!!inFlight && (Object.hasOwn(value, 'exposureConfirmed') || Object.hasOwn(value, 'nativeConfirmed')));
-      if (changed) invalidatePreparation();
+      if (changed) { invalidatePreparation(); reapplyRequested = false; reapplyConflict = false; }
       const changedProfile = Object.hasOwn(value, 'profile') && value.profile !== draft.profile;
       draft = { ...draft, ...clone(value) };
       if (changedProfile && draft.profile === 'soty.selected-human-embed.v2' && draft.launchPolicy === 'anyone' && !Object.hasOwn(value, 'sourceDomainId')) {
@@ -288,7 +296,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     },
     selectHistory(value) {
       check(!disposed && exact(value, [...targetKeys, 'createdAt']), 'app_source_invalid_target');
-      const target = projectTarget(value); invalidatePreparation(); selected = target;
+      const target = projectTarget(value); invalidatePreparation(); reapplyRequested = false; reapplyConflict = false; selected = target;
       draft = { ...draft, mode: 'history', hostDeviceId: target.hostDeviceId, connectorId: target.connectorId,
         port: String(target.port), entryPath: target.entryPath, profile: target.profile, endpoint:target.endpoint,endpointAddress:target.endpoint?.address, targetRevision: target.revision, sourceDomainId: null };
     },
@@ -300,6 +308,9 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
         || !equal(sourceEntryChoices(snapshot), sourceEntryChoices(value));
       const completed = matchesCompleted(options.completed), wasDirty = dirty(), previousChoices = sourceEntryChoices(snapshot);
       if (changed || (options.publicationDirty === true && !publicationDirty)) invalidatePreparation();
+      if (reapplyRequested && (changed || options.publicationDirty === true || value.app.state !== 'enabled' || !value.actions.canEdit || !value.actions.canPublish)) {
+        reapplyRequested = false; reapplyConflict = changed;
+      }
       if (Object.hasOwn(options, 'publicationDirty')) { check(typeof options.publicationDirty === 'boolean'); publicationDirty = options.publicationDirty; }
       snapshot = value;
       if (historyCurrent && snapshot.publication.policyEpoch >= historyCurrent.policyEpoch) {
@@ -316,10 +327,10 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       }
     },
     reset,
-    invalidatePreparation,
+    invalidatePreparation() { reapplyRequested = false; invalidatePreparation(); },
     async prepare({ api, isCurrent }) {
       check(!inFlight, 'apps_source_preparation_capacity');
-      if (disposed || !isCurrent()) return { status: 'stale' };
+      if (disposed || !isCurrent()) { reapplyRequested = false; return { status: 'stale' }; }
       const args = prepareArgs(), startedAt = clock(); check(startedAt !== null, 'app_source_clock_invalid');
       invalidatePreparation();
       const request = { generation, args, native: clone(nativeEntry()), sourceEntry: clone(sourceEntry()),
@@ -327,13 +338,13 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       const current = () => !disposed && isCurrent() && request.generation === generation;
       try {
         const response = await api.request('apps.source.prepare', clone(args));
-        if (!current()) return { status: 'stale' };
+        if (!current()) { reapplyRequested = false; return { status: 'stale' }; }
         const receivedAt = clock(); check(receivedAt !== null && receivedAt >= startedAt, 'app_source_clock_invalid');
         const value = validPreparation(response, request), duration = appSourcePreparationRemaining(value, receivedAt - startedAt);
         check(duration > 0, 'apps_source_preparation_expired');
         prepared = { value, generation, receivedAt, deadline: receivedAt + duration }; draft.exposureConfirmed = false;
         return { status: 'ready' };
-      } catch (error) { if (!current()) return { status: 'stale' }; throw error; }
+      } catch (error) { if (!current()) { reapplyRequested = false; return { status: 'stale' }; } throw error; }
       finally { if (inFlight === request) inFlight = null; }
     },
     promoteIntent() {
@@ -410,7 +421,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       } catch (error) { if (!current()) return 'stale'; throw error; }
       finally { if (historyFlight === request) { historyFlight = null; history.loading = false; } }
     },
-    dispose() { if (disposed) return; disposed = true; invalidatePreparation(); historyGeneration++; },
+    dispose() { if (disposed) return; disposed = true; reapplyRequested = false; reapplyConflict = false; invalidatePreparation(); historyGeneration++; },
   };
   return controller;
 }

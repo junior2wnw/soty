@@ -11,7 +11,7 @@ export interface AppSourceIntent {
 export interface AppSourceStateView {
   snapshot: AppInspection; base: AppInspection; draft: AppSourceDraft; dirty: boolean; conflict: boolean;
   publicationDirty: boolean; preparing: boolean; preparation: AppSourcePreparation | null; remainingMs: number;
-  canPrepare: boolean; canPromote: boolean; canRecheckPromote: boolean;
+  canPrepare: boolean; canReapply: boolean; canPromote: boolean; canRecheckPromote: boolean;
   nativeEntry: { origin: string; domainId: string; target: Pick<AppSourceTarget, 'revision' | 'digest' | 'profile' | 'port' | 'entryPath'> } | null;
   nativeReviewRequired: boolean; initialNativeReview: boolean; nativeChoices: { domainId: string; origin: string }[]; nativeKeepAllowed: boolean; nativeReviewOrigins: string[];
   sourceEntry: { origin: string; domainId: string } | null; sourceEntryAction: { action: 'activate'; domainId: string } | null;
@@ -20,6 +20,8 @@ export interface AppSourceStateView {
 }
 export interface AppSourceState {
   read(): AppSourceStateView;
+  /** Explicit local intent only; the normal owner preparation/consent/CAS path still owns every effect. */
+  requestReapply(): void;
   patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'endpoint' | 'endpointAddress' | 'launchPolicy' | 'exposureConfirmed' | 'nativeEntryMode' | 'nativeDomainId' | 'nativeConfirmed' | 'sourceDomainId'>>): void;
   selectHistory(target: AppSourceTarget | (AppSourceTarget & { createdAt: number })): void;
   observe(next: AppInspection, options?: { publicationDirty?: boolean; completed?: SettingsPending }): void;
