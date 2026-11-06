@@ -1,7 +1,7 @@
 import { currentObservation, frozenStorageReaders6 } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, unlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, unlink, rename, stat, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -144,6 +144,7 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   assert.deepEqual(created.HostConfig.CapDrop, ['ALL']); assert.deepEqual(created.HostConfig.CapAdd, ['DAC_READ_SEARCH']);
   assert.deepEqual(created.HostConfig.SecurityOpt, ['no-new-privileges']);
   assert.equal(created.HostConfig.PortBindings, undefined); assert.equal(created.HostConfig.Binds, undefined);
+  assert.ok(created.Cmd[2].includes("await readStorageFormat(await snapshotStorage('/data', '/tmp/soty-storage-snapshot', undefined, { online: false }))"));
   assert.deepEqual(created.HostConfig.Mounts, [{ Type: 'volume', Source: 'live-data', Target: '/data', ReadOnly: true, VolumeOptions: { NoCopy: true } }]);
   assert.doesNotMatch(JSON.stringify(created), /synthetic-never-in-probe|server\/index\.js/);
   assert.equal(f.events.filter(e => e.verb === 'start').length, 1);
@@ -197,7 +198,7 @@ function executeRunningProbe(f, source, target, { changeSource = false } = {}) {
 }
 
 function assertRunningSnapshot(f) {
-  assert.equal(/await readStorageFormat\(await snapshotStorage\('\/data', '\/tmp\/soty-storage-snapshot'\)\)/u.test(f.events.find(event => event.verb === 'create').body.Cmd[2]), true, 'running helper must probe the bounded private snapshot');
+  assert.equal(/await readStorageFormat\(await snapshotStorage\('\/data', '\/tmp\/soty-storage-snapshot', undefined, \{ online: true \}\)\)/u.test(f.events.find(event => event.verb === 'create').body.Cmd[2]), true, 'running helper must probe the bounded private snapshot');
 }
 
 test('running helper executes the bounded private snapshot for a partial-cold committed WAL without modifying source', async t => {
@@ -221,6 +222,145 @@ test('running helper rejects a changed source after COPY before granting a stora
   executeRunningProbe(f, source, path.join(await directory(t), 'snapshot'), { changeSource: true });
   await assert.rejects(guardStorageStart(f.context, f.runtime, { running: true }), { code: 'storage_format_unreadable' });
   assertRunningSnapshot(f);
+});
+
+async function onlineConnect(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'soty-format-online-'));
+  const source = path.join(root, 'source'), file = path.join(source, 'connect', 'accounts.sqlite');
+  let child;
+  t.after(async () => {
+    if (child?.exitCode === null && child.signalCode === null) {
+      const ended = once(child, 'exit'); child.kill('SIGKILL'); await ended;
+    }
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    assert.match(path.basename(root), /^soty-format-online-/u); await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(path.dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  try {
+    migrateDatabase(db, 'soty', { supportedVersion: 3 });
+    const insert = db.prepare('INSERT INTO accounts(id,label,created_at) VALUES(?,?,0)');
+    for (let i = 0; i < 32; i++) insert.run('synthetic-' + i, 'x'.repeat(32768));
+    db.exec("INSERT INTO rate_limits VALUES('pair-a',0,0),('pair-b',0,0)");
+  } finally { db.close(); }
+  const script = `import {DatabaseSync} from 'node:sqlite';
+    const db=new DatabaseSync(${JSON.stringify(file)});db.exec('PRAGMA journal_mode=WAL;PRAGMA wal_autocheckpoint=0;PRAGMA busy_timeout=1000');
+    let count=0,timer;const update=db.prepare('UPDATE rate_limits SET count=?');
+    const commit=()=>{db.exec('BEGIN IMMEDIATE');update.run(++count);db.exec('COMMIT')};commit();
+    process.on('message',m=>{try{
+      if(m.kind==='commit')commit();
+      else if(m.kind==='start')timer=setInterval(()=>{if(count<200)commit()},2);
+      else if(m.kind==='pause')clearInterval(timer);
+      else if(m.kind==='unknown')db.exec('PRAGMA user_version=99');
+      else if(m.kind==='grow')db.prepare('INSERT INTO accounts VALUES(?,?,0)').run('synthetic-growth','x'.repeat(4*1024*1024));
+      else if(m.kind==='lock')db.exec('PRAGMA journal_mode=DELETE;BEGIN EXCLUSIVE');
+      else if(m.kind==='unlock')db.exec('ROLLBACK;PRAGMA journal_mode=WAL');
+      process.send({id:m.id,count});
+    }catch{process.send({id:m.id,failed:true})}});
+    process.send({ready:true});setTimeout(()=>process.exit(2),20000).unref();`;
+  child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true });
+  const [ready] = await once(child, 'message'); assert.equal(ready.ready, true);
+  let sequence = 0;
+  const request = kind => new Promise((resolve, reject) => {
+    const id = ++sequence, timeout = setTimeout(() => { child.off('message', reply); reject(new Error('fixture acknowledgement timeout')); }, 3000);
+    function reply(message) {
+      if (message.id !== id) return;
+      clearTimeout(timeout); child.off('message', reply);
+      if (message.failed) reject(new Error('fixture writer failed')); else resolve(message.count);
+    }
+    child.on('message', reply); child.send({ id, kind });
+  });
+  return { root, source, file, request, target: name => path.join(root, name) };
+}
+
+let onlineInstrumentation = 0;
+async function instrumentOnlineSnapshot(t, hooks) {
+  let code = await readFile(new URL('./storage-snapshot.mjs', import.meta.url), 'utf8');
+  const key = 'soty-private-online-snapshot-test-' + ++onlineInstrumentation;
+  globalThis[key] = hooks; t.after(() => { delete globalThis[key]; });
+  for (const [name, marker, invoke] of [
+    ['inventoried', 'const before = await inventory(), sqlBacked = new Set(), copied = new Set();', `await globalThis[${JSON.stringify(key)}].inventoried();`],
+    ['pinned', "db.prepare('SELECT name FROM sqlite_schema LIMIT 1').get();", `await globalThis[${JSON.stringify(key)}].pinned(db);`],
+    ['progress', 'checkTime(); if (totalPages !== pages) refuse();', `globalThis[${JSON.stringify(key)}].progress();`],
+  ]) if (hooks[name]) {
+    assert.equal(code.split(marker).length, 2, 'one controlled capture milestone');
+    code = code.replace(marker, name === 'progress' ? invoke + marker : marker + invoke);
+  }
+  return (await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))).snapshotStorage;
+}
+
+test('online snapshot pins a coherent committed DB while an independent WAL writer continues committing', async t => {
+  const f = await onlineConnect(t); let acknowledgements = 0, captured;
+  await f.request('start');
+  const snapshot = await instrumentOnlineSnapshot(t, { pinned: async db => {
+    captured = db.prepare('SELECT count FROM rate_limits ORDER BY key').all();
+    const committed = await f.request('commit'); acknowledgements++;
+    assert.ok(committed > captured[0].count);
+    assert.deepEqual(db.prepare('SELECT count FROM rate_limits ORDER BY key').all(), captured, 'read transaction remains pinned across real concurrent commit');
+  } });
+  await snapshot(f.source, f.target('private'), undefined, { online: true }); await f.request('pause');
+  assert.equal(acknowledgements, 1);
+  const copy = new DatabaseSync(path.join(f.target('private'), 'connect', 'accounts.sqlite'), { readOnly: true });
+  try { assert.deepEqual(copy.prepare('SELECT count FROM rate_limits ORDER BY key').all(), captured); }
+  finally { copy.close(); }
+  assert.equal(captured[0].count, captured[1].count);
+  assert.ok(await f.request('count') > captured[0].count);
+  const observed = await readStorageFormat(f.target('private'));
+  assert.deepEqual(observed, currentObservation({ ...format('empty'), connect: 3 }));
+  assertStorageCompatible(image(2), observed);
+});
+
+test('online snapshot still exposes an unknown committed WAL and rejects corrupt source instead of falling back', async t => {
+  const f = await onlineConnect(t); await f.request('unknown');
+  await snapshotStorage(f.source, f.target('unknown'), undefined, { online: true });
+  await assert.rejects(readStorageFormat(f.target('unknown')), { code: 'storage_format_unknown' });
+  const source = path.join(await directory(t), 'connect'); await mkdir(source);
+  await writeFile(path.join(source, 'accounts.sqlite'), Buffer.alloc(4096, 7));
+  await assert.rejects(snapshotStorage(path.dirname(source), f.target('corrupt'), undefined, { online: true }), { code: 'storage_format_unreadable' });
+});
+
+test('online snapshot retains aggregate input/output and bounded capture deadlines, including native backup cancellation', async t => {
+  const f = await onlineConnect(t);
+  await assert.rejects(snapshotStorage(f.source, f.target('too-small'), 100, { online: true }), { code: 'storage_format_unreadable' });
+  const initialBytes = (await Promise.all([f.file, f.file + '-wal', f.file + '-shm'].map(file => stat(file)))).reduce((sum, value) => sum + value.size, 0);
+  const growth = await instrumentOnlineSnapshot(t, { inventoried: () => f.request('grow') });
+  await assert.rejects(growth(f.source, f.target('captured-too-large'), initialBytes, { online: true }), { code: 'storage_format_unreadable' });
+  await assert.rejects(stat(path.join(f.target('captured-too-large'), 'connect', 'accounts.sqlite')), { code: 'ENOENT' }, 'capture byte budget rejects growth before native output is created');
+  let progress = 0;
+  const snapshot = await instrumentOnlineSnapshot(t, { progress: () => {
+    progress++; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600);
+  } });
+  await assert.rejects(snapshot(f.source, f.target('too-slow'), undefined, { online: true, maxMilliseconds: 500 }), { code: 'storage_format_unreadable' });
+  assert.ok(progress > 0, 'native backup reached a bounded progress step');
+  // Cancellation must release the source transaction and destination handle.
+  await f.request('commit'); await rm(f.target('too-slow'), { recursive: true });
+  await snapshotStorage(f.source, f.target('after-cancel'), undefined, { online: true });
+  assert.equal((await readStorageFormat(f.target('after-cancel'))).connect, 3);
+});
+
+test('online snapshot refuses an exclusive source lock rather than treating a failed SQLite read as a cold-copy success', async t => {
+  const f = await onlineConnect(t); await f.request('lock');
+  try { await assert.rejects(snapshotStorage(f.source, f.target('locked'), undefined, { online: true }), { code: 'storage_format_unreadable' }); }
+  finally { await f.request('unlock'); }
+  await snapshotStorage(f.source, f.target('unlocked'), undefined, { online: true });
+  assert.equal((await readStorageFormat(f.target('unlocked'))).connect, 3);
+});
+
+test('online snapshot refuses inode replacement, extra depth and symlinks without masking structural changes', async t => {
+  const f = await onlineConnect(t), evidence = path.join(f.source, 'connect', 'evidence');
+  await writeFile(evidence, 'same-sized'); const before = await stat(evidence);
+  const snapshot = await instrumentOnlineSnapshot(t, { pinned: async () => {
+    await rename(evidence, evidence + '-old'); await writeFile(evidence, 'same-sized');
+    await unlink(evidence + '-old');
+  } });
+  await assert.rejects(snapshot(f.source, f.target('replacement'), undefined, { online: true }), { code: 'storage_format_unreadable' });
+  assert.notEqual((await stat(evidence)).ino, before.ino); await unlink(evidence);
+  const nested = path.join(f.source, 'connect', ...Array(9).fill('nested')); await mkdir(nested, { recursive: true });
+  await assert.rejects(snapshotStorage(f.source, f.target('deep'), undefined, { online: true }), { code: 'storage_format_unreadable' });
+  await rm(path.join(f.source, 'connect', 'nested'), { recursive: true });
+  try { await symlink(f.file, evidence); }
+  catch (error) { if (process.platform === 'win32' && error.code === 'EPERM') { t.diagnostic('Windows symlink privilege unavailable; existing Linux qualification remains required'); return; } throw error; }
+  await assert.rejects(snapshotStorage(f.source, f.target('symlink'), undefined, { online: true }), { code: 'storage_format_unreadable' });
 });
 
 test('container label cannot make a legacy, rooms-only or unlabelled image compatible with v2', async () => {
