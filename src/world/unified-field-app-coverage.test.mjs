@@ -119,15 +119,16 @@ test('catalog and personal registry failures do not hide the other available sou
 });
 
 test('the first available apps frame an empty canvas once and never replace a manual camera',async()=>{
- for(const manual of [false,true]){
+ for(const starterOnly of [false,true])for(const manual of [false,true]){
   const held=defer(),f=harness({hasObject:false,onRequest:({op})=>op==='apps.catalog'?held.promise:undefined}),focused=[];
-  f.setDocument({...f.document,shortcuts:[]});f.environment.engine.focusContext=id=>focused.push(id);
+  const starters=starterOnly?['notes','chess','assistant'].map((id,index)=>({shortcutId:'starter-'+id,entity:{kind:'builtin',id},contextId:'personal',placement:{kind:'hex',slot:[index*21,0]}})):[];
+  f.setDocument({...f.document,shortcuts:starters});f.environment.engine.focusContext=id=>focused.push(id);
   const pending=f.api.refreshLiveApps();await settle();
   if(manual)f.environment.options.viewState={mineFit:'manual'};
   held.resolve({apps:[]});await pending;
   assert.equal(focused.length,manual?0:1);
   await f.api.refreshLiveApps();assert.equal(focused.length,manual?0:1,'later catalogue updates leave the camera alone');
-  assert.equal(f.document.shortcuts.length,0);
+  assert.equal(f.document.shortcuts.length,starters.length);
  }
 });
 

@@ -374,7 +374,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if(!current()||read!==liveRead||!engine)return;
     if(!liveAppsFramed&&liveApps.length){
       liveAppsFramed=true;
-      if(mode==='mine'&&!engine.snapshot().shortcuts.length&&options.viewState?.mineFit!=='manual'&&!selected&&!summary?.arranging&&!queries.mine.trim()&&['all','app'].includes(filter)){
+      if(mode==='mine'&&engine.snapshot().shortcuts.every(shortcut=>shortcut.entity.kind==='builtin')&&options.viewState?.mineFit!=='manual'&&!selected&&!summary?.arranging&&!queries.mine.trim()&&['all','app'].includes(filter)){
         const context=liveAppScene(engine.snapshot()).contexts[0];if(context)engine.focusContext(context.contextId);
       }
     }
