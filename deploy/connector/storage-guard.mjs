@@ -147,7 +147,7 @@ export async function reconcileStorageProbe(context) {
   await context.record({ storageGuardHelper: null });
 }
 
-async function productionProbe(context, mount, { running = false } = {}) {
+async function productionProbe(context, mount) {
   const { engine, getState, record, transactionId, probeImage, wait = pause, maxPolls = 60 } = context;
   requireThat(/^[a-f0-9]{16,40}$/u.test(transactionId || ''), 'storage_transaction_invalid');
   requireThat(IMAGE.test(probeImage || ''), 'storage_probe_image_required');
@@ -156,10 +156,10 @@ async function productionProbe(context, mount, { running = false } = {}) {
   const sequence = (getState()?.storageGuardSequence || 0) + 1;
   const name = `soty-storage-probe-${transactionId}-${sequence}`;
   let script = await readFile(new URL('./storage-probe.mjs', import.meta.url), 'utf8');
-  if (!running) {
-    const snapshot = await readFile(new URL('./storage-snapshot.mjs', import.meta.url), 'utf8');
-    script = snapshot + '\n' + script.replace("await readStorageFormat('/data')", "await readStorageFormat(await snapshotStorage('/data', '/tmp/soty-storage-snapshot'))");
-  }
+  // A running volume can contain a closed WAL store without SHM. The bounded
+  // private copy preserves WAL and checks source stability before parsing.
+  const snapshot = await readFile(new URL('./storage-snapshot.mjs', import.meta.url), 'utf8');
+  script = snapshot + '\n' + script.replace("await readStorageFormat('/data')", "await readStorageFormat(await snapshotStorage('/data', '/tmp/soty-storage-snapshot'))");
   const data = { Type: 'volume', Source: mount.name, Target: '/data', ReadOnly: true, VolumeOptions: { NoCopy: true } };
   const body = { Image: probeImage, User: '0:0', WorkingDir: '/', Env: ['SOTY_STORAGE_PROBE=1'], Entrypoint: ['node'],
     Cmd: ['--input-type=module', '-e', script], Tty: false, Labels: { 'io.soty.storage.probe': transactionId },
@@ -196,7 +196,7 @@ export async function guardStorageStart(context, runtime, { running = false } = 
   storageReaders(image); // A copied container label cannot attest an old image.
   await assertLocalVolume(engine, mount);
   await assertWriters(engine, mount, running ? current.Id : undefined);
-  const observed = context.probe ? await context.probe(current) : await productionProbe(context, mount, { running });
+  const observed = context.probe ? await context.probe(current) : await productionProbe(context, mount);
   // Historical observations cannot attest absence of the new independent
   // stores or endpoint/journal overlays. START requires the full v10 probe.
   requireThat(formatVersion(observed?.schema) === 10, 'storage_probe_invalid');

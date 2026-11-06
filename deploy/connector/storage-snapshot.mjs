@@ -1,8 +1,8 @@
 import { lstat as snapshotStat, opendir as snapshotDir, mkdir as snapshotMkdir, copyFile as snapshotCopy } from 'node:fs/promises';
 import { join as snapshotJoin } from 'node:path';
 
-// Only for an offline volume after the writer gate. SQLite can create its SHM
-// in private RAM while the source remains mounted read-only; WAL is retained.
+// Bounded format-probe copy for stopped or running volumes. The same source
+// before/after fences apply; SQLite can create private SHM while WAL is retained.
 export async function snapshotStorage(source, target, maxBytes = 192 * 1024 * 1024) {
   const refuse = () => { throw Object.assign(new Error('storage_format_unreadable'), { code: 'storage_format_unreadable' }); };
   const root = await snapshotStat(source);

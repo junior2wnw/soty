@@ -1,14 +1,16 @@
 import { currentObservation, frozenStorageReaders6 } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { createRoomStore } from '../../server/room-store.js';
 import { migrateDatabase } from '../../modules/connect/server/schema.mjs';
 import { snapshotStorage } from './storage-snapshot.mjs';
+import { createHistoricalNotesV1 } from './notes-v1.fixture.mjs';
 import { readConnectFormat, readStorageFormat } from './storage-probe.mjs';
 import { assertStorageCompatible, checkedStorageFormat, currentStorageReaders, guardStorageStart,
   reconcileStorageProbe, requireStorageStartReceipt, storageReaderLabel } from './storage-guard.mjs';
@@ -148,6 +150,77 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   assert.notEqual(f.events.find(e => e.verb === 'start').id, f.runtime.Id);
   assert.equal(f.state.storageGuardHelper, null);
   assert.doesNotMatch(JSON.stringify(f.receipts), /TOKEN|synthetic-never-in-probe|live-data/);
+});
+
+async function runningColdWal(t, unknown = false, { changedSource = false } = {}) {
+  const source = await mkdtemp(path.join(os.tmpdir(), 'soty-format-')); let child, rooms, before;
+  const file = path.join(source, 'notes', 'notes.sqlite');
+  t.after(async () => {
+    if (child?.exitCode === null && child.signalCode === null) { const ended = once(child, 'exit'); child.kill('SIGKILL'); await ended; }
+    rooms?.close();
+    try {
+      if (before) { assert.deepEqual(await Promise.all([file, file + '-wal'].map(name => readFile(name))), [changedSource ? Buffer.concat([before[0], Buffer.from('x')]) : before[0], before[1]]); await assert.rejects(readFile(file + '-shm'), { code: 'ENOENT' }); }
+    } finally {
+      assert.equal(path.dirname(path.resolve(source)), path.resolve(os.tmpdir())); assert.match(path.basename(source), /^soty-format-/u);
+      await rm(source, { recursive: true, force: true });
+    }
+  });
+  await mkdir(path.join(source, 'notes'));
+  const initial = new DatabaseSync(file); createHistoricalNotesV1(initial); initial.close();
+  const upgrade = new URL('./notes-v2.fixture.mjs', import.meta.url).href;
+  const script = `import { DatabaseSync } from 'node:sqlite'; import { upgradeHistoricalNotesV2 } from ${JSON.stringify(upgrade)}; const db=new DatabaseSync(${JSON.stringify(file)}); db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA synchronous=FULL'); upgradeHistoricalNotesV2(db); ${unknown ? "db.exec('PRAGMA user_version=99');" : ''} process.stdout.write('ready'); setInterval(()=>{},1000);`;
+  child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const ready = await Promise.race([once(child.stdout, 'data'), once(child, 'exit').then(() => { throw Error('fixture exited'); })]);
+  assert.equal(String(ready[0]), 'ready'); const ended = once(child, 'exit'); child.kill('SIGKILL'); await ended;
+  await unlink(file + '-shm'); assert.equal((await readFile(file)).readUInt32BE(60), 1);
+  // The main runtime is alive while this independent Notes store is closed.
+  rooms = createRoomStore(source);
+  before = await Promise.all([file, file + '-wal'].map(name => readFile(name)));
+  return { source, file };
+}
+
+function executeRunningProbe(f, source, target, { changeSource = false } = {}) {
+  f.runtime.State = { Running: true, Status: 'running' };
+  const start = f.engine.start;
+  f.engine.start = async key => {
+    const body = f.events.find(event => event.verb === 'create').body;
+    let script = body.Cmd[2].replaceAll("'/data'", JSON.stringify(source)).replaceAll("'/tmp/soty-storage-snapshot'", JSON.stringify(target));
+    if (changeSource) {
+      // Simulate a writer after COPY; only the unchanged-source fence can reject it.
+      script = script.replace('await snapshotCopy(from, to);', "await snapshotCopy(from, to); if(from.endsWith('notes.sqlite')) await (await import('node:fs/promises')).appendFile(from, 'x');");
+    }
+    const result = spawnSync(process.execPath, ['--input-type=module'], { input: script, env: { ...process.env, SOTY_STORAGE_PROBE: '1' }, encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    assert.equal(result.error, undefined); assert.equal(result.signal, null);
+    const output = JSON.parse(result.stdout); assert.equal(result.status, output.ok ? 0 : 1);
+    f.setResult(output); await start(key);
+  };
+}
+
+function assertRunningSnapshot(f) {
+  assert.equal(/await readStorageFormat\(await snapshotStorage\('\/data', '\/tmp\/soty-storage-snapshot'\)\)/u.test(f.events.find(event => event.verb === 'create').body.Cmd[2]), true, 'running helper must probe the bounded private snapshot');
+}
+
+test('running helper executes the bounded private snapshot for a partial-cold committed WAL without modifying source', async t => {
+  const { source } = await runningColdWal(t), f = fixture();
+  executeRunningProbe(f, source, path.join(await directory(t), 'snapshot'));
+  const receipt = await guardStorageStart(f.context, f.runtime, { running: true });
+  assertRunningSnapshot(f);
+  assert.equal(receipt.schema, 'soty.storage-start.v10'); assert.equal(receipt.rooms, 2); assert.equal(receipt.notes, 2);
+  assert.equal(f.events.filter(event => event.verb === 'start' && event.id === f.runtime.Id).length, 0);
+});
+
+test('running helper still rejects an unknown committed WAL format instead of accepting its older main file', async t => {
+  const { source } = await runningColdWal(t, true), f = fixture();
+  executeRunningProbe(f, source, path.join(await directory(t), 'snapshot'));
+  await assert.rejects(guardStorageStart(f.context, f.runtime, { running: true }), { code: 'storage_format_unknown' });
+  assertRunningSnapshot(f);
+});
+
+test('running helper rejects a changed source after COPY before granting a storage-start receipt', async t => {
+  const { source } = await runningColdWal(t, false, { changedSource: true }), f = fixture();
+  executeRunningProbe(f, source, path.join(await directory(t), 'snapshot'), { changeSource: true });
+  await assert.rejects(guardStorageStart(f.context, f.runtime, { running: true }), { code: 'storage_format_unreadable' });
+  assertRunningSnapshot(f);
 });
 
 test('container label cannot make a legacy, rooms-only or unlabelled image compatible with v2', async () => {
