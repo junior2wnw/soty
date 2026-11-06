@@ -104,6 +104,19 @@ function harness() {
     retire() { live = false; }, assertUnchanged() { assert.equal(JSON.stringify(document), before); assert.equal(calls.writes, 0); assert.equal(calls.camera, 0); } };
 }
 
+test('live public applications suppress the empty canvas overlay only when they match the current view',()=>{
+  const h=harness(),item={entity:{kind:'app',id:'app-'+'d'.repeat(32)},title:'Метки · NFC',source:'public'};
+  h.document.shortcuts=[];const before=JSON.stringify(h.document);
+  h.api.inputChanged();assert.equal(h.environment.empty.hidden,false,'a genuinely empty field retains its invitation');
+  h.environment.liveApps=[item];h.metadata.set(fieldEntityKey(item.entity),item);h.environment.metadataRevision++;
+  h.api.inputChanged();assert.equal(h.environment.empty.hidden,true,'public live launchers must remain clickable without an empty-state overlay');
+  h.environment.filter='person';h.api.inputChanged();assert.equal(h.environment.empty.hidden,false,'apps do not hide an empty people filter');
+  h.environment.filter='all';h.enter('не совпадает');assert.equal(h.environment.empty.hidden,false,'unrelated apps do not hide an empty search');
+  h.enter('NFC');assert.equal(h.environment.empty.hidden,true);
+  h.environment.liveApps=[];h.environment.metadataRevision++;h.api.inputChanged();assert.equal(h.environment.empty.hidden,false,'withdrawal restores the empty state even for the same document/query');
+  assert.equal(JSON.stringify(h.document),before);assert.equal(h.calls.writes,0);assert.equal(h.calls.camera,0);
+});
+
 test('a public live application is searchable without a personal shortcut and disappears after withdrawal',()=>{
   const h=harness(),item={entity:{kind:'app',id:'app-'+'d'.repeat(32)},title:'Метки · NFC',source:'public'};
   h.environment.liveApps=[item];h.metadata.set(fieldEntityKey(item.entity),item);

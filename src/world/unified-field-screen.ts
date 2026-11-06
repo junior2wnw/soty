@@ -578,7 +578,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       return item && matches(item, matchingContexts.has(shortcut.contextId) ? '' : queries.mine, filter);
     }).length;
     const availableOwnApps = overviewApps().some(app => matches(overviewEntity(app), queries.mine, filter));
-    empty.hidden = count > 0 || availableOwnApps || !!query && matchingContexts.size > 0;
+    empty.hidden = count > 0 || availableOwnApps || liveApps.some(item => matches(item, queries.mine, filter)) || !!query && matchingContexts.size > 0;
     if (!empty.hidden && (ownedAppsState !== 'ready' || element.dataset.mineState === 'error' || doc.shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))))) {
       empty.replaceChildren(el('h2', '', 'Доступ пока не подтверждён'), button('Повторить', 'refresh', 'sw-button-quiet', () => run(loadMine()))); return;
     }
