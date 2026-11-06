@@ -202,7 +202,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let availableCursor: string | null = null;
   const liveProjection=createLiveAppScene();
   let appProjectionGeneration=0,appCoverageSceneSignature=JSON.stringify({contexts:[],shortcuts:[]});
-  let liveApps:DirectoryEntity[]=[],liveCursor:string|null=null,liveRead=0,livePages=1;
+  let liveApps:DirectoryEntity[]=[],liveCursor:string|null=null,liveRead=0,livePages=1,liveAppsFramed=false;
   const searchPlacement = createFieldSearchPlacement();
   let activeSearchScene = createFieldDocument();
   let searchResponseScope = '';
@@ -351,23 +351,37 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   async function refreshLiveApps(_append=false):Promise<void>{
     if(!engine||!current())return;
     const read=++liveRead,items:DirectoryEntity[]=[];
-    // Availability is not a personal placement. The owner's existing registry
-    // remains visible without depending on the order of public discovery pages.
-    const registry=await options.api.request<{apps:unknown[]}>('apps.list',{expectedAccountId:options.accountId});
+    // Public availability belongs on every canvas; discovery never writes personal placements.
+    const [registryRead,catalogRead]=await Promise.allSettled([
+      options.api.request<{apps:unknown[]}>('apps.list',{expectedAccountId:options.accountId}),
+      options.api.request<{apps:{id:string}[]}>('apps.catalog',{expectedAccountId:options.accountId}),
+    ]);
     if(!current()||read!==liveRead||!engine)return;
-    if(!Array.isArray(registry.apps))throw Object.assign(new Error('Не удалось обновить ваши приложения.'),{code:'live_directory_unavailable'});
-    const owned=unplacedOwnApps(registry.apps,options.accountId,[]),ids=new Set(owned.map(app=>app.id));
-    for(let offset=0;offset<owned.length;offset+=60){
-      const page=await directory.resolve(owned.slice(offset,offset+60).map(app=>({kind:'app' as const,id:app.id})));
+    const registry=registryRead.status==='fulfilled'&&Array.isArray(registryRead.value.apps)?registryRead.value:null;
+    const catalog=catalogRead.status==='fulfilled'&&Array.isArray(catalogRead.value.apps)?catalogRead.value:null;
+    if(!registry&&!catalog)throw Object.assign(new Error('Не удалось обновить доступные приложения.'),{code:'live_directory_unavailable'});
+    const owned=unplacedOwnApps(registry?.apps??[],options.accountId,[]),ids=new Set([...owned.map(app=>app.id),...(catalog?.apps??[]).map(app=>app.id)]);
+    const refs=[...ids].map(id=>({kind:'app' as const,id}));
+    for(let offset=0;offset<refs.length;offset+=60){
+      const page=await directory.resolve(refs.slice(offset,offset+60));
       if(!current()||read!==liveRead||!engine)return;
       if(page.errors.length)throw Object.assign(new Error('Не удалось обновить доступные приложения.'),{code:'live_directory_unavailable'});
-      items.push(...page.items.filter(item=>item.entity.kind==='app'&&item.source==='owner'&&ids.has(item.entity.id)));
+      items.push(...page.items.filter(item=>item.entity.kind==='app'&&ids.has(item.entity.id)));
     }
     livePages=1;liveApps=[...new Map(items.map(item=>[fieldEntityKey(item.entity),item])).values()];
     liveCursor=null;merge(liveApps);
     refreshAppCoverage(true);
     if(!current()||read!==liveRead||!engine)return;
+    if(!liveAppsFramed&&liveApps.length){
+      liveAppsFramed=true;
+      if(mode==='mine'&&!engine.snapshot().shortcuts.length&&options.viewState?.mineFit!=='manual'&&!selected&&!summary?.arranging&&!queries.mine.trim()&&['all','app'].includes(filter)){
+        const context=liveAppScene(engine.snapshot()).contexts[0];if(context)engine.focusContext(context.contextId);
+      }
+    }
     element.dataset.liveApps=String(liveApps.length);element.dataset.liveMore=String(!!liveCursor);
+    element.dataset.liveAppsState=registry&&catalog?'ready':'partial';
+    if(!registry||!catalog)options.onMessage(!catalog?'Общий каталог пока недоступен. Ваши приложения доступны.':'Не удалось обновить ваши приложения. Общий каталог доступен.',true);
+    renderMineSearchResults();renderOpenList?.();
   }
   function overviewApps(): OwnAppOverview[] {
     return ownedAppsState === 'ready' && engine ? unplacedOwnApps(ownedApps, options.accountId, engine.snapshot().shortcuts) : [];
@@ -987,6 +1001,10 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       const item = overviewEntity(app);
       if (!entries.has(fieldEntityKey(item.entity)) && matches(item, queries.mine, filter)) rows.push({ key: fieldEntityKey(item.entity), title: item.title, detail: 'Моё приложение · вне поля', entity: item.entity });
     }
+    if(mode==='mine')for(const item of liveApps){
+      const key=fieldEntityKey(item.entity);
+      if(!rows.some(row=>row.key===key)&&matches(item,queries.mine,filter)&&directory.getRecord(item.entity))rows.push({key,title:item.title,detail:item.source==='owner'?'Моё приложение':'Доступное приложение',entity:item.entity});
+    }
     for (const context of doc.contexts) if (!query || matchingContexts.has(context.contextId) || includedContexts.has(context.contextId)) rows.push({ key: `context:${context.contextId}`, title: context.title, detail: 'Пространство', contextId: context.contextId });
     const find = localQuery.trim().toLocaleLowerCase('ru');
     return rows.filter(row => `${row.title} ${row.detail}`.toLocaleLowerCase('ru').includes(find));
@@ -1226,7 +1244,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const field = createUnifiedField({ accountId: options.accountId, document: loaded.document, revision: loaded.projectedRevision,
       createObject,objectKey,canContinueObjectFocus:(node,previousKey,nextKey)=>canvasContent.canContinueObjectFocus(node,previousKey,nextKey),
       mode, entities: allMetadata(), readableMobileFocus: true, readableObjectFocus:true, dimNonMatches: true, ...(options.viewState ? { viewState: options.viewState } : {}), commit: (doc, context) => persistence.commit(doc, context),
-      onViewStateChange: view => { if (current()) options.onViewStateChange?.(view); },
+      onViewStateChange: view => { if (current()){options.viewState=view;options.onViewStateChange?.(view);} },
       onObjectFocusChange:entity=>{focusedCommunityId=entity?.entity.kind==='community'?entity.entity.id:null;if(current())options.onCommunityFocus?.(focusedCommunityId);},
       onActivate: activate, onInspect: inspect, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? currentEntity(entity.entity) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
       resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }, { screenWidth: window.innerWidth }),

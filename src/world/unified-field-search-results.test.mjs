@@ -67,7 +67,7 @@ function harness() {
   const environment = {
     exports: {}, document: browserDoc, mode: 'mine', queries: { mine: '', search: '' }, filter: 'all', composing: false,
     mineGeneration: 1, mineResolvedGeneration: 1, mineConfirmedGeneration: 1, mineKnownRefs: new Set(metadata.keys()), mineFilterAdmitted: true,
-    metadata, metadataRevision: 1, emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, ownedAppsState: 'ready',
+    metadata, metadataRevision: 1, liveApps: [], emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, ownedAppsState: 'ready',
     element: { dataset: { mineState: 'ready', query: 'empty' } }, empty: node(), searchInput, clear: { hidden: true },
     search: node('label'), listButton: node('button'), sides: Object.assign(node('div'), { classList: { add() {} } }), signal: new AbortController().signal,
     searchTimer: null, searchGeneration: 0, searchCursor: null, more: { hidden: true }, searchLimit: { hidden: true },
@@ -103,6 +103,17 @@ function harness() {
   return { api, environment, calls, notes, apps, document, browserDoc, metadata, records, before, buttons, text, emit, enter, searchInput,
     retire() { live = false; }, assertUnchanged() { assert.equal(JSON.stringify(document), before); assert.equal(calls.writes, 0); assert.equal(calls.camera, 0); } };
 }
+
+test('a public live application is searchable without a personal shortcut and disappears after withdrawal',()=>{
+  const h=harness(),item={entity:{kind:'app',id:'app-'+'d'.repeat(32)},title:'Метки · NFC',source:'public'};
+  h.environment.liveApps=[item];h.metadata.set(fieldEntityKey(item.entity),item);
+  h.records.set(fieldEntityKey(item.entity),{id:item.entity.id,access:'public'});
+  h.enter('NFC');const result=h.buttons().find(button=>h.text(button).includes('Метки · NFC'));assert.ok(result);
+  result.click();assert.equal(h.calls.open.length,1);assert.equal(h.calls.open[0].item.entity.id,item.entity.id);
+  assert.equal(h.calls.open[0].record.access,'public');h.assertUnchanged();
+  h.environment.liveApps=[];h.api.render();assert.equal(h.buttons().some(button=>h.text(button).includes('Метки · NFC')),false);
+  result.click();assert.equal(h.calls.open.length,1,'withdrawn rows cannot open cached public metadata');h.assertUnchanged();
+});
 
 test('opening empty Mine search exposes at most six recent routes without a directory request or field write', () => {
   const h = harness(), recent = Array.from({ length: 8 }, (_, n) => ({ route: 'notes/note-' + n, title: 'Недавнее ' + n, symbol: 'note' }));
