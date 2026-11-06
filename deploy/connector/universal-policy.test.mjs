@@ -12,6 +12,9 @@ import { prepareUniversalPolicy, publicUniversalPolicy, assertUniversalPolicyCur
   sealUniversalPolicy, restoreUniversalPolicy,
   UNIVERSAL_POLICY_SCHEMA, universalModeLabel, humanPrivateTarget, reviewsTarget, selectedTarget } from './universal-policy.mjs';
 import { Rollout, createConfig, preservationHash } from './rollout.mjs';
+import { hash } from './rollout.mjs';
+import * as framePolicy from './universal-policy.mjs';
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import { currentStorageReaders, storageReaderLabel, assertStorageCompatible } from './storage-guard.mjs';
 import { readStorageFormat } from './storage-probe.mjs';
 import { loadUniversalConfiguration } from '../../server/universal-configuration.js';
@@ -21,6 +24,160 @@ import { HIVE_SELECTED_KERNEL_SOURCE, HIVE_SELECTED_SOURCE, STANDARD_SELECTED_SO
 import { STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE } from '../../modules/source-app/server/standard-profile.mjs';
 import { loadInstalledApplicationsEntry } from '../../server/installed-applications-entry.js';
 import { fixture as engineFixture, args as rolloutArgs } from './test-support/rollout-engine.mjs';
+
+const frameMigrationSetting = 'SOTY_APPS_FRAME_CONTINUITY_MIGRATION';
+const frameAccess = () => ({ readAccountIds: [], configureAccountIds: [], adminAccountIds: [] });
+const frameRuntime = (mode = 'reader', access = frameAccess(), admins = []) => captureUniversalPreparedness({
+  compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true, humanHttpEnabled: false, humanProfile: null,
+  monitoring: { mode, schemaVersion: 1, installed: mode === 'writer', accessSha256: hash(access) }, platformAdminAccessSha256: hash(admins),
+});
+const framePlan = (mode = 'reader', extra = {}) => ({ schema: UNIVERSAL_POLICY_SCHEMA, phase: 'features', human: null, reviews: null,
+  expectedCurrentPreparednessSha256: hash(frameRuntime(mode)), featureFrameContinuityMigration: { expectedConfigured: false, configured: true, expectedStorageVersion: 0 }, ...extra });
+async function frameConfiguration(t, f, mode = 'reader') {
+  const base = await prepared(t, f, { schema: UNIVERSAL_POLICY_SCHEMA, phase: 'features', human: null, reviews: null });
+  const config = applyUniversalPolicy({ Env: ['DATA_DIR=/data', 'KEEP=synthetic'], HostConfig: { Mounts: [], RestartPolicy: { Name: 'unless-stopped' } } }, base);
+  config.Env.push('SOTY_MONITORING_MODE=' + mode); return config;
+}
+function frameStorage(version, overrides = {}) {
+  const { ok, schema, ...stores } = currentObservation({ rooms: 2, apps: 14, appsFrameContinuity: version === 0 ? 'empty' : version });
+  return { schema: 'soty.storage-start.v10', containerId: '1'.repeat(64), image: image('0').Id, mountSha256: '2'.repeat(64), ...stores, ...overrides };
+}
+const frameStorageContext = afterStart => ({ containerId: '1'.repeat(64), image: image('0').Id, afterStart });
+
+test('frame feature enables only its named migration flag from unset or0 and binds complete current/desired storage evidence', async t => {
+  const f = await fixture(t);
+  for (const entry of [undefined, frameMigrationSetting + '=0']) {
+    const before = await frameConfiguration(t, f); if (entry) before.Env.push(entry);
+    const handle = await prepared(t, f, framePlan());
+    framePolicy.assertUniversalFeatureOriginal(handle, { Config: before }, frameRuntime(), { allowFixture: true });
+    assertUniversalImagePrerequisites(handle, { candidateImage: image('0'), originalImage: image('0') });
+    const next = applyUniversalPolicy(before, handle); assert.equal(next.Env.filter(v => v.startsWith(frameMigrationSetting + '=')).join(), frameMigrationSetting + '=1');
+    const withoutFlag = value => ({ ...value, Env: value.Env.filter(v => !v.startsWith(frameMigrationSetting + '=')) });
+    assert.deepEqual(withoutFlag(next), withoutFlag(before));
+    framePolicy.assertUniversalFrameContinuityStorage(handle, frameStorage(0), frameStorageContext(false));
+    framePolicy.assertUniversalFrameContinuityStorage(handle, frameStorage(2), frameStorageContext(true));
+    assert.equal(assertUniversalPreparedness(handle, frameRuntime(), { allowFixture: true }).ok, true);
+  }
+});
+
+test('frame feature alone preserves loaded Monitoring writer mode and both actual access fingerprints', async t => {
+  const f = await fixture(t), before = await frameConfiguration(t, f, 'writer'), handle = await prepared(t, f, framePlan('writer'));
+  framePolicy.assertUniversalFeatureOriginal(handle, { Config: before }, frameRuntime('writer'), { allowFixture: true });
+  const next = applyUniversalPolicy(before, handle); assert.ok(next.Env.includes('SOTY_MONITORING_MODE=writer'));
+  assert.equal(assertUniversalPreparedness(handle, frameRuntime('writer'), { allowFixture: true }).ok, true);
+  assert.throws(() => assertUniversalPreparedness(handle, frameRuntime('reader'), { allowFixture: true }));
+  assert.throws(() => assertUniversalPreparedness(handle, frameRuntime('writer', frameAccess(), ['acct_' + 'a'.repeat(32)]), { allowFixture: true }));
+});
+
+test('frame feature combines with Monitoring mode and separate Monitoring/Core access in one same-image policy', async t => {
+  const f = await fixture(t), before = await frameConfiguration(t, f), account = 'acct_' + 'a'.repeat(32), desired = Object.fromEntries(Object.keys(frameAccess()).map(k => [k, [account]]));
+  const handle = await prepared(t, f, framePlan('reader', { featureMonitoring: { expectedMode: 'reader', mode: 'writer' },
+    featureMonitoringAccess: { expected: frameAccess(), desired }, featurePlatformAdminAccess: { expected: [], desired: [account] } }));
+  framePolicy.assertUniversalFeatureOriginal(handle, { Config: before }, frameRuntime(), { allowFixture: true });
+  assertUniversalImagePrerequisites(handle, { candidateImage: image('0'), originalImage: image('0') });
+  const next = applyUniversalPolicy(before, handle); assert.ok(next.Env.includes(frameMigrationSetting + '=1') && next.Env.includes('SOTY_MONITORING_MODE=writer'));
+  assert.ok(next.Env.includes('SOTY_PLATFORM_ADMIN_ACCOUNT_IDS=' + account));
+  assert.equal(assertUniversalPreparedness(handle, frameRuntime('writer', desired, [account]), { allowFixture: true }).ok, true);
+  assert.deepEqual(next.HostConfig, before.HostConfig);
+});
+
+test('frame migration rejects unknown fields, disable transitions, stale flags and unrelated configuration changes', async t => {
+  const f = await fixture(t), good = framePlan();
+  for (const plan of [{ ...good, expectedCurrentPreparednessSha256: undefined }, { ...good, phase: 'legacy-baseline' },
+    { ...good, featureFrameContinuityMigration: { ...good.featureFrameContinuityMigration, extra: true } },
+    ...[{ expectedConfigured: true, configured: false, expectedStorageVersion: 0 }, { expectedConfigured: false, configured: true, expectedStorageVersion: 2 },
+      { expectedConfigured: false, configured: 1, expectedStorageVersion: 0 }].map(featureFrameContinuityMigration => ({ ...good, featureFrameContinuityMigration }))])
+    await assert.rejects(prepareUniversalPolicy(plan, f.options));
+  const handle = await prepared(t, f, good), config = await frameConfiguration(t, f);
+  for (const entries of [[frameMigrationSetting + '=1'], [frameMigrationSetting + '=0', frameMigrationSetting + '=0'], [frameMigrationSetting + '=false'], [frameMigrationSetting]])
+    assert.throws(() => applyUniversalPolicy({ ...config, Env: [...config.Env, ...entries] }, handle));
+  const incomplete = { ...config, Env: config.Env.filter(v => v !== 'SOTY_PERSONAL_AGENT_ENABLED=0') };
+  assert.throws(() => applyUniversalPolicy(incomplete, handle));
+});
+
+test('frame migration requires the actual loaded capture, same image and both current frame2 readers', async t => {
+  const f = await fixture(t), before = await frameConfiguration(t, f), handle = await prepared(t, f, framePlan());
+  for (const changed of [{ ...frameRuntime(), monitoring: undefined }, { ...frameRuntime(), platformAdminAccessSha256: undefined }, frameRuntime('writer')])
+    assert.throws(() => framePolicy.assertUniversalFeatureOriginal(handle, { Config: before }, changed, { allowFixture: true }));
+  assert.throws(() => assertUniversalImagePrerequisites(handle, { candidateImage: image('0'), originalImage: image('0', currentStorageReaders, 'b') }));
+  const unsupported = JSON.parse(currentStorageReaders); unsupported.readers.appsFrameContinuity = [];
+  assert.throws(() => assertUniversalImagePrerequisites(handle, { candidateImage: image('0', JSON.stringify(unsupported)), originalImage: image('0', JSON.stringify(unsupported)) }));
+});
+
+test('frame migration refuses stale, historical, mismatched and incomplete storage receipts without inventing a runtime DTO field', async t => {
+  const f = await fixture(t), handle = await prepared(t, f, framePlan());
+  for (const [receipt, context] of [[frameStorage(1), frameStorageContext(false)], [frameStorage(0), frameStorageContext(true)],
+    [frameStorage(2, { containerId: '3'.repeat(64) }), frameStorageContext(true)], [frameStorage(2, { image: 'sha256:' + '4'.repeat(64) }), frameStorageContext(true)],
+    [frameStorage(2, { schema: 'soty.storage-start.v9' }), frameStorageContext(true)]])
+    assert.throws(() => framePolicy.assertUniversalFrameContinuityStorage(handle, receipt, context));
+  const incomplete = frameStorage(2); delete incomplete.monitoring;
+  assert.throws(() => framePolicy.assertUniversalFrameContinuityStorage(handle, incomplete, frameStorageContext(true)));
+  assert.equal(Object.hasOwn(frameRuntime(), 'frameContinuity'), false);
+});
+
+async function frameRollout(t, { beforeVersion = 0, afterVersion = 2, staleHash = false } = {}) {
+  const f = await fixture(t), e = engineFixture(), old = e.map.get(rolloutArgs.originalId);
+  const base = await prepared(t, f, { schema: UNIVERSAL_POLICY_SCHEMA, phase: 'features', human: null, reviews: null });
+  const configured = createConfig(old, rolloutArgs.originalImage, rolloutArgs.transaction, rolloutArgs.revision, undefined, base);
+  old.Config.Env = [...configured.Env, 'SOTY_MONITORING_MODE=reader']; old.HostConfig = configured.HostConfig;
+  Object.assign(old.State, { Pid: 501, StartedAt: '2026-11-01T00:00:00.000000000Z', ExitCode: 0, OOMKilled: false, Paused: false, Restarting: false }); old.RestartCount = 0;
+  const handle = await prepared(t, f, framePlan('reader', staleHash ? { expectedCurrentPreparednessSha256: '0'.repeat(64) } : {}));
+  const readImage = e.engine.image; e.engine.image = async id => { const value = await readImage(id); value.Config.Labels[universalModeLabel] = '0'; return value; };
+  const stop = e.engine.stop; e.engine.stop = async id => { await stop(id); Object.assign(e.map.get(id).State, { Pid: 0, ExitCode: 0, OOMKilled: false,
+    FinishedAt: '2026-11-01T00:02:00.000000000Z' }); };
+  let version = beforeVersion, maintenance = false, backups = 0;
+  const start = e.engine.start; e.engine.start = async id => { await start(id); Object.assign(e.map.get(id).State, { Pid: 502, StartedAt: '2026-11-01T00:01:00.000000000Z' });
+    if (id !== rolloutArgs.originalId) version = afterVersion; };
+  e.run.allowUniversalFixture = true; e.run.universalMeasurement = async () => frameRuntime();
+  e.run.storageProbe = async () => currentObservation({ rooms: 1, apps: 14, appsFrameContinuity: version === 0 ? 'empty' : version });
+  e.run.maintenance = async verb => { e.events.push('helper:' + verb); if (verb === 'enter') maintenance = true; if (verb === 'leave') maintenance = false;
+    return { ok: true, schema: 'soty.connect.maintenance.v1', count: 0, maintenance, owned: maintenance }; };
+  const ready = e.run.ready; e.run.ready = async (kind, run) => ({ ...await ready(kind, run), storageReady: true, maintenance, schema: 'soty.connector-storage-ready.v1' });
+  const artifact = { sha256: 'a'.repeat(64), bytes: 1, entries: 1, fileBytes: 1, inventorySha256: 'b'.repeat(64) };
+  e.run.fullEncryptedBackup = async ({ transaction }) => { backups++; e.events.push('full-backup'); assert.equal(old.State.Running, false);
+    return { ok: true, encrypted: true, operationId: transaction, sourceCheckpointSha256: 'c'.repeat(64), volume: artifact, configuration: artifact }; };
+  return { ...e, request: { ...rolloutArgs, transaction: 'f'.repeat(32), rollbackMode: 'latest-data', candidateImage: rolloutArgs.originalImage,
+    universalPolicy: handle, universalWitnessId: 'x'.repeat(32) }, get backups() { return backups; } };
+}
+
+test('frame rollout requires full stopped-writer backup and records actual frame0 before STOP and frame2 after START', async t => {
+  const f = await frameRollout(t); await f.run.prepare(f.request); await f.run.promote();
+  assert.equal(f.run.state.phase, 'committed'); assert.equal(f.backups, 1);
+  assert.equal(f.run.state.frameContinuityStorageBefore.appsFrameContinuity, 'empty');
+  assert.equal(f.run.state.frameContinuityStorageAfter.appsFrameContinuity, 2);
+  assert.ok(f.events.indexOf('stop:' + rolloutArgs.originalId) < f.events.indexOf('full-backup'));
+  assert.ok(f.run.config.Env.includes(frameMigrationSetting + '=1'));
+});
+
+test('frame rollout rejects stale actual format before STOP and missing/latest-data or stale loaded proof before CREATE', async t => {
+  const changed = await frameRollout(t, { beforeVersion: 1 }); await changed.run.prepare(changed.request); await assert.rejects(changed.run.promote());
+  assert.equal(changed.events.some(v => v.startsWith('stop:')), false); assert.equal(changed.backups, 0);
+  for (const fault of ['backup-mode', 'loaded-hash']) {
+    const f = await frameRollout(t, { staleHash: fault === 'loaded-hash' });
+    await assert.rejects(f.run.prepare(fault === 'backup-mode' ? { ...f.request, rollbackMode: undefined } : f.request));
+    assert.equal(f.events.some(v => v.startsWith('create:') || v.startsWith('stop:')), false);
+  }
+});
+
+test('frame rollout refuses an installed-options migration override that leaves schema0 and restores the same compatible image', async t => {
+  const f = await frameRollout(t, { afterVersion: 0 }); await f.run.prepare(f.request); await assert.rejects(f.run.promote());
+  assert.equal(f.map.get(rolloutArgs.originalId).State.Running, true);
+  assert.equal(f.map.get(f.run.candidate.Id).State.Running, false);
+  assert.equal(f.run.original.Image, f.request.candidateImage); assert.equal(f.backups, 1);
+  assert.equal(f.run.state.activationFailureCode, 'universal_policy_frame_continuity_not_ready');
+});
+
+test('frame rollout restores the same schema2-compatible image after a post-migration readiness failure', async t => {
+  const f = await frameRollout(t), ready = f.run.ready;
+  f.run.ready = async (kind, run) => { if (kind === 'candidate') throw Object.assign(new Error('synthetic_postmigration_failure'), { code: 'synthetic_postmigration_failure' });
+    return ready(kind, run); };
+  await f.run.prepare(f.request); await assert.rejects(f.run.promote());
+  assert.equal(f.map.get(rolloutArgs.originalId).State.Running, true);
+  assert.equal(f.map.get(f.run.candidate.Id).State.Running, false);
+  assert.equal(f.run.original.Image, f.request.candidateImage); assert.equal(f.backups, 1);
+  assert.equal((await f.run.guardStart(rolloutArgs.originalId, { running: true })).appsFrameContinuity, 2);
+  assert.equal(f.run.state.activationFailureCode, 'activation_failed');
+});
 
 const origin = 'https://soty.fixture.invalid', issuer = origin + '/human-identity';
 const installedApplicationsTarget = '/run/config/soty-installed-applications.mjs';

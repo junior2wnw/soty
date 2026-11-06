@@ -4,7 +4,7 @@ import { SafeError, universalMeasurementDiagnostic } from './docker-api.mjs';
 import {addApprovedPolicy,readApprovedPolicy} from './application-policy.mjs';
 import {guardStorageStart, storageReaderLabel, storageReaders} from './storage-guard.mjs';
 import { applyUniversalPolicy, publicUniversalPolicy, bindUniversalRollout, assertUniversalPolicyCurrent,
-  assertUniversalImagePrerequisites, assertUniversalPreparedness, assertUniversalFeatureOriginal, universalModeLabel } from './universal-policy.mjs';
+  assertUniversalImagePrerequisites, assertUniversalPreparedness, assertUniversalFeatureOriginal, assertUniversalFrameContinuityStorage, universalModeLabel } from './universal-policy.mjs';
 import { captureUniversalPreparedness, validateUniversalPreparedness } from '../../modules/app-contract/universal-preparedness.mjs';
 const clone=x=>structuredClone(x);
 const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,sorted(x[k])])):x;
@@ -129,6 +129,7 @@ export class Rollout {
     let universalReceipt;
     if(args.universalPolicy){
       universalReceipt=await assertUniversalPolicyCurrent(args.universalPolicy);
+      if(universalReceipt.featureFrameContinuityMigration)requireThat(args.rollbackMode==='latest-data','universal_policy_frame_continuity_backup_required');
       requireThat(typeof this.allowUniversalFixture==='boolean'&&(!universalReceipt.fixtureOnly||this.allowUniversalFixture),'universal_policy_fixture_not_production');
       requireThat(typeof this.universalMeasurement==='function','universal_measurement_required');
       assertUniversalImagePrerequisites(args.universalPolicy,{candidateImage:image,originalImage:oldImage});
@@ -252,7 +253,11 @@ export class Rollout {
       await this.checkUniversalCurrent();
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       let s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&!s.maintenance,'precheck_not_quiescent');
-      await this.guardStart(this.original.Id,{running:true});
+      const originalStorage=await this.guardStart(this.original.Id,{running:true});
+      if(this.args.universalPolicy&&publicUniversalPolicy(this.args.universalPolicy).featureFrameContinuityMigration){
+        assertUniversalFrameContinuityStorage(this.args.universalPolicy,originalStorage,{containerId:this.original.Id,image:this.args.originalImage});
+        await this.note(this.state.phase,{frameContinuityStorageBefore:originalStorage});
+      }
       await this.note('stopping_original');
       await this.checkUniversalCurrent();
       await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;this.originalStopConfirmed=true;
@@ -301,6 +306,11 @@ export class Rollout {
         const measurement=await this.universalMeasurement(this.candidate.Id,this);
         const receipt=assertUniversalPreparedness(this.args.universalPolicy,measurement,{allowFixture:this.allowUniversalFixture});
         await this.note(this.state.phase,{universalPreparedness:receipt});
+        if(publicUniversalPolicy(this.args.universalPolicy).featureFrameContinuityMigration){
+          const storage=await this.guardStart(this.candidate.Id,{running:true});
+          assertUniversalFrameContinuityStorage(this.args.universalPolicy,storage,{containerId:this.candidate.Id,image:this.args.candidateImage,afterStart:true});
+          await this.note(this.state.phase,{frameContinuityStorageAfter:storage});
+        }
       }
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&s.maintenance,'candidate_pending_jobs_changed');
