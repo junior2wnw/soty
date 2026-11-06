@@ -23,9 +23,10 @@ function memoryStorage(){
   async claim(candidate){if(value===null){validateState(candidate,scope);value=clone(candidate);}return clone(value);},
   async compareAndSwap(expected,candidate){if(value?.localRevision!==expected)throw new ConnectError('LOCAL_CONFLICT','Concurrent write');validateState(candidate,scope);value=clone(candidate);return clone(value);}};
 }
-async function fixture(t,{factory=createClientWithStorage,enabled=true}={}){
+async function fixture(t,{factory=createClientWithStorage,enabled=true,serverSkew=0,serverDate=false,serverClock}={}){
  const observed=[],clients=[];let reply=null,afterResponse=null;
- const connect=createConnectService({databasePath:':memory:',projectId,allowedOrigins:[origin],extensions:[{
+ const serverNow=serverClock??(()=>Date.now()+serverSkew),transport={date:serverDate?()=>new Date(serverNow()).toUTCString():null,url:endpoint,redirected:false};
+ const connect=createConnectService({databasePath:':memory:',projectId,clock:serverNow,allowedOrigins:[origin],extensions:[{
   operations:new Set(['apps.launch','apps.session.context','apps.session.renew','apps.session.confirm','apps.session.close','apps.scoped.close']),
   execute({op,args,actor}){
    observed.push({op,args:clone(args),accountId:actor.accountId,deviceId:actor.deviceId});
@@ -37,7 +38,10 @@ async function fixture(t,{factory=createClientWithStorage,enabled=true}={}){
  const fetcher=async(_url,init)=>{
   const request=JSON.parse(init.body),result=await connect.handle({origin,...request});
   if(result.ok&&request.proof&&afterResponse)await afterResponse(request,result);
-  return new Response(JSON.stringify(result),{status:result.ok?200:400,headers:{'content-type':'application/json'}});
+  const headers={'content-type':'application/json',...(transport.date===null?{}:{date:typeof transport.date==='function'?transport.date():transport.date}),
+   ...(transport.age===undefined?{}:{age:transport.age})};
+  const response=new Response(JSON.stringify(result),{status:result.ok?200:400,headers});
+  Object.defineProperties(response,{url:{value:transport.url},redirected:{value:transport.redirected}});return response;
  };
  const options={projectId,endpoint,fetch:fetcher,scopedAppCleanup:enabled,createChannel:()=>({postMessage(){},close(){}})};
  const storage=memoryStorage(),client=factory(options,storage),seedB=factory(options,memoryStorage());clients.push(client,seedB);
@@ -49,9 +53,9 @@ async function fixture(t,{factory=createClientWithStorage,enabled=true}={}){
  await seedB.approveEnrollment(enrollment.requestId,b.accountId);await client.previewEnrollment(enrollment.requestId);
  await client.finishEnrollment(enrollment.requestId,b.accountId);await client.switchProfile(a.accountId);
  const second=factory(options,storage);clients.push(second);
- const member=(extra={})=>({schema:'soty.app-host-session.v1',frameId:opaque('F'),lease:opaque('A'),revision:1,expiresAt:Date.now()+86400000,...extra});
- const host=(extra={})=>({entry:{appId,domainId,origin:'https://app.apps.invalid',path:'/'},hostSession:member(),hostSessionExpiresAt:Date.now()+3600000,...extra});
- return{client,second,seedB,a,b,observed,storage,member,host,
+ const member=(extra={})=>({schema:'soty.app-host-session.v1',frameId:opaque('F'),lease:opaque('A'),revision:1,expiresAt:serverNow()+86400000,...extra});
+ const host=(extra={})=>({entry:{appId,domainId,origin:'https://app.apps.invalid',path:'/'},hostSession:member(),hostSessionExpiresAt:serverNow()+3600000,...extra});
+ return{client,second,seedB,a,b,observed,storage,member,host,serverNow,transport,
   result(value){reply=value;},afterResponse(value){afterResponse=value;},
   launch:()=>client.extension('apps.launch',{appId,hostSession:true},{expectedAccountId:a.accountId}),
   context:value=>client.extension('apps.session.context',{appId,frameId:value.frameId,lease:value.lease,revision:value.revision,currentEntryPath:'/'},{expectedAccountId:a.accountId}),
@@ -75,6 +79,7 @@ test('actual signed SDK cleanup closes only captured A after a normal same-clien
 
 async function refreshedDeadlineOracle(t,factory=createClientWithStorage){
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1800000000000});
+ const monotonicOrigin=Date.now();t.mock.method(globalThis.performance,'now',()=>Date.now()-monotonicOrigin);
  const f=await fixture(t,{factory}),initial=f.member({expiresAt:Date.now()+30000});
  f.result(f.host({hostSession:initial,hostSessionExpiresAt:initial.expiresAt}));const first=await f.launch(),cleanup=f.client.appSlotCleanup(first);
  assert.equal(typeof cleanup,'function');
@@ -176,4 +181,62 @@ test('the signed Core envelope reaches the actual ordinary controller without st
   close:()=>assert.fail('trusted raw-reply cleanup must retain its original actor'),cleanupForReply:raw=>f.client.appSlotCleanup(raw)});
  t.after(()=>{helper.dispose();launcher.dispose();});assert.equal(await helper.renew('reset'),true);assert.equal(launcher.hostSession().hostSession.revision,2);
  assert.equal(launcher.hostSession().slot,before.slot);assert.ok(contextReplies.every(raw=>raw.ok===true));assert.equal(typeof launcher.hostSession().cleanup,'function');
+});
+
+test('trusted server-relative host deadlines accept both 13s clock offsets without rewriting the opaque proof',async t=>{
+ for(const serverSkew of [13000,-13000]){
+  const f=await fixture(t,{serverSkew,serverDate:true}),initial=f.member({expiresAt:f.serverNow()+30000});
+  f.result(f.host({hostSession:initial,hostSessionExpiresAt:initial.expiresAt}));
+  const first=await f.launch(),cleanup=f.client.appSlotCleanup(first);assert.equal(typeof cleanup,'function');
+  const admitted={...initial,expiresAt:f.serverNow()+86400000};
+  f.result(f.host({schema:'soty.app-host-session-context.v1',state:'current',hostSession:admitted}));
+  const context=await f.context(initial);assert.equal(f.client.appSlotCleanup(context),cleanup);
+  assert.deepEqual(context.hostSession,admitted);assert.ok(f.client.serverNow()>=f.serverNow()-5);
+ }
+});
+
+test('server-relative clock preserves expiry, bounded future lifetime and same requested proof checks',async t=>{
+ const f=await fixture(t,{serverSkew:13000,serverDate:true});
+ for(const host of [f.host({hostSession:f.member({expiresAt:f.serverNow()-1}),hostSessionExpiresAt:f.serverNow()-1}),
+  f.host({hostSession:f.member({expiresAt:f.serverNow()+86411000})}),f.host({hostSessionExpiresAt:f.serverNow()-1})]){
+  f.result(host);await assert.rejects(f.launch(),{code:'INVALID_SERVER_RESPONSE'});
+ }
+ const member=f.member();f.result(f.host({hostSession:member}));await f.launch();
+ for(const changed of [{...member,lease:opaque('Z')},{...member,revision:2}]){
+  f.result(f.host({schema:'soty.app-host-session-context.v1',state:'current',hostSession:changed}));
+  await assert.rejects(f.context(member),{code:'INVALID_SERVER_RESPONSE'});
+ }
+ assert.equal(f.closes().length,0);
+});
+
+test('missing, malformed, cached, stale, redirected or foreign Date never calibrates a lease response',async t=>{
+ for(const change of [{date:null},{date:'not-a-date'},{age:'0'},{date:()=>new Date(Date.now()-60000).toUTCString()},
+  {redirected:true},{url:'https://foreign.invalid/rpc'}]){
+  const f=await fixture(t,{serverSkew:13000,serverDate:true});Object.assign(f.transport,change);
+  f.result(f.host());await assert.rejects(f.launch(),{code:'INVALID_SERVER_RESPONSE'});
+ }
+});
+
+test('monotonic hard retention ignores wall-clock jumps and cannot outlive HTTP, proof or 24h',async t=>{
+ const wall=1800000000000;let mono=0;
+ t.mock.timers.enable({apis:['Date'],now:wall});t.mock.method(globalThis.performance,'now',()=>mono);
+ for(const [httpMs,proofMs,elapsed,wallJump,closes] of [[5000,86400000,6000,-86400000,0],[5000,86400000,1000,86400000,1],
+  [86405000,86405000,86400001,-86400000,0]]){
+  mono=0;t.mock.timers.setTime(wall);
+  const f=await fixture(t,{serverDate:true,serverClock:()=>wall+13000+mono});
+  f.result(f.host({hostSession:f.member({expiresAt:f.serverNow()+proofMs}),hostSessionExpiresAt:f.serverNow()+httpMs}));
+  const cleanup=f.client.appSlotCleanup(await f.launch()),before=f.client.serverNow();assert.equal(typeof cleanup,'function');
+  t.mock.timers.setTime(wall+wallJump);assert.equal(f.client.serverNow(),before);
+  mono=elapsed;await cleanup();assert.equal(f.closes().length,closes,'the monotonic deadline, not a local wall-clock edit, controls signer retention');
+ }
+});
+
+test('the same trusted clock keeps scoped Source cleanup inside its original monotonic five-minute budget',async t=>{
+ const wall=1800000000000;let mono=0;
+ t.mock.timers.enable({apis:['Date'],now:wall});t.mock.method(globalThis.performance,'now',()=>mono);
+ const f=await fixture(t,{serverDate:true,serverClock:()=>wall+13000+mono});
+ f.result({entry:{appId},runtimeProfile:'soty.selected-human-embed.v2',scopedCloseHandle:opaque('S'),scopedSlotExpiresAt:f.serverNow()+300000});
+ const cleanup=f.client.appSlotCleanup(await f.launch());assert.equal(typeof cleanup,'function');
+ t.mock.timers.setTime(wall-86400000);mono=300001;await cleanup();
+ assert.equal(f.observed.some(item=>item.op==='apps.scoped.close'),false);
 });

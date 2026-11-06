@@ -74,7 +74,7 @@ export interface WorldDirectThread {
   unreadCount: number; preferences: { pinned: boolean; muted: boolean }; createdAt: number;
 }
 export interface WorldSearch { people: WorldProfile[]; communities: WorldCommunity[]; nextCursor: string | null; totals: { people: number; communities: number; peopleExact?: boolean; communitiesExact?: boolean } }
-export interface WorldApi { request<T>(method: string, params?: Record<string, unknown>,options?:{signal?:AbortSignal}): Promise<T> }
+export interface WorldApi { request<T>(method: string, params?: Record<string, unknown>,options?:{signal?:AbortSignal}): Promise<T>; serverNow?(): number }
 export interface WorldDevice { deviceId: string; label: string; state: string; }
 export interface WorldAppPublication {
   launchPolicy: 'restricted' | 'anyone';

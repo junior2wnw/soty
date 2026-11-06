@@ -6,6 +6,34 @@ import assert from 'node:assert/strict';
 import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery,isRootSsoWorkspacePin} from './app-scoped-renewal.mjs';
 import {isScopedRuntimeProfile} from './app-launch.mjs';
 
+test('both Stage lease controllers share the server clock while Root wake keeps local elapsed time',async t=>{
+  const source=readFileSync(new URL('./app-stage.ts',import.meta.url),'utf8'),time=1800000000000;
+  const clocks=text=>{
+    const ast=ts.createSourceFile('app-stage.ts',text,ts.ScriptTarget.Latest,true),result={};
+    const visit=node=>{if(ts.isCallExpression(node)&&['createScopedSlotRenewal','createAppHostSessionRenewal','attachRootSsoWakeRecovery'].includes(node.expression.getText(ast))){
+      result[node.expression.getText(ast)]=node.arguments[0].properties.find(p=>p.name?.getText(ast)==='clock')?.initializer.getText(ast);
+    }ts.forEachChild(node,visit);};visit(ast);return result;
+  };
+  const callers=clocks(source);assert.equal(callers.createAppHostSessionRenewal,'serverNow');assert.equal(callers.attachRootSsoWakeRecovery,undefined);
+  const actual=vm.runInNewContext(callers.createScopedSlotRenewal??'Date.now',{serverNow:()=>time,Date});
+  const oldSource=source.replace('readBinding:readRenewBinding,clock:serverNow,','readBinding:readRenewBinding,');
+  assert.notEqual(oldSource,source);const old=vm.runInNewContext(clocks(oldSource).createScopedSlotRenewal??'Date.now',{serverNow:()=>time,Date});
+  t.mock.timers.enable({apis:['Date'],now:time});
+  const probe=async(clock,remaining)=>{
+    const source={id:'rp-short-session',version:1,digest:'a'.repeat(64)},binding={handle:'current',source,slot:{}};
+    const helper=createScopedSlotRenewal({clock,readBinding:()=>binding,isCurrent:()=>true,readContext:async()=>({ready:true,scopedSource:source,
+      expiresAt:time+remaining,renewalBindingDigest:'b'.repeat(64),sourceSession:{ready:true,renewable:true,shortSession:true,
+        sessionExpiresAt:time+remaining,accessExpiresAt:time+remaining}})});
+    try{return await helper.probe();}finally{helper.dispose();}
+  };
+  for(const offset of [13000,-13000]){
+    t.mock.timers.setTime(time-offset);
+    for(const remaining of [300000,5000])assert.equal(await probe(actual,remaining),true,'the actual Stage caller must keep valid short Source ACKs inside server-relative bounds');
+  }
+  t.mock.timers.setTime(time-13000);assert.equal(await probe(old,300000),false,'the old local-clock caller rejects a legitimate server five-minute ACK');
+  assert.equal(callers.createScopedSlotRenewal,'serverNow');
+});
+
 function stageMessagePorts(readRenewBinding, runtimeDisplay) {
   const ast=ts.createSourceFile('app-stage.ts',readFileSync(new URL('./app-stage.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);
   let renewal,native,show;

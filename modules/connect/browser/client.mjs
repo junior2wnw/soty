@@ -92,6 +92,38 @@ export function createClientWithStorage(options, storage) {
   const enrollmentPreviews = new Map();
   const appCleanupReplies = new WeakMap(), appCleanups = new Set();
   const voiceCleanupReplies = new WeakMap(), voiceCleanups = new Set();
+  const monotonicNow = globalThis.performance?.now?.bind(globalThis.performance) || Date.now;
+  const responseTimes = new WeakMap();
+  let serverTime = null, lastServerNow = -Infinity;
+  const interval = sample => {
+    const elapsed = Math.max(0, monotonicNow() - sample.receivedAt);
+    return { lower: sample.lower + elapsed, upper: sample.upper + elapsed };
+  };
+  function serverNow() {
+    if (!serverTime) return Date.now();
+    return lastServerNow = Math.max(lastServerNow, interval(serverTime).upper);
+  }
+  function responseTime(value) {
+    const sample = responseTimes.get(value);
+    if (sample) return interval(sample);
+    const now = Date.now(); return { lower: now, upper: now };
+  }
+  function captureServerTime(response, value, startedAt, receivedAt, timeoutMs) {
+    // Date has one-second precision. The complete measured RTT bounds its age;
+    // only a fresh, uncached response from this exact HTTPS endpoint calibrates.
+    const date = response.headers?.get?.('date'), parsed = typeof date === 'string' ? Date.parse(date) : NaN;
+    const rtt = receivedAt - startedAt;
+    if (!globalThis.performance?.now || !endpoint.startsWith('https:') || response.url !== endpoint || response.redirected !== false
+      || ['opaque', 'opaqueredirect'].includes(response.type) || response.headers?.has?.('age') !== false
+      || !Number.isFinite(parsed) || new Date(parsed).toUTCString() !== date || timeoutMs !== 20000 || rtt < 0 || rtt > timeoutMs) return;
+    const sample = { lower: parsed, upper: parsed + 999 + rtt, receivedAt };
+    if (serverTime) {
+      // A disjoint server-clock step is not adopted or used to extend a lease.
+      const prior = interval(serverTime), current = interval(sample);
+      if (current.upper < prior.lower || current.lower > prior.upper) return;
+    }
+    responseTimes.set(value, sample); serverTime = sample;
+  }
   let disposed = false, notificationError = null, lastNotifiedRevision = -1;
   const view = state => ({ ...publicLocalState(state), notificationError: notificationError ? { code: notificationError.code, message: notificationError.message } : null });
   const serialize = task => {
@@ -190,9 +222,11 @@ export function createClientWithStorage(options, storage) {
       : body.op === 'voice.orb.start' ? 90_000 : body.op === 'voice.orb.end' ? 45_000 : 20_000;
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     const cancel=()=>controller.abort();requestSignal?.addEventListener('abort',cancel,{once:true});
+    const startedAt = monotonicNow();
     try {
       response = await fetcher(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: canonicalJson({ protocol: 1, ...body }),
         credentials: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal });
+      const receivedAt = monotonicNow();
       const text = await response.text();
       if(requestSignal?.aborted)throw new ConnectError('REQUEST_CANCELLED','The page read was cancelled.');
       const keyList = Boolean(body.proof && body.op === 'ai.keys.list'), maximum = (keyList ? 8 : 3) * 1024 * 1024;
@@ -205,6 +239,7 @@ export function createClientWithStorage(options, storage) {
         const message = typeof value?.error?.message === 'string' ? value.error.message.slice(0, 500) : 'The server could not complete this request.';
         throw new ConnectError(code, message, { status: response.status });
       }
+      captureServerTime(response, value, startedAt, receivedAt, timeoutMs);
       return value;
     } catch (error) {
       if(requestSignal?.aborted)throw new ConnectError('REQUEST_CANCELLED','The page read was cancelled.');
@@ -219,7 +254,7 @@ export function createClientWithStorage(options, storage) {
   }
   async function performCleanup(state) {
     if(state.finished)return;
-    if(disposed || Date.now()>=state.expiresAt){releaseCleanup(state);return;}
+    if(disposed || monotonicNow()>=state.expiresAt){releaseCleanup(state);return;}
     if(state.pending)return state.pending;
     const action=(async()=>{
       const actor=state.actor, current=await installation(actor.deviceId);
@@ -236,7 +271,7 @@ export function createClientWithStorage(options, storage) {
   function captureAppCleanup(result, capture, args) {
     if(!capture)return null;
     if(result.hostSession!==undefined){
-      const appId=result.entry?.appId,member=result.hostSession,until=result.hostSessionExpiresAt;
+      const appId=result.entry?.appId,member=result.hostSession,until=result.hostSessionExpiresAt,time=responseTime(result);
       const opaque=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{43}$/u.test(value);
       const sameTarget=capture.operation==='apps.launch'||member?.frameId===args.frameId
         &&(capture.operation==='apps.session.renew'?member?.revision===args.revision+1&&member?.lease!==args.lease
@@ -244,14 +279,14 @@ export function createClientWithStorage(options, storage) {
       if(appId!==args.appId||!/^app-[a-f0-9]{32}$/u.test(appId??'')
         ||!member||typeof member!=='object'||Array.isArray(member)||Object.keys(member).sort().join(',')!=='expiresAt,frameId,lease,revision,schema'
         ||member.schema!=='soty.app-host-session.v1'||!opaque(member.frameId)||!opaque(member.lease)
-        ||!Number.isSafeInteger(member.revision)||member.revision<1||!Number.isSafeInteger(member.expiresAt)||member.expiresAt<=Date.now()
-        ||member.expiresAt>Date.now()+86410000||result.runtimeProfile!==undefined
-        ||until!==null&&(!Number.isSafeInteger(until)||until<=Date.now()||until>member.expiresAt)
+        ||!Number.isSafeInteger(member.revision)||member.revision<1||!Number.isSafeInteger(member.expiresAt)||member.expiresAt<=time.upper
+        ||member.expiresAt>time.lower+86410000||result.runtimeProfile!==undefined
+        ||until!==null&&(!Number.isSafeInteger(until)||until<=time.upper||until>member.expiresAt)
         ||until===null&&capture.operation!=='apps.session.context'
         ||!sameTarget)
         throw new ConnectError('INVALID_SERVER_RESPONSE','Invalid closed host cleanup reply.');
       const fixed=Object.freeze({appId,frameId:member.frameId,lease:member.lease,revision:member.revision});
-      for(const value of appCleanups)if(value.expiresAt<=Date.now())releaseCleanup(value);
+      for(const value of appCleanups)if(value.expiresAt<=monotonicNow())releaseCleanup(value);
       // Context rereads refresh the same private purpose; they cannot consume
       // the capacity limit with duplicate callbacks for one immutable proof.
       const prior=[...appCleanups].find(value=>value.kind==='host'&&!value.finished&&value.credential===capture.credential
@@ -260,32 +295,32 @@ export function createClientWithStorage(options, storage) {
       // Missing RAM HTTP authority is not a new signer-retention budget. A
       // context read may reuse an unexpired captured purpose, never extend it.
       if(until===null){if(prior)appCleanupReplies.set(result,Object.freeze({callback:prior.callback,state:prior}));return prior??null;}
-      const deadline=Math.min(until,member.expiresAt);
+      const deadline=Math.min(monotonicNow()+Math.min(until,member.expiresAt)-time.upper,capture.startedAt+86400000);
       if(prior){clearTimeout(prior.timer);prior.actor=capture.actor;prior.expiresAt=deadline;
-        prior.timer=setTimeout(()=>releaseCleanup(prior),Math.max(1,deadline-Date.now()));prior.timer.unref?.();
+        prior.timer=setTimeout(()=>releaseCleanup(prior),Math.max(1,deadline-monotonicNow()));prior.timer.unref?.();
         appCleanupReplies.set(result,Object.freeze({callback:prior.callback,state:prior}));return prior;}
       if(appCleanups.size>=256)throw new ConnectError('CLEANUP_CAPACITY','Too many active application admissions.');
       const state={kind:'host',actor:capture.actor,credential:capture.credential,args:fixed,expiresAt:deadline,finished:false,pending:null,timer:null,callback:null};
       const callback=(...parameters)=>{if(parameters.length)return Promise.reject(new ConnectError('INVALID_ARGUMENT','Cleanup takes no arguments.'));return serialize(()=>performCleanup(state));};
-      state.callback=callback;state.timer=setTimeout(()=>releaseCleanup(state),Math.max(1,deadline-Date.now()));state.timer.unref?.();
+      state.callback=callback;state.timer=setTimeout(()=>releaseCleanup(state),Math.max(1,deadline-monotonicNow()));state.timer.unref?.();
       appCleanups.add(state);appCleanupReplies.set(result,Object.freeze({callback,state}));return state;
     }
     if(!['apps.launch','apps.scoped.renew'].includes(capture.operation)
       ||!['soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(result.runtimeProfile))return null;
-    const appId=result.entry?.appId,handle=result.scopedCloseHandle,expiresAt=result.scopedSlotExpiresAt;
+    const appId=result.entry?.appId,handle=result.scopedCloseHandle,expiresAt=result.scopedSlotExpiresAt,time=responseTime(result);
     if(appId!==args.appId || typeof appId!=='string' || !/^app-[a-f0-9]{32}$/.test(appId)
       ||typeof handle!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(handle)||!Number.isSafeInteger(expiresAt)
-      ||expiresAt<=Date.now()||expiresAt>Date.now()+310000)
+      ||expiresAt<=time.upper||expiresAt>time.lower+310000)
       throw new ConnectError('INVALID_SERVER_RESPONSE','Invalid closed application cleanup reply.');
-    for(const value of appCleanups)if(value.expiresAt<=Date.now())releaseCleanup(value);
+    for(const value of appCleanups)if(value.expiresAt<=monotonicNow())releaseCleanup(value);
     if(appCleanups.size>=256)throw new ConnectError('CLEANUP_CAPACITY','Too many active application admissions.');
-    const deadline=Math.min(expiresAt,capture.startedAt+300000);
+    const deadline=Math.min(monotonicNow()+expiresAt-time.upper,capture.startedAt+300000);
     const state={actor:capture.actor,credential:capture.credential,args:Object.freeze({appId,handle}),expiresAt:deadline,finished:false,pending:null,timer:null};
     const callback=(...parameters)=>{
       if(parameters.length)return Promise.reject(new ConnectError('INVALID_ARGUMENT','Cleanup takes no arguments.'));
       return serialize(()=>performCleanup(state));
     };
-    state.timer=setTimeout(()=>releaseCleanup(state),Math.max(1,deadline-Date.now()));state.timer.unref?.();
+    state.timer=setTimeout(()=>releaseCleanup(state),Math.max(1,deadline-monotonicNow()));state.timer.unref?.();
     appCleanups.add(state);appCleanupReplies.set(result,Object.freeze({callback,state}));return state;
   }
   function releaseVoiceCleanup(state) {
@@ -329,13 +364,13 @@ export function createClientWithStorage(options, storage) {
     // Capture the real authenticated local signer before any challenge/network
     // await. The caller receives no signer object or generic retained RPC port.
     const cleanupCapture=normalized.scopedAppCleanup===true && ['apps.launch','apps.scoped.renew','apps.session.renew','apps.session.confirm','apps.session.context'].includes(op)
-      ?Object.freeze({actor,credential:cleanupCredential(actor),startedAt:Date.now(),operation:op}):null;
+      ?Object.freeze({actor,credential:cleanupCredential(actor),startedAt:monotonicNow(),operation:op}):null;
     const voiceCapture=normalized.scopedVoiceCleanup===true && op==='voice.orb.start'
       ?Object.freeze({actor,credential:cleanupCredential(actor)}):null;
     const digest = await sha256(canonicalJson(args));
     const challenge = await post({ op: 'challenge', args: { operation: op, digest } },requestSignal);
     responseId(challenge.challengeId, 'challenge ID');
-    if (typeof challenge.message !== 'string' || challenge.message.length > 8192 || expires(challenge.expiresAt) <= Date.now()) {
+    if (typeof challenge.message !== 'string' || challenge.message.length > 8192 || expires(challenge.expiresAt) <= responseTime(challenge).upper) {
       throw new ConnectError('INVALID_CHALLENGE', 'The server challenge is invalid or expired.');
     }
     // The structured challenge is checked before signing the server's exact UTF-8 bytes.
@@ -476,6 +511,8 @@ export function createClientWithStorage(options, storage) {
   }
 
   const client = {
+    /** Conservative server-relative time; no lease, proof or authority is changed. */
+    serverNow,
     /** Private host effect cleanup. JSON clones cannot obtain a capability. */
     appSlotCleanup: reply => !disposed && reply && typeof reply==='object' ? appCleanupReplies.get(reply)?.callback ?? null : null,
     voiceSessionCleanup: reply => !disposed && reply && typeof reply==='object' ? voiceCleanupReplies.get(reply)?.callback ?? null : null,

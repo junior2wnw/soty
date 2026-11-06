@@ -123,6 +123,16 @@ test('ordinary confirmation does not depend on an optional wakeup message or Sou
  assert.equal(await f.helper.renew('reset'),true);assert.equal(f.calls.filter(x=>x.kind==='confirm').length,1);
 });
 
+test('an injected server clock governs renewal despite either local wall-clock offset',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:1800000000000});
+ for(const offset of [13000,-13000]){
+  const f=await fixture();t.after(()=>f.dispose());t.mock.timers.setTime(f.ports.clock()+offset);
+  f.restart();assert.equal(await f.helper.renew('reset'),true);assert.equal(f.member().revision,2);
+  f.advance(86400001);await assert.rejects(f.helper.renew('reset'),{code:'app_host_session_changed'});
+  assert.equal(f.calls.filter(call=>call.kind==='request').length,1,'expired server authority cannot create another candidate');
+ }
+});
+
 async function unconfirmedScenario(create=createAppHostSessionRenewal){
  const f=await fixture({create,bootstrap:async()=>{}});
  try{assert.equal(await f.helper.renew('reset'),false,'a message without a real server cookie check must not confirm');

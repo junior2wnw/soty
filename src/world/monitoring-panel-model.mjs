@@ -1,4 +1,5 @@
 const number=new Intl.NumberFormat('ru-RU',{maximumFractionDigits:3});
+const byteNumber=new Intl.NumberFormat('ru-RU',{maximumSignificantDigits:3});
 export const MONITORING_RANGES=Object.freeze([
   Object.freeze({id:'hour',label:'За час',milliseconds:3600000}),
   Object.freeze({id:'day',label:'24 часа',milliseconds:86400000}),
@@ -61,6 +62,10 @@ export function monitoringValue(value,unit){
   if(value===null)return'Нет данных';
   if(typeof value!=='number'||!Number.isFinite(value))return'Недоступно';
   if(unit==='boolean'&&(value===0||value===1))return value===1?'Да':'Нет';
+  if(unit==='bytes'){
+    const units=['Б','КиБ','МиБ','ГиБ','ТиБ'],scale=value===0?0:Math.min(units.length-1,Math.max(0,Math.floor(Math.log2(Math.abs(value))/10)));
+    return (scale===0?number:byteNumber).format(value/1024**scale)+' '+units[scale];
+  }
   const suffix={count:'',ms:' мс',seconds:' с',bytes:' Б',percent:'%',ratio:'',boolean:''}[unit]??'';
   return number.format(value)+suffix;
 }

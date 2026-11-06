@@ -386,7 +386,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     // cannot adopt a new account merely because the shared selection changed.
     const traceStartedAt = Date.now(), requestTimings: { operation: string; startedAt: number; completedAt: number; ok: boolean }[] = [];
     if (root.dataset) root.dataset.startupRequestTimings = '[]';
-    const api = { request: <T>(method: string, args?: Record<string, unknown>,requestOptions?:{signal?:AbortSignal}): Promise<T> => {
+    const api = { serverNow: () => accountClient.serverNow?.() ?? Date.now(), request: <T>(method: string, args?: Record<string, unknown>,requestOptions?:{signal?:AbortSignal}): Promise<T> => {
       if (!accountId) return Promise.reject(Object.assign(new Error('No local account is selected.'), { code: 'NO_LOCAL_PROFILE' }));
       const startedAt = Date.now(), result = accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId,...(requestOptions?.signal?{signal:requestOptions.signal}:{}) });
       if (!startupReadOperations.has(method) || startedAt - traceStartedAt > 30000) return result;

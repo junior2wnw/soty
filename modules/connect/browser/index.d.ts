@@ -114,6 +114,8 @@ export interface RecoveryKit {
 }
 
 export interface ConnectClient {
+  /** Conservative HTTPS server time, advanced by the local monotonic clock; local time until calibrated. */
+  serverNow?(): number;
   voiceSessionCleanup?(reply: unknown): (() => Promise<unknown>) | null;
   /** Returns a fixed zero-argument Source/host close only for this client's
    * original signed reply; no identity, operation or arguments can be selected. */

@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {monitoringWindow,monitoringPlotData,monitoringPreviousWindow,monitoringComparisonData,monitoringValue,monitoringStatus,monitoringErrorText,monitoringAccessLost} from './monitoring-panel-model.mjs';
+
+test('memory values use readable binary units that fit the shared chart axis',()=>{
+  assert.equal(monitoringValue(234815488,'bytes'),'224 МиБ');
+  assert.equal(monitoringValue(1536,'bytes'),'1,5 КиБ');
+  assert.equal(monitoringValue(1024**3,'bytes'),'1 ГиБ');
+  assert.equal(monitoringValue(-234815488,'bytes'),'-224 МиБ');
+  assert.equal(monitoringValue(17,'bytes'),'17 Б');
+  assert.equal(monitoringValue(1023,'bytes'),'1\u00a0023 Б');
+  assert.equal(monitoringValue(null,'bytes'),'Нет данных');
+});
 import * as presentation from './monitoring-panel-model.mjs';
 
 test('time-series projection preserves measured zero and an unobserved gap as different values',()=>{

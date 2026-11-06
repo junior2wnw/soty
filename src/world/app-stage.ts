@@ -103,6 +103,7 @@ export function appLaunchFailure(error: unknown): { title: string; detail: strin
  * bounded boot recovery obtains another ticket for the captured entry. */
 export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppStageHandle {
   const initial = options.intent, accountId = options.accountId;
+  const serverNow = () => options.api.serverNow?.() ?? Date.now();
   let intent = initial, app = options.app, selectedEntry: AppResolvedEntry | null = null;
   let disposed = false, runtimeStarted = false, runtimePending = false, accountPending = false;
   let routeGeneration = 0, frameGeneration=0, saved: AppSavedHandle | null = null, discussion: AppDiscussionHandle | null = null;
@@ -520,7 +521,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if(liveAuthorityDenied)return null;
     const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);return binding&&source?{...binding,source}:null;
   };
-  const renewal=createScopedSlotRenewal({isCurrent:current,readBinding:readRenewBinding,
+  const renewal=createScopedSlotRenewal({isCurrent:current,readBinding:readRenewBinding,clock:serverNow,
     readContext:handle=>options.api.request('apps.scoped.context',{appId:app.appId,handle}),
     async request(args){if(!options.renew)throw new Error('scoped_renewal_unavailable');
       const reply=await withVoiceAdmission(()=>options.renew!({appId:app.appId,...args,expectedAccountId:accountId}));return launcher.prepareRenewal(reply);},
@@ -854,7 +855,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if(hostBinding){
         const slot=hostBinding.slot,authority=liveAuthorityEpoch;
         const hostCurrent=()=>current()&&authority===liveAuthorityEpoch&&runtime.querySelector('iframe')===frame;
-        hostRenewal=createAppHostSessionRenewal({shellUrl:view.location.href,isCurrent:hostCurrent,
+        hostRenewal=createAppHostSessionRenewal({shellUrl:view.location.href,isCurrent:hostCurrent,clock:serverNow,
           schedule:(action,delay)=>view.setTimeout(action,delay),cancel:timer=>view.clearTimeout(timer),
           ...(options.cleanupForReply?{cleanupForReply:options.cleanupForReply}:{}),
           readBinding:()=>{const value=launcher.hostSession();return hostCurrent()&&value?.slot===slot?value:null;},
@@ -1019,9 +1020,9 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
           {appId:hostBinding.entry.appId,domainId:hostBinding.entry.domainId,path:hostBinding.entry.path},view.location.href);
         if(Object.keys(value).some(key=>!['ok','schema','state','hostSession','hostSessionExpiresAt','entry','launchBinding','runtimeOrigin'].includes(key))
           ||value.ok!==undefined&&value.ok!==true||value.schema!=='soty.app-host-session-context.v1'||!['current','renew-required','admitting'].includes(String(value.state))
-          ||session.frameId!==proof.frameId||session.lease!==proof.lease||session.revision!==proof.revision||session.expiresAt<Date.now()||session.expiresAt<proof.expiresAt
+          ||session.frameId!==proof.frameId||session.lease!==proof.lease||session.revision!==proof.revision||session.expiresAt<serverNow()||session.expiresAt<proof.expiresAt
           ||entry.origin!==hostBinding.entry.origin||value.runtimeOrigin!==hostBinding.runtimeOrigin||!sameAppLaunchBinding(pin,hostBinding.launchBinding))throw Error('app_resume_invalid_context');
-        if(value.state==='current'){if(!Number.isSafeInteger(value.hostSessionExpiresAt)||Number(value.hostSessionExpiresAt)<=Date.now()||Number(value.hostSessionExpiresAt)>session.expiresAt)throw Error('app_resume_invalid_context');return true;}
+        if(value.state==='current'){if(!Number.isSafeInteger(value.hostSessionExpiresAt)||Number(value.hostSessionExpiresAt)<=serverNow()||Number(value.hostSessionExpiresAt)>session.expiresAt)throw Error('app_resume_invalid_context');return true;}
         if(value.hostSessionExpiresAt!==null)throw Error('app_resume_invalid_context');
         if(value.state==='admitting')return true;
         if(!await hostRenewal?.renew('reset'))throw Error('app_resume_unconfirmed');return current()&&!liveAuthorityDenied&&runtime.querySelector('iframe')===frame&&frameGeneration===generation;
