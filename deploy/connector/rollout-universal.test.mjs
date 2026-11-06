@@ -613,6 +613,66 @@ async function activeSelectedReplacement(t) {
   return { ...f, target, old };
 }
 
+async function writerSelectedReplacement(t) {
+  const f=await activeSelectedReplacement(t),account='acct_'+'a'.repeat(32),other='acct_'+'b'.repeat(32);
+  const access={readAccountIds:[account],configureAccountIds:[other],adminAccountIds:[account,other]},admins=[other];
+  f.old.Config.Env.push('SOTY_MONITORING_MODE=writer','SOTY_MONITORING_READ_ACCOUNT_IDS='+account,
+    'SOTY_MONITORING_CONFIGURE_ACCOUNT_IDS='+other,'SOTY_MONITORING_ADMIN_ACCOUNT_IDS='+account+','+other,
+    'SOTY_PLATFORM_ADMIN_ACCOUNT_IDS='+other,'SOTY_APPS_FRAME_CONTINUITY_MIGRATION=1');
+  const current={...f.current,monitoring:{mode:'writer',schemaVersion:1,installed:true,accessSha256:hash(access)},platformAdminAccessSha256:hash(admins)};
+  const plan={...f.plan,expectedCurrentPreparednessSha256:hash(current)},handle=await prepared(t,f,plan);
+  const target={...current,selected:publicUniversalPolicy(handle).selected};
+  f.request={...f.request,universalPolicy:handle};f.run.universalMeasurement=async id=>id===args.originalId?current:target;
+  f.run.storageProbe=async()=>currentObservation({rooms:1,apps:14,appsFrameContinuity:2,monitoring:1});
+  return{...f,plan,handle,current,target,access,admins};
+}
+
+test('selected feature writer append preserves actual writer, Monitoring/Core rights, frame2 and every unrelated setting',async t=>{
+  const f=await writerSelectedReplacement(t),before=structuredClone(f.old);
+  await f.run.prepare(f.request);await f.run.promote();assert.equal(f.run.state.phase,'committed');
+  assert.deepEqual(f.run.config.Env,before.Config.Env);assert.deepEqual(f.old.Config,before.Config);
+  const mounts=structuredClone(f.run.config.HostConfig);mounts.Mounts.find(m=>m.Target===selectedTarget).Source=f.source;
+  assert.deepEqual(mounts,before.HostConfig);assert.equal(f.run.config.HostConfig.Mounts.find(m=>m.Target===selectedTarget).Source,f.nextSource);
+  assert.equal(f.run.config.Env.includes('SOTY_MONITORING_MODE=writer'),true);
+  assert.equal(await readFile(f.source,'utf8'),f.oldBytes);assert.equal(f.events.filter(event=>event==='start-candidate').length,1);
+  assert.equal(assertUniversalPreparedness(f.handle,f.target,{allowFixture:true}).ok,true);
+});
+
+test('selected feature writer requires fresh actual loaded writer and both rights fingerprints before projection',async t=>{
+  const f=await writerSelectedReplacement(t);
+  assert.throws(()=>applyUniversalPolicy(createConfig(f.old,args.originalImage,args.transaction,args.revision),f.handle));
+  for(const observed of [{...f.current,monitoring:undefined},{...f.current,platformAdminAccessSha256:undefined},
+    {...f.current,monitoring:{...f.current.monitoring,mode:'reader'}},{...f.current,platformAdminAccessSha256:'0'.repeat(64)}])
+    assert.throws(()=>assertSelectedEmbedFeatureOriginal(f.handle,f.old,observed,{allowFixture:true}));
+  const badMount=structuredClone(f.old);badMount.Mounts.find(m=>m.Destination===selectedTarget).RW=true;
+  assert.throws(()=>assertSelectedEmbedFeatureOriginal(f.handle,badMount,f.current,{allowFixture:true}));
+  assertSelectedEmbedFeatureOriginal(f.handle,f.old,f.current,{allowFixture:true});
+  const changed=structuredClone(f.old);changed.Config.Env=changed.Config.Env.map(value=>value==='SOTY_MONITORING_MODE=writer'?'SOTY_MONITORING_MODE=reader':value);
+  assert.throws(()=>applyUniversalPolicy(createConfig(changed,args.originalImage,args.transaction,args.revision),f.handle));
+});
+
+test('selected feature writer held mode, rights, registry mount and unrelated Env cannot drift before STOP',async t=>{
+  for(const mutate of [c=>{c.Config.Env=c.Config.Env.map(value=>value==='SOTY_MONITORING_MODE=writer'?'SOTY_MONITORING_MODE=reader':value);},
+    c=>{c.Config.Env=c.Config.Env.map(value=>value.startsWith('SOTY_MONITORING_ADMIN_ACCOUNT_IDS=')?value+',acct_'+'c'.repeat(32):value);},
+    c=>{c.Config.Env=c.Config.Env.map(value=>value.startsWith('SOTY_PLATFORM_ADMIN_ACCOUNT_IDS=')?'SOTY_PLATFORM_ADMIN_ACCOUNT_IDS=':value);},
+    c=>{c.HostConfig.Mounts.find(m=>m.Target===selectedTarget).ReadOnly=false;},c=>{c.Config.Env.push('UNAPPROVED_DELTA=1');}]){
+    const f=await writerSelectedReplacement(t);await f.run.prepare(f.request);
+    const candidate=structuredClone(f.map.get(f.run.candidate.Id));mutate(candidate);assert.throws(()=>f.run.validateCandidate(candidate,{stopped:true}));
+    mutate(f.old);await assert.rejects(f.run.promote());assert.equal(f.events.some(event=>event.startsWith('stop:')),false);
+  }
+});
+
+test('selected feature writer refuses changed candidate runtime mode or either loaded rights hash and restores writer',async t=>{
+  for(const change of [value=>({...value,monitoring:{...value.monitoring,mode:'reader'}}),
+    value=>({...value,monitoring:{...value.monitoring,accessSha256:'0'.repeat(64)}}),value=>({...value,platformAdminAccessSha256:'0'.repeat(64)})]){
+    const f=await writerSelectedReplacement(t);await f.run.prepare(f.request);
+    f.run.universalMeasurement=async id=>id===args.originalId?f.current:change(f.target);
+    await assert.rejects(f.run.promote());assert.equal(f.old.State.Running,true);assert.equal(f.map.get(f.run.candidate.Id).State.Running,false);
+    assert.ok(f.old.Config.Env.includes('SOTY_MONITORING_MODE=writer'));
+    assert.equal(f.old.HostConfig.Mounts.find(m=>m.Target===selectedTarget).Source,f.source);
+  }
+});
+
 test('selected feature exact-image rollout uses old8 current CAS and refuses any unapproved actual candidate configuration', async t => {
   const f = await activeSelectedReplacement(t), originalConfig = structuredClone(f.old.Config), originalHost = structuredClone(f.old.HostConfig);
   await assert.rejects(f.run.prepare({ ...f.request, candidateImage: args.candidateImage }), failCode('universal_policy_selected_feature_image_mismatch'));

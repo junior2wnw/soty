@@ -569,13 +569,16 @@ export function applyUniversalPolicy(config, handle) {
   }
   check(next.Env === undefined || Array.isArray(next.Env) && next.Env.every(value => typeof value === 'string'), 'universal_policy_configuration_invalid');
   const monitoring = receipt.featureMonitoring, frame = receipt.featureFrameContinuityMigration, previousMonitoring = monitoringMode(next.Env);
+  if (feature && state.monitoringOriginalMode !== undefined) check(previousMonitoring.mode === state.monitoringOriginalMode, 'universal_policy_monitoring_current_mismatch');
   if (monitoring) {
     check(previousMonitoring.mode === monitoring.expectedMode, 'universal_policy_monitoring_current_mismatch');
     next.Env ||= [];
     const index = next.Env.indexOf(previousMonitoring.entry);
     if (index >= 0) next.Env[index] = monitoringModeSetting + '=' + monitoring.mode;
     else next.Env.push(monitoringModeSetting + '=' + monitoring.mode);
-  } else if (!access && !coreAccess && !frame) check(previousMonitoring.mode === 'reader', 'universal_policy_monitoring_feature_required');
+  } else if (!access && !coreAccess && !frame) check(previousMonitoring.mode === 'reader'
+    || feature && state.monitoringOriginalMode === 'writer' && HEX.test(state.monitoringOriginalAccessSha256 ?? '')
+      && HEX.test(state.originalPlatformAdminAccessSha256 ?? ''), 'universal_policy_monitoring_feature_required');
   if (frame) {
     const previous = frameMigrationConfiguration(next.Env);
     check(previous.configured === frame.expectedConfigured, 'universal_policy_frame_continuity_current_mismatch');
@@ -651,7 +654,13 @@ export function applyUniversalPolicy(config, handle) {
 /** Configuration-only features bind the actual OLD configuration and loaded server capture. */
 export function assertUniversalFeatureOriginal(handle, original, observed, { allowFixture = false } = {}) {
   const receipt = stateFor(handle).receipt, feature = receipt.featureSelectedEmbed;
-  if (receipt.featureMonitoring || receipt.featureMonitoringAccess || receipt.featurePlatformAdminAccess || receipt.featureFrameContinuityMigration) {
+  if (feature) {
+    const matches = (original.Mounts || []).filter(mount => overlaps(path.posix.normalize(mount.Destination || '/'), selectedTarget));
+    check(matches.length === 1 && matches[0].Type === 'bind' && matches[0].Source === feature.currentSource && matches[0].RW === false,
+      'universal_policy_selected_feature_mount_mismatch');
+    check(canonicalJson(observed.selected ?? null) === canonicalJson(feature.currentSelected), 'universal_policy_selected_feature_current_mismatch');
+  }
+  if (receipt.featureMonitoring || receipt.featureMonitoringAccess || receipt.featurePlatformAdminAccess || receipt.featureFrameContinuityMigration || feature) {
     try { validateUniversalPreparedness(observed); } catch { fail('universal_policy_runtime_invalid'); }
     const state = stateFor(handle), monitoring = receipt.featureMonitoring, access = receipt.featureMonitoringAccess, coreAccess = receipt.featurePlatformAdminAccess, measured = observed.monitoring;
     if (receipt.featureFrameContinuityMigration) {
@@ -661,6 +670,8 @@ export function assertUniversalFeatureOriginal(handle, original, observed, { all
         'universal_policy_frame_continuity_current_mismatch');
     }
     const oldMode = monitoringMode(original.Config?.Env).mode;
+    if (feature && oldMode === 'writer') check(digest(observed) === receipt.expectedCurrentPreparednessSha256
+      && HEX.test(measured?.accessSha256 ?? '') && HEX.test(observed.platformAdminAccessSha256 ?? ''), 'universal_policy_selected_feature_runtime_required');
     if (monitoring || access || measured) check(measured?.mode === oldMode && (!monitoring || oldMode === monitoring.expectedMode), 'universal_policy_monitoring_current_mismatch');
     if (access) check(measured.accessSha256 === access.expectedAccessSha256
       && digest(monitoringEnvironmentAccess(original.Config?.Env).policy) === access.expectedAccessSha256, 'universal_policy_monitoring_access_current_mismatch');
@@ -677,17 +688,11 @@ export function assertUniversalFeatureOriginal(handle, original, observed, { all
       state.originalPlatformAdminAccessSha256 = observed.platformAdminAccessSha256;
     }
     const mode = monitoring?.mode ?? oldMode;
-    assertUniversalPreparedness(handle, { ...observed, ...(measured ? { monitoring: { ...measured, mode,
+    assertUniversalPreparedness(handle, { ...observed, ...(feature ? { selected: receipt.selected } : {}), ...(measured ? { monitoring: { ...measured, mode,
       installed: mode === 'writer' || measured.installed, ...(access ? { accessSha256: access.accessSha256 } : {}) } } : {}),
       ...(coreAccess ? { platformAdminAccessSha256: coreAccess.accessSha256 } : {}) }, { allowFixture });
     return;
   }
-  if (!feature) return;
-  const matches = (original.Mounts || []).filter(mount => overlaps(path.posix.normalize(mount.Destination || '/'), selectedTarget));
-  check(matches.length === 1 && matches[0].Type === 'bind' && matches[0].Source === feature.currentSource && matches[0].RW === false,
-    'universal_policy_selected_feature_mount_mismatch');
-  check(canonicalJson(observed.selected ?? null) === canonicalJson(feature.currentSelected), 'universal_policy_selected_feature_current_mismatch');
-  assertUniversalPreparedness(handle, { ...observed, selected: receipt.selected }, { allowFixture });
 }
 export const assertSelectedEmbedFeatureOriginal = assertUniversalFeatureOriginal;
 
@@ -763,8 +768,10 @@ export function assertUniversalPreparedness(handle, input, { allowFixture = fals
     && canonicalJson(runtime.reviews) === canonicalJson({ configurationDigest: expected.reviews.configurationDigest,
       providerCount: expected.reviews.providerCount, bindingCount: expected.reviews.bindingCount }), 'universal_policy_runtime_mismatch');
   check(canonicalJson(runtime.selected ?? null) === canonicalJson(expected.selected ?? null), 'universal_policy_runtime_mismatch');
-  const monitoringFeature = expected.featureMonitoring || expected.featureMonitoringAccess || expected.featureFrameContinuityMigration;
-  const expectedMode = expected.featureMonitoring?.mode ?? (expected.featureMonitoringAccess || expected.featurePlatformAdminAccess || expected.featureFrameContinuityMigration ? state.monitoringOriginalMode : 'reader');
+  const monitoringFeature = expected.featureMonitoring || expected.featureMonitoringAccess || expected.featureFrameContinuityMigration
+    || expected.featureSelectedEmbed && state.monitoringOriginalMode === 'writer';
+  const expectedMode = expected.featureMonitoring?.mode ?? (expected.featureMonitoringAccess || expected.featurePlatformAdminAccess || expected.featureFrameContinuityMigration
+    ? state.monitoringOriginalMode : expected.featureSelectedEmbed ? state.monitoringOriginalMode ?? 'reader' : 'reader');
   check(monitoringFeature ? ['reader','writer'].includes(expectedMode) && runtime.monitoring?.mode === expectedMode
     : !runtime.monitoring || runtime.monitoring.mode === expectedMode, 'universal_policy_runtime_mismatch');
   const expectedAccess = expected.featureMonitoringAccess?.accessSha256 ?? state.monitoringOriginalAccessSha256;
