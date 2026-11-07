@@ -10,14 +10,17 @@ import {markerPair,rawHttp,until} from './support/self-ip-root-fixture.mjs';
 import {nativeHttpFixture,nativeIdentity,good} from './support/native-capability-http.mjs';
 import {createHttpApp} from '../http-app.js';
 
-test('built single-file connector 1.4.18 really probes and proxies the selected own IP, rather than localhost',{timeout:70000},async t=>{
+test('built single-file connector really probes and proxies the selected own IP, rather than localhost',{timeout:70000},async t=>{
  let child;t.after(async()=>{if(!child||child.exitCode!==null)return;const ended=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGTERM');let timer;await Promise.race([ended,new Promise(resolve=>{timer=setTimeout(resolve,2000);})]);clearTimeout(timer);if(child.exitCode===null)child.kill('SIGKILL');});
  const source=await markerPair(t),lease=createServer();await new Promise(resolve=>lease.listen(0,'127.0.0.1',resolve));const localPort=lease.address().port;await new Promise(resolve=>lease.close(resolve));
  const f=await nativeHttpFixture(t,{appOrigins:true,appFactory:(dist,options)=>createHttpApp(dist,{...options,allowSelfIpTargets:true,localConnectorPort:localPort})});
  f.server.on('upgrade',(req,socket,head)=>{if(!f.app.locals.appsService.handleUpgrade(req,socket,head))socket.destroy();});
  const runtimeDir=join(f.directory,'installed-runtime');mkdirSync(runtimeDir);writeFileSync(join(runtimeDir,'connector-config.json'),JSON.stringify({workspaceRoot:runtimeDir,allowedRoots:[runtimeDir]}));
  const bundle=fileURLToPath(new URL('../../public/agent/soty-connector.mjs',import.meta.url)),manifest=JSON.parse(readFileSync(new URL('../../public/agent/manifest.json',import.meta.url),'utf8'));
- assert.equal(manifest.version,'1.4.18');assert.equal(manifest.sha256,createHash('sha256').update(readFileSync(bundle)).digest('hex'),'actual spawned artifact matches built release hash');
+ const sourceVersion=readFileSync(new URL('../../scripts/soty-connector.mjs',import.meta.url),'utf8').match(/const connectorVersion = "(\d+\.\d+\.\d+)";/u)?.[1];
+ assert.ok(sourceVersion,'the checkout declares its connector version');
+ assert.equal(manifest.version,sourceVersion,'the built release matches the checked-out connector version');
+ assert.equal(manifest.sha256,createHash('sha256').update(readFileSync(bundle)).digest('hex'),'actual spawned artifact matches built release hash');
  child=spawn(process.execPath,[bundle,'--port',String(localPort),'--scope','Dev'],{cwd:runtimeDir,windowsHide:true,stdio:['ignore','pipe','pipe'],env:{
   PATH:[dirname(process.execPath),...(process.env.SystemRoot?[join(process.env.SystemRoot,'System32')]:['/usr/bin','/bin'])].join(process.platform==='win32'?';':':'),
   ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{}),TEMP:f.directory,TMP:f.directory,USERPROFILE:f.directory,APPDATA:join(f.directory,'appdata'),LOCALAPPDATA:join(f.directory,'localappdata'),
