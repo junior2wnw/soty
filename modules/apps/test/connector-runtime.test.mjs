@@ -79,6 +79,17 @@ test('full installed-source runtime binds through exact-Origin local claim and s
   assert.equal(home.headers['x-frame-options'], undefined, 'main shell DENY must not leak into app gateway');
   const post = await callHttp(serverPort, '/api/items', { host, cookie, origin: appOrigin, method: 'POST', body: { text: 'Full runtime item' } });
   assert.equal(post.status, 200); assert.ok(post.json.some(item => item.text === 'Full runtime item'));
+  for (const encoding of ['gzip, br;q=0.5', 'gzip;q=0, identity']) {
+    const response = await callHttp(serverPort, '/api/items', { host, cookie, headers: {
+      'Accept-Encoding': encoding, Authorization: 'Bearer fixture-secret',
+    } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.json, post.json);
+    const upstream = sample.requests.at(-1).headers;
+    assert.equal(upstream['accept-encoding'], encoding, 'ordinary app must negotiate the browser encoding at the real upstream');
+    assert.equal(upstream.authorization, undefined);
+    assert.equal(upstream.cookie, undefined);
+  }
   const ws = new WebSocket(`ws://127.0.0.1:${serverPort}/live`, { headers: { Host: host, Origin: appOrigin, Cookie: cookie } });
   const first = await new Promise((resolve, reject) => { ws.once('message', resolve); ws.once('error', reject); }); assert.match(first.toString(), /Full runtime item/u);
   const closed = new Promise(resolve => ws.once('close', resolve));

@@ -1828,7 +1828,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if(candidate){stream.candidateApp=app;stream.bootCandidateSession=session;}
     res.once('close', () => closeStream(stream, 'app_client_closed'));
     try {
-      const headers=cleanHeaders(req.headers);if(selected&&req.headers.origin)headers.origin=req.headers.origin;
+      const headers = cleanHeaders(req.headers, selected ? 'request' : 'ordinary-request');
+      if (selected && req.headers.origin) headers.origin = req.headers.origin;
       let identityWitness;
       if (identityRequested) {
         assertApps(stream.channel.bindingVersion === 2 && stream.channel.relayIdentity === true && typeof signRelayIdentity === 'function',

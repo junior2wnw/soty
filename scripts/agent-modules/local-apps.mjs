@@ -737,7 +737,7 @@ function localAppsHeaders(value, direction) {
   const allow = new Set(direction === 'response' ? ['content-type', 'content-encoding', 'content-language', 'content-disposition', 'etag', 'last-modified', 'accept-ranges', 'content-range', 'vary']
     : direction === 'ws-request' ? ['sec-websocket-key', 'sec-websocket-version', 'sec-websocket-protocol', 'sec-websocket-extensions', 'origin']
       : direction === 'ws-response' ? ['sec-websocket-accept', 'sec-websocket-protocol', 'sec-websocket-extensions']
-        : ['accept', 'accept-language', 'content-type', 'content-encoding', 'if-none-match', 'if-modified-since', 'range', 'if-range', 'idempotency-key']);
+        : ['accept', 'accept-language', 'accept-encoding', 'content-type', 'content-encoding', 'if-none-match', 'if-modified-since', 'range', 'if-range', 'idempotency-key']);
   const result = {}; let bytes = 0;
   for (const [key, raw] of Object.entries(value || {})) {
     if (!allow.has(key.toLowerCase()) || typeof raw !== 'string' || /[\r\n\u0000]/u.test(raw)) continue;

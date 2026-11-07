@@ -42,10 +42,12 @@ export function cleanGrants(value = {}) {
 }
 export function connectorKey(identity) { return [textId(identity.linkId), textId(identity.hostDeviceId), textId(identity.connectorId)].join('|'); }
 const REQUEST_HEADERS = new Set(['accept', 'accept-language', 'content-type', 'content-encoding', 'if-none-match', 'if-modified-since', 'range', 'if-range', 'idempotency-key']);
+const ORDINARY_REQUEST_HEADERS = new Set([...REQUEST_HEADERS, 'accept-encoding']);
 const RESPONSE_HEADERS = new Set(['content-type', 'content-encoding', 'content-language', 'content-disposition', 'etag', 'last-modified', 'accept-ranges', 'content-range', 'vary']);
 const UPGRADE_HEADERS = new Set(['sec-websocket-accept', 'sec-websocket-protocol', 'sec-websocket-extensions']);
 export function cleanHeaders(headers, direction = 'request') {
-  const allow = direction === 'response' ? RESPONSE_HEADERS : direction === 'upgrade' ? UPGRADE_HEADERS : REQUEST_HEADERS;
+  const allow = direction === 'response' ? RESPONSE_HEADERS : direction === 'upgrade' ? UPGRADE_HEADERS
+    : direction === 'ordinary-request' ? ORDINARY_REQUEST_HEADERS : REQUEST_HEADERS;
   const result = {}; let bytes = 0;
   for (const [key, raw] of Object.entries(headers || {})) {
     const name = key.toLowerCase();
