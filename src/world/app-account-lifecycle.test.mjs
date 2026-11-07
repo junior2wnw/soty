@@ -1185,6 +1185,35 @@ test('authoritative host-member closure clears the old runtime through the exist
   assert.equal(f.app.main,root);assert.equal(root.querySelector('iframe'),null);assert.equal(f.launches(),1);assert.equal(f.operations.some(value=>value.op==='apps.session.renew'),false);
 });
 
+test('an explicit Stage retry restores the app title only after a new authorized launch',async t=>{
+  for(const allowed of [false,true]){
+    const admission=deferred(),calls=[],reply={...stageResponse('/'),launchBinding:stageBinding};
+    const f=await recoveryStage(async(_app,args)=>{calls.push(args);return calls.length===1?reply:admission.promise;});
+    t.after(()=>f.app.cleanScreen());
+    const root=appSurface(f),runtime=root.querySelector('.sa-runtime'),heading=root.querySelector('.sa-title').querySelector('h2');
+    const original=runtime.querySelector('iframe'),request=f.app.api.request;
+    f.app.api.request=async(op,args)=>{if(op==='apps.entry.get')throw failure('apps_access_denied');return request(op,args);};
+    await f.app.appStage.invalidateLive();
+    const retry=root.querySelector('.sa-recovery-retry');
+    assert.ok(original);assert.equal(runtime.querySelector('iframe'),null);assert.equal(retry.hidden,false);
+    assert.equal(heading.textContent,'Приложение недоступно');
+    retry.emit('click');
+    await until(()=>calls.length===2,'the retry starts a new launch for the same entry');
+    assert.deepEqual(calls[1],calls[0]);
+    assert.equal(heading.textContent,'Приложение недоступно');assert.equal(runtime.querySelector('iframe'),null);
+    if(allowed)admission.resolve(reply);else admission.reject(failure('apps_access_denied'));
+    await until(()=>!retry.disabled,'the retry resolves');
+    const frame=runtime.querySelector('iframe');
+    if(allowed){
+      assert.ok(frame);assert.notEqual(frame,original);
+      assert.equal(heading.textContent,'Editor');assert.equal(heading.title,frame.title);
+    }else{
+      assert.equal(frame,null);assert.equal(heading.textContent,'Приложение недоступно');
+      assert.match(runtime.children[0].textContent,/Этот вход недоступен/u);
+    }
+  }
+});
+
 async function staleSourceStage({ lookup, open, discussion = false } = {}) {
   const f = fixture({ hash: '#world' }), account = f.app.deskAccount, generation = f.app.accountGeneration;
   const intent = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/embed' },

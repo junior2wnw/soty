@@ -846,6 +846,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         isCurrent:()=>current()&&runtime.querySelector('iframe')===frame,
         onReset:()=>{delete screen.dataset.widgetContext;},
         onReady:()=>{screen.dataset.widgetContext='ready';}});
+      if (liveAuthorityDenied) updateApp(app);
       liveAuthorityDenied=false;
       relayPeer = peerEntry && peerBinding ? { frame, entry: peerEntry, binding: peerBinding,hostFrameId:launcher.hostSession()?.hostSession.frameId??null,
         runtimeScope:peerEntry.origin!==browserOrigin?{instanceId:options.instanceId??'main',runtimeOrigin:browserOrigin}:null } : null;
