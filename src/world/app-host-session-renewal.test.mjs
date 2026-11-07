@@ -114,25 +114,26 @@ test('an explicitly admitting initial reservation never starts a competing renew
  assert.equal(f.binding().hostSession.lease,original.lease);assert.equal(f.binding().hostSession.revision,original.revision);assert.ok(f.binding().hostSession.expiresAt>original.expiresAt);assert.ok(f.binding().hostSessionExpiresAt>0);
 });
 
-test('an actually validated current context settles the pending admission without another renewal or confirmation',async t=>{
+test('initial admission leaves the opening status in place until current authority is verified',async t=>{
  const f=await fixture({reservation:true});t.after(()=>f.dispose());const original=f.binding();
- assert.equal(await f.helper.renew('near-expiry'),false);assert.equal(f.states.at(-1).state,'pending');
+ assert.equal(await f.helper.renew('near-expiry'),false);
+ assert.deepEqual(f.states,[],'opening a new frame must not report recovery of an existing session');
  f.admit();assert.equal(await f.helper.renew('near-expiry'),true);
- assert.deepEqual(f.states.map(value=>value.state),['pending','confirmed'],'validated current authority must settle its pending notification');
+ assert.deepEqual(f.states.map(value=>value.state),['confirmed']);
  assert.equal(f.binding().slot,original.slot);assert.equal(f.binding().hostSession.lease,original.hostSession.lease);
  assert.equal(f.binding().hostSession.revision,original.hostSession.revision);assert.ok(f.binding().hostSessionExpiresAt-f.ports.clock()>30000);
  assert.equal(f.calls.filter(value=>value.kind==='context').length,2);
  assert.equal(f.calls.some(value=>['request','bootstrap','confirm'].includes(value.kind)),false);
 });
 
-test('a failed context after pending admission stays unavailable and never reports a false confirmation',async t=>{
+test('a failed context during initial admission still reports unavailable',async t=>{
  let reads=0;const f=await fixture({reservation:true,context:async(_args,{member,dto})=>{
   if(++reads===1)return dto(member,{schema:'soty.app-host-session-context.v1',state:'admitting',hostSessionExpiresAt:null});
   throw error('app_offline',400);
  }});t.after(()=>f.dispose());
- assert.equal(await f.helper.renew('near-expiry'),false);assert.equal(f.states.at(-1).state,'pending');
+ assert.equal(await f.helper.renew('near-expiry'),false);assert.deepEqual(f.states,[]);
  await assert.rejects(f.helper.renew('near-expiry'),{code:'app_offline'});
- assert.deepEqual(f.states.map(value=>value.state),['pending','unavailable']);assert.equal(f.states.some(value=>value.state==='confirmed'),false);
+ assert.deepEqual(f.states.map(value=>value.state),['unavailable']);
  assert.equal(f.binding().hostSessionExpiresAt,null);assert.equal(f.calls.some(value=>['request','bootstrap','confirm'].includes(value.kind)),false);
 });
 

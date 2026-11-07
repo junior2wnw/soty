@@ -86,7 +86,8 @@ export function createAppHostSessionRenewal({readBinding,isCurrent,context,reque
       if(value.hostSession.expiresAt!==binding.hostSession.expiresAt||value.hostSessionExpiresAt!==binding.hostSessionExpiresAt||value.cleanup&&value.cleanup!==binding.cleanup){
         if(!commit(binding,value))return false;binding=readBinding();owned=binding;if(!binding||!live(binding))return false;
       }
-      if(value.state==='admitting'){notify('pending');return false;}
+      // The opening frame owns the status until its first admission completes.
+      if(value.state==='admitting')return false;
       if(reason==='near-expiry'&&value.state==='current'&&value.hostSessionExpiresAt-clock()>30000){
         notify('confirmed');return true;
       }
