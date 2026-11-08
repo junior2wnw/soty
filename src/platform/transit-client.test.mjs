@@ -142,6 +142,21 @@ test('a new person obtains their profile without enrolling, importing into or st
   assert.equal(f.calls.length, 0); assert.ok(f.button('Скачать профиль sing-box')); f.close();
 });
 
+test('an existing owner can download a fresh issued profile without replacing the saved one', async () => {
+  const f = fixture({ paired: false, issuing: true });
+  f.payload.transitClient.profile.outbounds[0].server = 'saved.example';
+  await f.open();
+  assert.equal(f.issuedProfiles.length, 0);
+  assert.equal(f.payload.transitClient.profile.outbounds[0].server, 'saved.example');
+  f.button('Скачать актуальный профиль Transit').click();
+  await f.settle(() => f.downloads.length === 1);
+  assert.equal(JSON.parse(await f.downloads[0].text()).outbounds[0].server, 'entry.example');
+  assert.equal(f.payload.transitClient.profile.outbounds[0].server, 'saved.example');
+  assert.deepEqual(f.issuedProfiles, ['account-A']);
+  assert.equal(f.calls.length, 0);
+  f.close();
+});
+
 test('shows traffic for the issued profile and marks an incomplete collection', async () => {
   const usage = { uploadBytes: '512', downloadBytes: '2048', freshEntries: 1, expectedEntries: 2 };
   const f = fixture({ paired: false, usage }); await f.open();

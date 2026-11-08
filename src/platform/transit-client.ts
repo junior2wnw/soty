@@ -157,6 +157,11 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     if (!(await current(ticket)) || !live(ticket)) return;
     downloadAgentInstallerForDevice('machine', { id: hostDeviceId }, '', hash);
   }
+  async function requestIssuedProfile(): Promise<unknown> {
+    const ticket = generation;
+    const result = await accountClient.extension('transit.access.profile', { expectedAccountId: owner }, { expectedAccountId: owner });
+    return await current(ticket) ? normalizeTransitClientProfile(result.profile) : null;
+  }
   async function perform(action: () => Promise<void>, success: string): Promise<void> {
     if (working || !(await current())) return;
     working = true; notice.textContent = 'Проверяем подключение…'; render();
@@ -202,13 +207,14 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
       button.addEventListener('click', action); actions.append(button); return button;
     };
     if (!saved && issuingEnabled) actionButton('Получить профиль sing-box', () => void perform(async () => {
-      const ticket = generation;
-      const result = await accountClient.extension('transit.access.profile', { expectedAccountId: owner }, { expectedAccountId: owner });
-      if (!(await current(ticket))) return;
-      const profile = normalizeTransitClientProfile(result.profile);
-      await saveTransitAccountProfile(accountClient, owner, profile);
+      const profile = await requestIssuedProfile();
+      if (profile) await saveTransitAccountProfile(accountClient, owner, profile);
     }, 'Личный профиль готов. Скачайте его и добавьте в sing-box.'), true);
     if (saved) actionButton('Скачать профиль sing-box', () => downloadProfile(saved), true);
+    if (saved && issuingEnabled) actionButton('Скачать актуальный профиль Transit', () => void perform(async () => {
+      const profile = await requestIssuedProfile();
+      if (profile) downloadProfile(profile);
+    }, 'Добавьте скачанный файл в sing-box.'));
     if (!mobile && local?.supported && state && authorized) {
       const shouldStop = state.running || state.phase === 'unknown';
       if (shouldStop || state.configured || saved) actionButton(shouldStop ? 'Выключить' : 'Включить', () => void perform(async () => {
