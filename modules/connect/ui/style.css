@@ -10,6 +10,7 @@
 .connect-panel small, .connect-panel .connect-muted { color:var(--connect-muted,#a7bbac); }
 .connect-panel nav { display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--connect-edge,#344739); padding-bottom:12px; }
 .connect-panel button { font:inherit; color:inherit; background:var(--connect-control,#22352a); border:1px solid var(--connect-edge,#48634e); border-radius:10px; padding:9px 13px; margin:3px 4px 3px 0; cursor:pointer; min-height:44px; white-space:normal; }
+.connect-panel [data-close] { min-inline-size:44px; }
 .connect-panel [data-profile-list] { display:flex; flex-direction:column; gap:8px; }
 .connect-panel [data-profile-list] button { text-align:left; overflow-wrap:anywhere; }
 .connect-panel button:hover { background:var(--connect-hover,#2b4032); border-color:var(--connect-edge,#48634e); }

@@ -14,6 +14,7 @@ function fixture({beforeProfileChange,initialTab='profiles',initialAccount='A',b
  let document;const timers=new Map();let timer=0;
  class Node{
   children=[];handlers=new Map();attributes=new Map();dataset={};disabled=false;open=false;parent=null;ownText='';
+  classList={toggle:(token,force)=>{const names=new Set((this.className??'').split(/\s+/u).filter(Boolean));if(force)names.add(token);else names.delete(token);this.className=[...names].join(' ');return force;}};
   constructor(tag){this.tagName=tag;}
   get ownerDocument(){return document;}
   get isConnected(){return this===document.body||!!this.parent?.isConnected;}

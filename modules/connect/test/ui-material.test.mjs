@@ -8,6 +8,7 @@ import {readFile} from 'node:fs/promises';
 const vm={runInNewContext(code,context,...rest){Object.assign(context,{watchDeviceEnrollment,mountCredentialLogin,mountCredentialSettings,AbortController});return nodeVm.runInNewContext(code,context,...rest);}};
 class Element {
   children=[];handlers=new Map();attrs=new Map();dataset={};isConnected=true;value='';textContent='';
+  classList={toggle:(token,force)=>{const names=new Set((this.className??'').split(/\s+/u).filter(Boolean));if(force)names.add(token);else names.delete(token);this.className=[...names].join(' ');return force;}};
   constructor(tag){this.tagName=tag;}
   set innerHTML(markup){this.children=[];for(const match of markup.matchAll(/<([a-z][a-z0-9]*)\b([^>]*)>/giu)){const node=new Element(match[1]);node.ownerDocument=this.ownerDocument;for(const attr of match[2].matchAll(/([^\s=]+)(?:="([^"]*)")?/gu))node.setAttribute(attr[1],attr[2]??'');this.children.push(node);}}
   setAttribute(key,value){this.attrs.set(key,String(value));if(key==='class')this.className=String(value);if(key==='value')this.value=String(value);if(key.startsWith('data-'))this.dataset[key.slice(5)]=String(value);}
@@ -48,7 +49,10 @@ test('the additional credential entry produces Glass roles on real helper contro
   const context={document:f.document,mountPlatformInvitations:()=>({destroy(){}}),setTimeout,clearTimeout,URL,Blob,location:{origin:'https://synthetic.invalid'}};
   vm.runInNewContext(source+';globalThis.openPanel=openConnectPanel;',context);
   const panel=context.openPanel({client:f.client,bootstrapOnOpen:false,initialTab:'connect'});
-  try{await until(()=>panel.element.querySelectorAll('form').length===2);assertRoles(panel.element);}finally{panel.close();}
+  panel.element.className+=' glass-ui optical-glass-site-root';
+  try{await until(()=>panel.element.querySelectorAll('form').length===2);assertRoles(panel.element);
+    for(const name of ['connect-entry','glass-ui','optical-glass-site-root'])assert.ok(panel.element.className.split(/\s+/u).includes(name),`${name} survives the first QR render`);
+  }finally{panel.close();}
 });
 
 test('Connect produces its material root before append and exposes an additive element handle',async()=>{

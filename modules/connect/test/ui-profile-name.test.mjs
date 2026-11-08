@@ -10,6 +10,7 @@ const vm={runInNewContext(code,context,...rest){Object.assign(context,{watchDevi
 // reflects markup attributes; it does not claim native browser input coverage.
 class ElementPort {
   children = []; handlers = new Map(); attributes = new Map(); dataset = {}; value = ''; textContent = ''; isConnected = true; disabled = false;
+  classList={toggle:(token,force)=>{const names=new Set((this.className??'').split(/\s+/u).filter(Boolean));if(force)names.add(token);else names.delete(token);this.className=[...names].join(' ');return force;}};
   constructor(tagName) { this.tagName = tagName; }
   set innerHTML(markup) {
     this.children = [];
