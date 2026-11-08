@@ -154,7 +154,8 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     await refresh();if(stopped||generation!==renderGeneration)return;
     const titles = { profile: 'Профиль', people: 'Контакты', devices: 'Устройства входа', recovery: 'Восстановление профиля', data: 'Копии данных', profiles: 'Выбрать профиль', connect: deviceTitle };
     const heading = intent?.kind === 'device' ? approvalTitle : titles[tab];
-    dialog.querySelector('nav').hidden=tab==='connect'||intent?.kind==='device';dialog.className=tab==='connect'?'connect-panel connect-entry':'connect-panel';
+    dialog.querySelector('nav').hidden=tab==='connect'||intent?.kind==='device';
+    dialog.classList.toggle('connect-entry', tab === 'connect');
     dialog.querySelector('h2').textContent = heading; dialog.setAttribute('aria-label', heading);
     dialog.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'));
     if (intent) { await renderIntent(); return; }
