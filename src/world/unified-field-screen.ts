@@ -42,6 +42,7 @@ export interface UnifiedFieldScreenOptions {
   onAppSettings?: (app: DirectoryApp) => void;
   onOpenSaved?: () => void;
   onCreateMenu?: () => void;
+  onConnectDevice?(): void;
   onOpenMore?: () => void;
   readIdentity?: () => {displayName:string;avatarUrl?:string;avatarColor?:string;avatarRevision?:number|null}|null;
   onSearchVisibilityChange?(): void;
@@ -156,7 +157,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const target = event.target;
     if (target instanceof HTMLButtonElement && target.classList.contains('uf-own-app')) target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, { signal });
-  const loading = el('div', 'uf-loading', 'Открываем поле…'); loading.setAttribute('role', 'status');
+  const loading = el('div', 'uf-loading', 'Открываем полотно…'); loading.setAttribute('role', 'status');
   const empty = el('div', 'uf-empty'); empty.hidden = true; empty.setAttribute('role', 'status');
   const feedback = el('div', 'uf-storage-status'); feedback.hidden = true; feedback.setAttribute('role', 'status');
   const toolbar = el('div', 'uf-context-toolbar');
@@ -203,6 +204,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const liveProjection=createLiveAppScene();
   let appProjectionGeneration=0,appCoverageSceneSignature=JSON.stringify({contexts:[],shortcuts:[]});
   let liveApps:DirectoryEntity[]=[],liveCursor:string|null=null,liveRead=0,livePages=1,liveAppsFramed=false;
+  let liveCatalogApps: DirectoryEntity[] = [], liveOwnerApps: DirectoryEntity[] = [];
   const searchPlacement = createFieldSearchPlacement();
   let activeSearchScene = createFieldDocument();
   let searchResponseScope = '';
@@ -348,40 +350,55 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const scene=liveAppScene(engine.snapshot()),signature=JSON.stringify(scene);
     if(metadataChanged||signature!==appCoverageSceneSignature){appCoverageSceneSignature=signature;engine.update({...(metadataChanged?{entities:allMetadata()}:{}),liveScene:scene});}
   }
-  async function refreshLiveApps(_append=false):Promise<void>{
-    if(!engine||!current())return;
-    const read=++liveRead,items:DirectoryEntity[]=[];
-    // Public availability belongs on every canvas; discovery never writes personal placements.
-    const [registryRead,catalogRead]=await Promise.allSettled([
-      options.api.request<{apps:unknown[]}>('apps.list',{expectedAccountId:options.accountId}),
-      options.api.request<{apps:{id:string}[]}>('apps.catalog',{expectedAccountId:options.accountId}),
-    ]);
-    if(!current()||read!==liveRead||!engine)return;
-    const registry=registryRead.status==='fulfilled'&&Array.isArray(registryRead.value.apps)?registryRead.value:null;
-    const catalog=catalogRead.status==='fulfilled'&&Array.isArray(catalogRead.value.apps)?catalogRead.value:null;
-    if(!registry&&!catalog)throw Object.assign(new Error('Не удалось обновить доступные приложения.'),{code:'live_directory_unavailable'});
-    const owned=unplacedOwnApps(registry?.apps??[],options.accountId,[]),ids=new Set([...owned.map(app=>app.id),...(catalog?.apps??[]).map(app=>app.id)]);
-    const refs=[...ids].map(id=>({kind:'app' as const,id}));
-    for(let offset=0;offset<refs.length;offset+=60){
-      const page=await directory.resolve(refs.slice(offset,offset+60));
-      if(!current()||read!==liveRead||!engine)return;
-      if(page.errors.length)throw Object.assign(new Error('Не удалось обновить доступные приложения.'),{code:'live_directory_unavailable'});
-      items.push(...page.items.filter(item=>item.entity.kind==='app'&&ids.has(item.entity.id)));
-    }
-    livePages=1;liveApps=[...new Map(items.map(item=>[fieldEntityKey(item.entity),item])).values()];
-    liveCursor=null;merge(liveApps);
-    refreshAppCoverage(true);
-    if(!current()||read!==liveRead||!engine)return;
-    if(!liveAppsFramed&&liveApps.length){
-      liveAppsFramed=true;
-      if(mode==='mine'&&engine.snapshot().shortcuts.every(shortcut=>shortcut.entity.kind==='builtin')&&options.viewState?.mineFit!=='manual'&&!selected&&!summary?.arranging&&!queries.mine.trim()&&['all','app'].includes(filter)){
-        const context=liveAppScene(engine.snapshot()).contexts[0];if(context)engine.focusContext(context.contextId);
+  function applyLiveApps(): void {
+    if (!liveApps.length && !liveOwnerApps.length && !liveCatalogApps.length && element.dataset.liveAppsState === 'loading') return;
+    liveApps = [...new Map([...liveOwnerApps, ...liveCatalogApps].map(item => [fieldEntityKey(item.entity), item])).values()];
+    livePages = 1; liveCursor = null;
+    element.dataset.liveApps = String(liveApps.length); element.dataset.liveMore = 'false';
+    merge(liveApps);
+    if (engine) { refreshAppCoverage(true); revealReadyMine(engine); }
+    renderMineSearchResults(); renderOpenList?.();
+  }
+  async function refreshLiveApps(_append = false): Promise<void> {
+    if (!current()) return;
+    const read = ++liveRead, active = () => current() && read === liveRead;
+    const unavailable = () => Object.assign(new Error('Не удалось обновить доступные приложения.'), { code: 'live_directory_unavailable' });
+    const requested = new Map<string, Promise<DirectoryEntity[]>>();
+    element.dataset.liveAppsState = 'loading';
+    async function readSource(source: 'list' | 'catalog'): Promise<void> {
+      const { apps } = await options.api.request<{ apps: { id: string }[] }>(`apps.${source}`, { expectedAccountId: options.accountId });
+      if (!active()) return;
+      if (!Array.isArray(apps)) throw unavailable();
+      const ids = new Set((source === 'catalog' ? apps : unplacedOwnApps(apps, options.accountId, [])).map(app => app.id));
+      const missing = [...ids].filter(id => !requested.has(id));
+      // A catalogue entry is a candidate. Only the signed directory can admit it to the field.
+      for (let offset = 0; offset < missing.length; offset += 60) {
+        const batch = missing.slice(offset, offset + 60);
+        const request = directory.resolve(batch.map(id => ({ kind: 'app', id }))).then(page => {
+          if (page.errors.length) throw unavailable();
+          return page.items;
+        });
+        for (const id of batch) requested.set(id, request);
       }
+      const pages = await Promise.all(new Set([...ids].map(id => requested.get(id)!)));
+      if (!active()) return;
+      const items = pages.flat().filter(item => item.entity.kind === 'app' && ids.has(item.entity.id));
+      if (source === 'catalog') liveCatalogApps = items; else liveOwnerApps = items;
+      applyLiveApps();
     }
-    element.dataset.liveApps=String(liveApps.length);element.dataset.liveMore=String(!!liveCursor);
-    element.dataset.liveAppsState=registry&&catalog?'ready':'partial';
-    if(!registry||!catalog)options.onMessage(!catalog?'Общий каталог пока недоступен. Ваши приложения доступны.':'Не удалось обновить ваши приложения. Общий каталог доступен.',true);
-    renderMineSearchResults();renderOpenList?.();
+    const [catalog, registry] = await Promise.allSettled([readSource('catalog'), readSource('list')]);
+    if (!active()) return;
+    if (catalog.status === 'rejected' && registry.status === 'rejected') {
+      element.dataset.liveAppsState = 'offline';
+      if (engine) { emptyDocument = null; updateMineEmpty(engine.snapshot()); }
+      throw unavailable();
+    }
+    if (catalog.status === 'rejected') liveCatalogApps = [];
+    if (registry.status === 'rejected') liveOwnerApps = [];
+    element.dataset.liveAppsState = catalog.status === 'fulfilled' && registry.status === 'fulfilled' ? 'ready' : 'partial';
+    applyLiveApps();
+    if (catalog.status === 'rejected') options.onMessage('Общий каталог пока недоступен. Ваши приложения доступны.', true);
+    else if (registry.status === 'rejected') options.onMessage('Не удалось обновить ваши приложения. Общий каталог доступен.', true);
   }
   function overviewApps(): OwnAppOverview[] {
     return ownedAppsState === 'ready' && engine ? unplacedOwnApps(ownedApps, options.accountId, engine.snapshot().shortcuts) : [];
@@ -543,7 +560,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }, { signal });
   wide.addEventListener('change', placeSearch, { signal });
   function updateMineFilter(): void {
-    if (!engine || mode !== 'mine') return;
+    if (mode !== 'mine') return;
+    if (!engine) { renderMineSearchResults(); return; }
     const doc = summary?.document ?? engine.snapshot();
     let initialEntities: FieldDirectoryEntity[] | undefined;
     if (!mineFilterAdmitted) {
@@ -564,7 +582,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   function updateMineEmpty(doc: FieldDocument): void {
     if (mode !== 'mine') return;
-    renderMineSearchResults();
+    if (renderMineSearchResults()) { empty.hidden = true; emptyDocument = null; return; }
     if (mineResolvedGeneration !== mineGeneration && element.dataset.mineState !== 'error') {
       empty.hidden = true; emptyDocument = null; return;
     }
@@ -579,8 +597,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }).length;
     const availableOwnApps = overviewApps().some(app => matches(overviewEntity(app), queries.mine, filter));
     empty.hidden = count > 0 || availableOwnApps || liveApps.some(item => matches(item, queries.mine, filter)) || !!query && matchingContexts.size > 0;
-    if (!empty.hidden && (ownedAppsState !== 'ready' || element.dataset.mineState === 'error' || doc.shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))))) {
-      empty.replaceChildren(el('h2', '', 'Доступ пока не подтверждён'), button('Повторить', 'refresh', 'sw-button-quiet', () => run(loadMine()))); return;
+    const catalogVisible = filter === 'all' || filter === 'app';
+    if (!empty.hidden && catalogVisible && element.dataset.liveAppsState === 'loading') {
+      empty.replaceChildren(el('p', '', 'Загружаем доступные приложения…')); return;
+    }
+    if (!empty.hidden && (ownedAppsState !== 'ready' || element.dataset.mineState === 'error' || catalogVisible && ['partial', 'offline'].includes(element.dataset.liveAppsState ?? '') || doc.shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))))) {
+      empty.replaceChildren(el('h2', '', 'Доступ пока не подтверждён'), button('Повторить', 'refresh', 'sw-button-quiet', () => run(Promise.all([loadMine(), refreshLiveApps()])))); return;
     }
     if (!empty.hidden) empty.replaceChildren(el('h2', '', queries.mine ? 'Ничего не найдено' : filter !== 'all' ? 'Здесь пока пусто' : 'Здесь начинается ваше пространство'), el('p', '', queries.mine ? 'Попробуйте другое название.' : 'Оставьте мысль, добавьте фото или приложение.'), button(queries.mine ? 'Очистить поиск' : filter !== 'all' ? 'Показать всё' : 'Добавить', queries.mine ? 'close' : filter !== 'all' ? 'layers' : 'plus', 'sw-button-primary', () => {
       if (queries.mine) { searchInput.value = ''; inputChanged(); searchInput.focus(); }
@@ -1009,7 +1031,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const find = localQuery.trim().toLocaleLowerCase('ru');
     return rows.filter(row => `${row.title} ${row.detail}`.toLocaleLowerCase('ru').includes(find));
   }
-  function renderMineSearchResults(): void {
+  function renderMineSearchResults(): true | void {
     const query = queries.mine, needle = query.trim().toLocaleLowerCase('ru');
     const recent = current() && engine && mode === 'mine' && !needle && !composing
       && element.dataset.search === 'open' && filter === 'all' && options.onOpenRecent
@@ -1031,7 +1053,24 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       }
       return;
     }
-    if (!current() || !engine || mode !== 'mine' || !needle || composing) {
+    const canSearch = current() && mode === 'mine' && !!needle && !composing;
+    const capturedFilter = filter;
+    const live = (): boolean => current() && mode === 'mine' && queries.mine === query && filter === capturedFilter
+      && !composing && !mineSearchResults.hidden && mineSearchResults.isConnected;
+    if (canSearch && options.onConnectDevice && element.dataset.search === 'open' && (filter === 'all' || filter === 'device')
+      && /^(?:подключить|добавить)\s+(?:ещ[её]\s+одно\s+)?устройство[.!?]?$/u.test(needle)) {
+      const signature = JSON.stringify(['connect-device', query, filter]);
+      if (signature !== mineSearchSignature) {
+        mineSearchSignature = signature; mineSearchResults.hidden = false;
+        mineSearchStatus.textContent = 'Найдено: 1';
+        const action = button('Подключить ещё одно устройство', 'laptop', 'uf-list-entry uf-search-result', () => {
+          if (live() && element.dataset.search === 'open' && action.isConnected) options.onConnectDevice?.();
+        });
+        mineSearchList.replaceChildren(action);
+      }
+      return true;
+    }
+    if (!canSearch || !engine) {
       mineSearchResults.hidden = true; mineSearchSignature = '';
       mineSearchStatus.textContent = ''; mineSearchList.replaceChildren(); return;
     }
@@ -1043,9 +1082,6 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     mineSearchStatus.textContent = rows.length ? 'Найдено: ' + rows.length + (pending ? ' · часть сот ещё проверяется' : '')
       : pending ? 'Доступ к сотам ещё не подтверждён.' : 'Ничего не найдено.';
     mineSearchList.replaceChildren();
-    const capturedFilter = filter;
-    const live = (): boolean => current() && mode === 'mine' && queries.mine === query && filter === capturedFilter
-      && !composing && !mineSearchResults.hidden && mineSearchResults.isConnected;
     for (const row of rows.slice(0, 6)) {
       const action = button('', row.contextId ? 'layers' : 'next', 'uf-list-entry uf-search-result', () => {
         if (!live() || !action.isConnected) return;
@@ -1230,9 +1266,18 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   function revealReadyMine(field: UnifiedField): void {
     void field.ready.then(() => {
       if (!current() || engine !== field || mode !== 'mine' || field.element.clientWidth <= 0 || field.element.clientHeight <= 0) return;
+      const document = field.snapshot(), liveContext = liveAppScene(document).contexts[0];
+      const showsLiveApps = liveContext && (filter === 'all' || filter === 'app') && (!queries.mine.trim() || liveApps.some(item => matches(item, queries.mine, filter)));
       // Placed builtins are usable without a directory response. Cached refs
       // keep their loading/unknown metadata and gain no display authority here.
-      if (field.snapshot().shortcuts.some(shortcut => BUILTINS.some(item => fieldEntityKey(item.entity) === fieldEntityKey(shortcut.entity)))) loading.hidden = true;
+      if (showsLiveApps || document.shortcuts.some(shortcut => BUILTINS.some(item => fieldEntityKey(item.entity) === fieldEntityKey(shortcut.entity)))) loading.hidden = true;
+      if (liveContext && showsLiveApps) {
+        element.dataset.startupAppsAt ??= String(Date.now());
+        if (!liveAppsFramed) {
+          liveAppsFramed = true;
+          if (document.shortcuts.every(shortcut => shortcut.entity.kind === 'builtin') && options.viewState?.mineFit !== 'manual' && !selected && !summary?.arranging && !queries.mine.trim() && ['all', 'app'].includes(filter)) field.focusContext(liveContext.contextId);
+        }
+      }
     }).catch(error => { if (current() && engine === field) report(error); });
   }
   function mountEngine(loaded: FieldPersistenceState): void {
@@ -1259,11 +1304,13 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const unobservePersistence = persistence.subscribe(applyPersistence);
   if (options.persistence) applyPersistence(persistence.getState());
   const ready = (async (): Promise<void> => {
+    const liveTask = refreshLiveApps().catch(error => { if (current()) options.onMessage(errorText(error), true); });
     const loaded = await persistence.load(); if (!current()) return;
     // The async local-store subscription may already have mounted the cache.
     const cachedField = engine as UnifiedField | null;
     if (!cachedField) mountEngine(loaded); else cachedField.update({ document: loaded.document, revision: loaded.projectedRevision });
     await engine!.ready; if (!current()) return;
+    if (!loading.hidden && mode === 'mine') loading.textContent = 'Загружаем доступные приложения…';
     if (loaded.revision === 0 && loaded.document.contexts.length === 0 && loaded.localDurable && loaded.state !== 'conflict') {
       const initial = createPersonalFieldDocument({includeBuiltins:false});
       // Only this account's accepted pinned refs are eligible for the one-time migration.
@@ -1273,7 +1320,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       engine!.update({ document: receipt.document, revision: receipt.revision, entities: allMetadata() });
     }
     if (mode === 'mine') revealReadyMine(engine!);
-    const mineTask = Promise.all([loadInitialMine(),refreshLiveApps().catch(error=>{if(current())options.onMessage(errorText(error),true);})]);
+    const mineTask = Promise.all([loadInitialMine(), liveTask]);
     if (mode === 'search') await Promise.all([mineTask, searchDirectory()]); else await mineTask;
     if (!current()) return;
     if (current()) { element.dataset.ready = 'ready'; loading.hidden = true; }

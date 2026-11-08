@@ -38,8 +38,15 @@ test('account change and disposal prevent an in-flight response from repainting 
 test('device revocation stops waits and calls the authority-loss path',async()=>{
   let lost=0;const f=fixture({onAccessLost:()=>{lost++;}});await f.tick();f.calls[0].reject(Object.assign(new Error('revoked'),{code:'device_revoked'}));await settle();assert.equal(lost,1);assert.equal(f.states.at(-1),'unavailable');assert.equal(f.tasks.size,0);f.client.dispose();
 });
+test('a stale read for the still selected device restarts the feed without closing the canvas',async()=>{
+  let lost=0;const f=fixture({onAccessLost:()=>{lost++;}});await f.tick();
+  const cause=Object.assign(new Error('same installation'),{code:'LOCAL_CONFLICT'});
+  f.calls[0].reject(Object.assign(new Error('stale read',{cause}),{code:'ACTIVE_PROFILE_CHANGED'}));await settle();
+  assert.equal(lost,0);assert.equal(f.states.at(-1),'reconnecting');
+  await f.tick();f.calls[1].resolve(response('fresh'));await settle();assert.equal(f.states.at(-1),'live');f.client.dispose();
+});
 test('exact server authentication errors retire the feed, including a failed cleanup view',async()=>{
-  for(const code of ['live_authentication_required','live_account_changed','authentication_required']){
+  for(const code of ['ACTIVE_PROFILE_CHANGED','live_authentication_required','live_account_changed','authentication_required']){
     let lost=0;const f=fixture({onAccessLost:()=>{lost++;throw new Error('view offline');}});await f.tick();
     f.calls[0].reject(Object.assign(new Error(code),{code}));await settle();assert.equal(lost,1);assert.equal(f.client.status().paused,true);assert.equal(f.tasks.size,0);f.client.dispose();
   }

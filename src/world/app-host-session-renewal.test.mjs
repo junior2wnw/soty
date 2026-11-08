@@ -117,9 +117,9 @@ test('an explicitly admitting initial reservation never starts a competing renew
 test('initial admission leaves the opening status in place until current authority is verified',async t=>{
  const f=await fixture({reservation:true});t.after(()=>f.dispose());const original=f.binding();
  assert.equal(await f.helper.renew('near-expiry'),false);
- assert.deepEqual(f.states,[],'opening a new frame must not report recovery of an existing session');
+ assert.deepEqual(f.states.map(value=>value.state),['admitting'],'opening a new frame reports its verified admission only');
  f.admit();assert.equal(await f.helper.renew('near-expiry'),true);
- assert.deepEqual(f.states.map(value=>value.state),['confirmed']);
+ assert.deepEqual(f.states.map(value=>value.state),['admitting','confirmed']);
  assert.equal(f.binding().slot,original.slot);assert.equal(f.binding().hostSession.lease,original.hostSession.lease);
  assert.equal(f.binding().hostSession.revision,original.hostSession.revision);assert.ok(f.binding().hostSessionExpiresAt-f.ports.clock()>30000);
  assert.equal(f.calls.filter(value=>value.kind==='context').length,2);
@@ -131,10 +131,19 @@ test('a failed context during initial admission still reports unavailable',async
   if(++reads===1)return dto(member,{schema:'soty.app-host-session-context.v1',state:'admitting',hostSessionExpiresAt:null});
   throw error('app_offline',400);
  }});t.after(()=>f.dispose());
- assert.equal(await f.helper.renew('near-expiry'),false);assert.deepEqual(f.states,[]);
+ assert.equal(await f.helper.renew('near-expiry'),false);assert.deepEqual(f.states.map(value=>value.state),['admitting']);
  await assert.rejects(f.helper.renew('near-expiry'),{code:'app_offline'});
- assert.deepEqual(f.states.map(value=>value.state),['unavailable']);
+ assert.deepEqual(f.states.map(value=>value.state),['admitting','unavailable']);
  assert.equal(f.binding().hostSessionExpiresAt,null);assert.equal(f.calls.some(value=>['request','bootstrap','confirm'].includes(value.kind)),false);
+});
+
+test('an admitting response for a different runtime cannot extend the opening state',async t=>{
+ const f=await fixture({reservation:true,context:async(_args,{member,dto})=>
+  dto(member,{schema:'soty.app-host-session-context.v1',state:'admitting',hostSessionExpiresAt:null,runtimeOrigin:'https://different.apps.example'})
+ });t.after(()=>f.dispose());
+ await assert.rejects(f.helper.renew('near-expiry'),{code:'app_host_session_changed'});
+ assert.deepEqual(f.states.map(value=>value.state),['denied']);
+ assert.deepEqual(f.calls.map(value=>value.kind),['context']);
 });
 
 test('an admitted revision-one lease near its final deadline is not misidentified as an initial reservation',async t=>{

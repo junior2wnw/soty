@@ -6,3 +6,4 @@ export function createPlatformLiveClient(options:{api:{request<T>(operation:stri
   page?:Pick<Document,'visibilityState'|'addEventListener'|'removeEventListener'>;
 }):{reconnect():void;dispose():void;status():PlatformLiveStatus};
 export function isLiveIdentityLoss(error:unknown):boolean;
+export function isLocalReadConflict(error:unknown):boolean;

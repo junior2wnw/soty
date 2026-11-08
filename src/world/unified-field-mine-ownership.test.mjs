@@ -11,8 +11,8 @@ import {coverageTestSource,installCoverageTestPorts} from './unified-field-cover
 const source=readFileSync(new URL('./unified-field-screen.ts',import.meta.url),'utf8');
 const parsed=ts.createSourceFile('screen.ts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),printer=ts.createPrinter();
 const factory=parsed.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='createUnifiedFieldScreen');
-const refresh=factory.body.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='refreshLiveApps');
-const code=ts.transpileModule(coverageTestSource(factory.body.statements,parsed,printer)+'\n'+printer.printNode(ts.EmitHint.Unspecified,refresh,parsed)+'\nexports.refresh=refreshLiveApps;',
+const functions=['refreshLiveApps','applyLiveApps'].map(name=>factory.body.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text===name));
+const code=ts.transpileModule([coverageTestSource(factory.body.statements,parsed,printer),...functions.map(node=>printer.printNode(ts.EmitHint.Unspecified,node,parsed)),'exports.refresh=refreshLiveApps;'].join('\n'),
  {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const appId=index=>'app-'+index.toString(16).padStart(32,'0');
 const metadata=(id,source='public')=>({entity:{kind:'app',id},title:id,source});
@@ -22,8 +22,8 @@ const personal=()=>({schema:'soty.field.v1',contexts:[{contextId:'personal',titl
 
 function fixture({ownerApps=[own(1)],catalogApps=[],unavailableIds=[],beforeRead=async()=>{},resolveError}={}){
  const document=personal(),updates=[],calls=[],metadataMap=new Map(),state={current:true},exports={};
- const environment={exports,mode:'mine',liveRead:0,livePages:1,liveApps:[],liveCursor:null,liveAppsFramed:false,liveProjection:createLiveAppScene(),element:{dataset:{}},
-  current:()=>state.current,unplacedOwnApps,fieldEntityKey:ref=>ref.kind+':'+ref.id,renderMineSearchResults(){},renderOpenList:null,
+ const environment={exports,mode:'mine',liveRead:0,livePages:1,liveApps:[],liveCatalogApps:[],liveOwnerApps:[],liveCursor:null,liveAppsFramed:false,liveProjection:createLiveAppScene(),element:{dataset:{}},
+  current:()=>state.current,unplacedOwnApps,fieldEntityKey:ref=>ref.kind+':'+ref.id,renderMineSearchResults(){},renderOpenList:null,revealReadyMine(){},
   options:{accountId:'account-owner',api:{async request(op,args){calls.push({op,args});assert.ok(['apps.list','apps.catalog'].includes(op));assert.equal(args.expectedAccountId,'account-owner');if(op==='apps.catalog')return{apps:catalogApps};await beforeRead();return{apps:ownerApps};}}},
   directory:{async search(args){calls.push({op:'public-discovery',args});assert.fail('live apps must use catalogue IDs and the exact resolver, not paged discovery');},
    async resolve(refs){calls.push({op:'exact-resolve',refs});assert.ok(refs.length<=60);if(resolveError)throw resolveError;return{

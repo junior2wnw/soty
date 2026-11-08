@@ -121,7 +121,8 @@ test('starting a device QR retires a stale live read without reporting loss of t
   t.after(() => { release(); client.dispose(); });
   const account = await client.bootstrap('Existing device');
   const context = { expectedAccountId: account.accountId };
-  const rejected = assert.rejects(client.extension(operation, {}, context), { code: 'LOCAL_CONFLICT' });
+  const rejected = assert.rejects(client.extension(operation, {}, context), error =>
+    error.code === 'ACTIVE_PROFILE_CHANGED' && error.cause?.code === 'LOCAL_CONFLICT');
   await entered;
   await client.startEnrollment('Second device');
   release();

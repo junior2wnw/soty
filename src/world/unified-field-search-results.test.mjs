@@ -172,6 +172,24 @@ test('keyboard can focus or open the first visible personal recent result withou
   h.environment.mode = 'search'; h.emit('keydown', { key: 'Enter' }); assert.equal(h.calls.recent.length, 1);
 });
 
+test('the local device connection query opens the pairing action without waiting for the field or writing it', () => {
+  const h = harness(); let connections = 0;
+  h.environment.options.onConnectDevice = () => { connections++; };
+  h.environment.element.dataset.search = 'open';
+  h.environment.engine = null;
+  h.enter('Подключить устройство');
+  assert.deepEqual(h.buttons().map(h.text), ['Подключить ещё одно устройство']);
+  const previous = h.buttons()[0];
+  assert.equal(h.emit('keydown', { key: 'Enter', isComposing: true }).prevented, 0);
+  assert.equal(connections, 0);
+  assert.equal(h.emit('keydown', { key: 'Enter' }).prevented, 1);
+  assert.equal(connections, 1);
+  h.enter('Чужие устройства'); previous.click();
+  assert.deepEqual(h.buttons(), []);
+  assert.equal(connections, 1);
+  h.assertUnchanged();
+});
+
 test('only freshly resolved apps actually placed on the personal field enter the shared inbox', () => {
   const h = harness(), own = h.apps[0].entity, unplaced = { kind: 'app', id: 'app-' + 'f'.repeat(32) };
   const makeRecord = ref => ({ id: ref.id, entry: { appId: ref.id, domainId: 'dom_' + 'a'.repeat(32), origin: 'https://app.example', path: '/exact?q=a%2Bb' } });

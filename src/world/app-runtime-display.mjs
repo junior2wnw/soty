@@ -1,6 +1,7 @@
 /** Bounded UI observation. Only the injected fresh Root read may confirm
  * authenticated readiness. A load or frame message never authorizes anything. */
 const PHASES=new Set(['boot_admission_pending','boot_cookie_pending','boot_continuation_pending','boot_navigation','boot_failed','boot_inactive']);
+const MAX_HOST_ADMISSION_MS=30_000;
 function fields(value,keys){
   if(!value||typeof value!=='object'||Array.isArray(value))return null;
   try{const names=Reflect.ownKeys(value),d=Object.getOwnPropertyDescriptors(value);
@@ -12,6 +13,8 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
   const expected=new URL(origin);if(expected.origin!==origin||!['https:','http:'].includes(expected.protocol))throw Error('invalid_runtime_display_origin');
   if(typeof isCurrent!=='function'||typeof readiness!=='function'||timeoutMs!==12000)throw Error('invalid_runtime_display_options');
   let disposed=false,terminal=false,dismissed=false,loaded=false,lateLoaded=false,flight=false,queued=false,checks=0,phase='opening',timer;
+  const openedAt=view.performance.now(),openingDeadline=openedAt+timeoutMs;
+  let scheduledDeadline=openingDeadline;
   let nonce='';try{const n=view.crypto.randomUUID().replaceAll('-','');if(/^[a-f0-9]{32}$/u.test(n))nonce=n;}catch{}
   const probes=[],live=()=>!disposed&&isCurrent();
   const snapshot=()=>{
@@ -30,6 +33,13 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
   // no-load timeout using the same bounded read budget, never a new admission.
   const lateDocument=()=>terminal&&phase==='unconfirmed'&&lateLoaded&&!dismissed;
   const finish=next=>{if(!live()||(terminal&&!lateDocument()&&!(['ready','loaded'].includes(phase)&&next==='error')))return;terminal=true;phase=next;view.clearTimeout(timer);stopProbes();notify();};
+  const expire=()=>{if(live())finish('unconfirmed');else close();};
+  const scheduleDeadline=deadline=>{
+    if(deadline===scheduledDeadline)return;
+    scheduledDeadline=deadline;
+    view.clearTimeout(timer);
+    timer=view.setTimeout(expire,Math.max(0,deadline-view.performance.now()));
+  };
   const check=async()=>{
     if(!live()||terminal&&!lateDocument()||!loaded||checks>=3)return;
     if(flight){queued=true;return;}
@@ -45,7 +55,12 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
   };
   // A pre-load probe may reach about:blank; a fast ready read cancels later timers.
   const load=()=>{if(!live()||terminal&&!(phase==='unconfirmed'&&!loaded&&!dismissed))return;
-    if(!loaded){loaded=true;lateLoaded=terminal;if(terminal)notify();else probe();}void check();};
+    if(!loaded){
+      loaded=true;lateLoaded=terminal;
+      if(terminal)notify();else{probe();scheduleDeadline(openingDeadline);}
+    }
+    void check();
+  };
   const error=()=>finish('error');
   const receive=event=>{
     if(!live()||terminal&&!['ready','loaded'].includes(phase)||!nonce||event.source!==frame.contentWindow||event.origin!==origin||event.ports?.length)return;
@@ -61,10 +76,14 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
   const close=()=>{if(disposed)return;disposed=true;view.clearTimeout(timer);stopProbes();
     frame.removeEventListener('load',load);frame.removeEventListener('error',error);view.removeEventListener('message',receive);view.removeEventListener('pagehide',close);};
   frame.addEventListener('load',load);frame.addEventListener('error',error);view.addEventListener('message',receive);view.addEventListener('pagehide',close);
-  timer=view.setTimeout(()=>{if(live())finish('unconfirmed');else close();},timeoutMs);
+  timer=view.setTimeout(expire,timeoutMs);
   for(const ms of [0,250,1000,3000])probes.push(view.setTimeout(probe,ms));
   // Registration happens before insertion. The stage owns the initial message;
   // the queued notification runs only once the frame is actually current.
   probes.push(view.setTimeout(notify,0));
-  return Object.freeze({snapshot,dismiss(){if(!live()||!terminal||['ready','loaded'].includes(phase))return false;dismissed=true;notify();return true;},dispose:close});
+  return Object.freeze({snapshot,waitForHostAdmission(remainingMs){
+    if(!live()||terminal||loaded)return;
+    const admissionDeadline=Number.isFinite(remainingMs)&&remainingMs>0?Math.min(openedAt+MAX_HOST_ADMISSION_MS,view.performance.now()+remainingMs):openingDeadline;
+    scheduleDeadline(Math.max(openingDeadline,admissionDeadline));
+  },dismiss(){if(!live()||!terminal||['ready','loaded'].includes(phase))return false;dismissed=true;notify();return true;},dispose:close});
 }

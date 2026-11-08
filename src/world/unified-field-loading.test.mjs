@@ -24,12 +24,12 @@ const returned=screen.body.statements.find(ts.isReturnStatement).expression;
 const dispose=returned.properties.find(node=>ts.isMethodDeclaration(node)&&node.name.getText(parsed)==='dispose');
 const ready=variable(screen.body.statements,'ready');assert.ok(ready&&subscribe&&dispose&&initialSnapshot,'genuine full lifecycle must exist');
 const compiled=ts.transpileModule([coverageTestSource(screen.body.statements,parsed,printer),print(variable(parsed.statements,'BUILTINS')),print(variable(screen.body.statements,'initialMineTask')),...functions.map(print),print(subscribe),print(initialSnapshot),print(ready),
-  'exports.api = { ready, changeMode, mountEngine, '+print(dispose)+' };'].join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  'exports.reveal = revealReadyMine; exports.api = { ready, changeMode, mountEngine, '+print(dispose)+' };'].join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
 const turn=()=>new Promise(done=>setImmediate(done));
 async function until(predicate){const end=Date.now()+3000;while(!predicate()){assert.ok(Date.now()<end,'bounded ready/cache phase completed');await turn();}}
 
-function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000,lateStart=false}={}){
+function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000,lateStart=false,publicApp=false}={}){
   const app={kind:'app',id:'app-'+'a'.repeat(32)};
   const doc=validateFieldDocument({schema:'soty.field.v1',contexts:[{contextId:'personal',title:'Личное',x:0,y:0}],shortcuts:[
     ...(builtin?[{shortcutId:'notes',entity:{kind:'builtin',id:'notes'},contextId:'personal',slot:[0,0]}]:[]),
@@ -37,14 +37,20 @@ function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000,lateStar
   ]});
   const base={revision:7,document:doc,contentHash:createHash('sha256').update(JSON.stringify(doc)).digest('hex'),updatedAt:1000};
   let saved={schema:'soty.field.local.v1',scope:JSON.stringify(['local','soty','owner']),localRevision:1,base,pending:[],conflict:false,remote:null,conflictDocument:null};
-  const remote=deferred(),directory=deferred(),paint=deferred(),fields=[],calls=[],messages=[];let accountGeneration=1;
+  const remote=deferred(),directory=deferred(),catalogue=deferred(),paint=deferred(),fields=[],calls=[],messages=[];let accountGeneration=1;
   const owned=()=>accountGeneration===1;
   const persistence=createFieldPersistence({accountId:'owner',localFirst:true,isCurrent:owned,
     store:{read:async()=>structuredClone(saved),write:async(value,expected)=>{assert.equal(saved.localRevision,expected);saved=structuredClone(value);}},
     api:{async request(op,args){calls.push(op);assert.equal(op,'world.field.get');assert.equal(args.expectedAccountId,'owner');await remote.promise;return structuredClone(base);}}});
   const metadata=new Map(),loading={hidden:false},element={dataset:{ready:'loading'},remove(){}},abort=new AbortController();
   const environment={exports:{},crypto,disposed:false,mode,filter:'all',filtersByMode:{mine:'all',search:'all'},options:{accountId:'owner',isCurrent:owned,onMessage(){}},
-    liveApps:[],liveProjection:{update:()=>({contexts:[],shortcuts:[]})},refreshLiveApps:async()=>{},
+    liveApps:[],liveAppsFramed:false,selected:null,summary:null,queries:{mine:'',search:''},
+    liveProjection:{update:(_doc,items)=>({contexts:items.length?[{contextId:'soty-live-apps'}]:[],shortcuts:items})},
+    async refreshLiveApps(){
+      calls.push('live-directory');if(!publicApp)return;await catalogue.promise;
+      environment.liveApps=[{entity:app,title:'Confirmed app',source:'public'}];
+      if(environment.engine)environment.exports.reveal(environment.engine);
+    },
     engine:null,state:null,metadata,fieldEntityKey,persistence,current:()=>!environment.disposed&&owned(),
     fieldGlass:null,mountFieldGlass:()=>({dispose(){}}),
     canvasContent:{createObject:()=>null,objectKey:()=>null,dispose(){}},
@@ -61,13 +67,13 @@ function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000,lateStar
     search:{remove(){}},listButton:{remove(){}},directory:{dispose(){}},
     createUnifiedField(options){let document=options.document;const fieldPaint=fields.length?deferred():paint;const field={options,paint:fieldPaint,ready:fieldPaint.promise,element:{clientWidth:width,clientHeight:700},
       snapshot:()=>document,update(value){if(value.document)document=value.document;},hasUnsavedChanges:()=>false,
-      cancel(){},destroy(){fieldPaint.resolve();}};fields.push(field);return field;},
+      cancel(){},focusContext(){},destroy(){fieldPaint.resolve();}};fields.push(field);return field;},
   };
   installCoverageTestPorts(environment);vm.createContext(environment);if(!lateStart)vm.runInContext(compiled,environment);
   // Static builtins are metadata only until the validated document places one.
   for(const id of ['notes','chess','assistant'])metadata.set(fieldEntityKey({kind:'builtin',id}),{entity:{kind:'builtin',id},title:id,source:'builtin'});
-  t.after(async()=>{environment.exports.api?.dispose();remote.resolve();directory.resolve();paint.resolve();await environment.exports.api?.ready;persistence.dispose();});
-  return{environment,get api(){return environment.exports.api;},persistence,start(){vm.runInContext(compiled,environment);},fields,calls,messages,metadata,loading,remote,directory,paint,doc,
+  t.after(async()=>{environment.exports.api?.dispose();remote.resolve();directory.resolve();catalogue.resolve();paint.resolve();await environment.exports.api?.ready;persistence.dispose();});
+  return{environment,get api(){return environment.exports.api;},persistence,start(){vm.runInContext(compiled,environment);},fields,calls,messages,metadata,loading,remote,directory,catalogue,paint,doc,
     remoteDocument(document){base.document=validateFieldDocument(document);base.revision++;base.contentHash=createHash('sha256').update(JSON.stringify(base.document)).digest('hex');},
     accountAba(){accountGeneration=2;accountGeneration=3;}};
 }
@@ -84,6 +90,16 @@ test('cached refs start a fresh directory read before the held field response, w
   assert.equal(f.loading.hidden,true);assert.equal(f.environment.element.dataset.mineState,'loading');assert.equal(f.environment.element.dataset.ready,'loading');
   assert.equal(f.calls.filter(op=>op==='mine-directory').length,1,'the same remote references reuse the initial read');
   f.directory.resolve();await f.api.ready;assert.equal(f.environment.element.dataset.ready,'ready');
+});
+
+test('confirmed live apps uncover a measured empty personal field while the remote layout is pending',async t=>{
+  const f=fixture(t,{builtin:false,unresolved:false,publicApp:true});
+  await until(()=>f.fields.length===1&&f.calls.includes('world.field.get'));
+  assert.ok(f.calls.includes('live-directory'),'the fresh directory starts before the field response');
+  f.paint.resolve();await turn();assert.equal(f.loading.hidden,false);
+  f.catalogue.resolve();await until(()=>f.loading.hidden);
+  assert.equal(f.environment.element.dataset.ready,'loading','the personal load still owns full readiness');
+  assert.deepEqual(f.fields[0].snapshot(),f.doc,'the live read does not add anything to the saved field');
 });
 
 test('new remote identities trigger their own fresh read while the original cached lookup is held',async t=>{

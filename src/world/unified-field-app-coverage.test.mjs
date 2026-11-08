@@ -28,7 +28,7 @@ function harness({text=original,hasObject=true,project=projection(),onRequest,vi
  const parsed=parse(text),factory=parsed.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='createUnifiedFieldScreen');
  const statements=[...factory.body.statements],print=node=>printer.printNode(ts.EmitHint.Unspecified,node,parsed);
  const names=['merge','pruneMetadata','allMetadata','refreshLiveApps','loadOwnedApps','loadMine','loadMinePass','updateSummary','applyPersistence',
-  'readAppCoverage','liveAppScene','refreshAppCoverage'];
+  'readAppCoverage','liveAppScene','refreshAppCoverage','applyLiveApps','revealReadyMine'];
  const functions=names.flatMap(name=>{const node=statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text===name);return node?[print(node)]:[];});
  const variables=statements.filter(node=>ts.isVariableStatement(node)&&node.declarationList.declarations.some(item=>item.name.getText(parsed)==='appProjectionGeneration')).map(print);
  const returned=statements.find(ts.isReturnStatement).expression;
@@ -39,7 +39,7 @@ function harness({text=original,hasObject=true,project=projection(),onRequest,vi
  const abort=new AbortController(),environment={exports,AbortController,TextEncoder,TextDecoder,crypto,performance,Buffer,URL,queueMicrotask,clearTimeout,setTimeout,
   disposed:false,current:()=>!environment.disposed&&state.current,options:{accountId:viewerAccountId},abort,signal:abort.signal,
   mode:'mine',filter:'all',queries:{mine:'',search:''},metadata:new Map(),metadataRevision:0,BUILTINS:[],searchItems:[],available:[],availableCursor:null,
-  liveRead:0,livePages:1,liveApps:[],liveCursor:null,liveAppsFramed:false,mineGeneration:0,mineResolvedGeneration:-1,mineConfirmedGeneration:-1,mineBusy:false,queuedMine:null,
+  liveRead:0,livePages:1,liveApps:[],liveCatalogApps:[],liveOwnerApps:[],liveCursor:null,liveAppsFramed:false,mineGeneration:0,mineResolvedGeneration:-1,mineConfirmedGeneration:-1,mineBusy:false,queuedMine:null,
   mineKnownRefs:new Set(),firstResolve:false,selected:null,previewCommunity:null,summary:null,contextKey:'',state:null,emptyDocument:null,
   ownedApps:[],ownedAppsState:'ready',ownAppsReadSequence:0,ownAppsAppliedRead:0,knownAppSignature:'',mineFilterAdmitted:false,
   viewPercent:null,element:node(),arrange:node(),arrangeHint:node(),percent:node(),scaleControl:node(),undo:node(),contextSelector:node(),loading:node(),empty:node(),
@@ -74,7 +74,7 @@ function harness({text=original,hasObject=true,project=projection(),onRequest,vi
  }};environment.options={api,accountId:viewerAccountId,onMessage(){}};
  const directory=load(resolve(root,'src/world/field-directory.ts')).createFieldDirectory({api,accountId:viewerAccountId,isCurrent:environment.current});environment.directory=directory;
  environment.liveProjection=environment.createLiveAppScene();
- environment.engine={snapshot:()=>clone(canonical),getCamera:()=>({...camera}),hasUnsavedChanges:()=>false,destroy(){},
+ environment.engine={snapshot:()=>clone(canonical),getCamera:()=>({...camera}),hasUnsavedChanges:()=>false,destroy(){},ready:Promise.resolve(),element:{clientWidth:390,clientHeight:700},
   update(value){updates.push(clone(value));if(value.document)canonical=clone(value.document);if(value.liveScene)liveScene=clone(value.liveScene);exports.api?.updateSummary(summary());}};
  environment.persistence={dispose(){},getState:()=>({document:clone(canonical)})};environment.summary=summary();
  vm.runInContext(code,context);
@@ -103,6 +103,42 @@ test('public applications appear on the initial canvas for both their owner and 
  }
 });
 
+test('a confirmed public app appears before the private registry and an unconfirmed app stays off the canvas',async()=>{
+ const registry=defer(),permission=defer(),nfcId='app-'+'d'.repeat(32),deniedId='app-'+'e'.repeat(32);
+ const nfc={id:nfcId,name:'Метки · NFC',ownerAccountId:'publisher',state:'ready',access:'public',createdAt:1,
+  entry:{appId:nfcId,domainId:'public-nfc',origin:'https://nfc.example',path:'/'}};
+ const f=harness({hasObject:false,viewerAccountId:'another-account',onRequest:({op})=>{
+  if(op==='apps.list')return registry.promise;
+  if(op==='apps.catalog')return{apps:[nfc,{...nfc,id:deniedId}]};
+  if(op==='apps.directory.resolve')return permission.promise;
+ }});
+ const response={items:[{ref:{kind:'app',id:nfcId},available:true,app:nfc},{ref:{kind:'app',id:deniedId},available:false}]};
+ const before=JSON.stringify(f.document),refresh=f.api.refreshLiveApps();
+ try{
+  await settle();
+  assert.ok(f.calls.some(call=>call.op==='apps.directory.resolve'),'public authority is checked while the private registry is pending');
+  assert.deepEqual(ids(f),[],'catalogue membership alone is not display authority');
+  permission.resolve(response);await settle();
+  assert.deepEqual(ids(f),[nfcId]);
+  assert.equal(f.environment.directory.getRecord({kind:'app',id:nfcId})?.entry.origin,'https://nfc.example');
+  assert.equal(JSON.stringify(f.document),before);
+ }finally{permission.resolve(response);registry.resolve({apps:[]});await refresh;}
+});
+
+test('public withdrawal takes effect while the private registry is pending',async()=>{
+ const registry=defer(),nfcId='app-'+'d'.repeat(32),nfc={id:nfcId,name:'Метки · NFC',ownerAccountId:'publisher',state:'ready',access:'public',createdAt:1,
+  entry:{appId:nfcId,domainId:'public-nfc',origin:'https://nfc.example',path:'/'}};
+ let listed=true;
+ const f=harness({hasObject:false,viewerAccountId:'another-account',onRequest:({op,args})=>{
+  if(op==='apps.list')return listed?{apps:[]}:registry.promise;
+  if(op==='apps.catalog')return{apps:listed?[nfc]:[]};
+  if(op==='apps.directory.resolve')return{items:args.appIds.map(id=>({ref:{kind:'app',id},available:true,app:nfc}))};
+ }});
+ await f.api.refreshLiveApps();assert.deepEqual(ids(f),[nfcId]);
+ listed=false;const refresh=f.api.refreshLiveApps();
+ try{await settle();assert.deepEqual(ids(f),[]);}finally{registry.resolve({apps:[]});await refresh;}
+});
+
 test('catalog and personal registry failures do not hide the other available source',async()=>{
  const nfcId='app-'+'d'.repeat(32),nfc={id:nfcId,name:'Public NFC',ownerAccountId:'publisher',state:'ready',access:'public',createdAt:1,
   entry:{appId:nfcId,domainId:'public-nfc',origin:'https://nfc.example',path:'/'}};
@@ -120,12 +156,12 @@ test('catalog and personal registry failures do not hide the other available sou
 
 test('the first available apps frame an empty canvas once and never replace a manual camera',async()=>{
  for(const starterOnly of [false,true])for(const manual of [false,true]){
-  const held=defer(),f=harness({hasObject:false,onRequest:({op})=>op==='apps.catalog'?held.promise:undefined}),focused=[];
+  const held=defer(),f=harness({hasObject:false,onRequest:({op})=>op==='apps.list'?held.promise:undefined}),focused=[];
   const starters=starterOnly?['notes','chess','assistant'].map((id,index)=>({shortcutId:'starter-'+id,entity:{kind:'builtin',id},contextId:'personal',placement:{kind:'hex',slot:[index*21,0]}})):[];
   f.setDocument({...f.document,shortcuts:starters});f.environment.engine.focusContext=id=>focused.push(id);
   const pending=f.api.refreshLiveApps();await settle();
   if(manual)f.environment.options.viewState={mineFit:'manual'};
-  held.resolve({apps:[]});await pending;
+  held.resolve({apps:[{id:appA,name:'Counter',ownerAccountId:accountId,state:'ready'}]});await pending;
   assert.equal(focused.length,manual?0:1);
   await f.api.refreshLiveApps();assert.equal(focused.length,manual?0:1,'later catalogue updates leave the camera alone');
   assert.equal(f.document.shortcuts.length,starters.length);

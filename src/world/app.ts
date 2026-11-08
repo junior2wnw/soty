@@ -24,7 +24,7 @@ import type { UnifiedFieldViewState } from './unified-field';
 import type {FieldNode} from './unified-field-layout.mjs';
 import {createCommunityFieldObject,type CommunityFieldObjectView} from './community-field-object';
 import type { LiveWatch } from '../platform/platform-live-client.mjs';
-import {isLiveIdentityLoss} from '../platform/platform-live-client.mjs';
+import {isLiveIdentityLoss,isLocalReadConflict} from '../platform/platform-live-client.mjs';
 import {createSocialInbox,type SocialInbox} from './social-inbox.mjs';
 import {hasRetainedNativeDrafts,flushRetainedNativeDrafts} from '../../modules/notes/browser/native-local.mjs';
 import type { DirectoryApp, DirectoryContact, DirectoryPerson } from './field-directory';
@@ -796,7 +796,7 @@ class WorldApplication {
     } catch (error) {
       if (this.destroyed || sequence !== this.requestSequence) return;
       const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
-      if (['NETWORK_ERROR', 'NETWORK_TIMEOUT', 'LOCAL_CONFLICT'].includes(code) && this.options.localAccount) {
+      if ((['NETWORK_ERROR', 'NETWORK_TIMEOUT'].includes(code) || isLocalReadConflict(error)) && this.options.localAccount) {
         const local = await this.options.localAccount().catch(() => null);
         if (this.destroyed || sequence !== this.requestSequence) return;
         if (local?.accountId) {
@@ -1698,6 +1698,7 @@ class WorldApplication {
       viewState: this.unifiedFieldView, ...(this.desk.pinnedApps ? { pinnedApps: this.desk.pinnedApps } : {}),
       onOpenSaved: () => this.openSavedLibrary(),
       onCreateMenu: () => this.openAddMenu(),
+      onConnectDevice: () => { void this.openConnections('device'); },
       onOpenMore: () => this.openFieldMenu(),
       readIdentity:()=>this.profile,
       onSearchVisibilityChange: () => this.syncWorkspaceNavigation(),

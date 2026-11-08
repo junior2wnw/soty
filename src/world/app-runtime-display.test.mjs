@@ -37,6 +37,31 @@ test('load-only empty-document counterexample: visible deadline survives load wi
 test('no-load baseline retains its existing meaningful visible fallback and never replays admission',()=>{
  const f=displayFixture();f.tick(12000);assert.match(f.api.snapshot().message,/Загрузка окна не подтверждена/u);assert.equal(f.calls(),0);
 });
+test('verified host admission keeps a cold frame pending through a real load at 12.9 seconds',async()=>{
+ const f=displayFixture('unsupported');f.tick(4500);f.api.waitForHostAdmission?.(24000);f.tick(7500);
+ assert.equal(f.api.snapshot().busy,true,'a still-admitting frame should not show the no-load warning at 12 seconds');
+ assert.equal(f.calls(),0);
+ f.tick(900);f.frame.emit('load');await tickFlush();f.tick(17500);
+ assert.equal(f.api.snapshot().phase,'loaded');
+ assert.equal(f.api.snapshot().busy,false);
+ assert.equal(f.states.some(state=>state.phase==='unconfirmed'),false);
+ assert.equal(f.calls(),1,'host admission does not itself confirm application readiness');
+});
+test('host admission wait ends at the initial reservation limit and cannot mask a missing context',()=>{
+ const bounded=displayFixture();bounded.api.waitForHostAdmission?.(60000);bounded.tick(20000);
+ bounded.api.waitForHostAdmission?.(60000);bounded.tick(9999);assert.equal(bounded.api.snapshot().busy,true);
+ bounded.tick(1);assert.equal(bounded.api.snapshot().phase,'unconfirmed');
+ const unavailable=displayFixture();unavailable.api.waitForHostAdmission?.(29000);unavailable.tick(11000);
+ unavailable.api.waitForHostAdmission?.(0);unavailable.tick(1000);assert.equal(unavailable.api.snapshot().phase,'unconfirmed');
+ assert.equal(unavailable.calls(),0);
+});
+test('a load without readiness or an explicit frame error still uses the ordinary fallback during admission',async()=>{
+ const unconfirmed=displayFixture();unconfirmed.api.waitForHostAdmission?.(29000);unconfirmed.tick(10000);
+ unconfirmed.frame.emit('load');await tickFlush();unconfirmed.tick(2000);
+ assert.equal(unconfirmed.api.snapshot().phase,'unconfirmed');assert.equal(unconfirmed.api.snapshot().canRetry,true);
+ const failed=displayFixture();failed.api.waitForHostAdmission?.(29000);failed.tick(13000);failed.frame.emit('error');
+ assert.equal(failed.api.snapshot().phase,'error');assert.equal(failed.api.snapshot().canRetry,true);
+});
 test('Boot progress is never readiness; only current authenticated Root read clears pending state',async()=>{
  const held=deferred(),f=displayFixture(()=>held.promise);f.tick(0);f.phase('boot_cookie_pending');assert.equal(f.api.snapshot().phase,'authenticating');
  f.frame.emit('load');await tickFlush();assert.equal(f.api.snapshot().busy,true);held.resolve('ready');await tickFlush();assert.equal(f.api.snapshot().phase,'ready');

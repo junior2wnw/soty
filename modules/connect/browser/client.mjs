@@ -558,8 +558,8 @@ export function createClientWithStorage(options, storage) {
             }
             if (state.localRevision !== localRevision) {
               // Starting an enrollment can retire a read without changing the active identity.
-              const code = parallelMetadataReads.has(operation) ? 'LOCAL_CONFLICT' : 'ACTIVE_PROFILE_CHANGED';
-              throw new ConnectError(code, 'Local state changed while this read was running. Its result was not applied.');
+              const cause = parallelMetadataReads.has(operation) ? new ConnectError('LOCAL_CONFLICT', 'The selected installation is unchanged.') : undefined;
+              throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'Local state changed while this read was running. Its result was not applied.', { cause });
             }
           };
           return rpc(operation, payload, actor, true, checkReadCurrent,readSignal);
