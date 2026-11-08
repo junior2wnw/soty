@@ -34,7 +34,7 @@ class ElementPort {
   remove() { this.isConnected = false; }
   click() { if (!this.disabled) this.emit('click'); }
 }
-function fixture({ paired = true, fresh = false, issuing = false } = {}) {
+function fixture({ paired = true, fresh = false, issuing = false, usage = null } = {}) {
   let accountId = 'account-A', selectedRead, stateReads = 0, digestRead, importRead, revision = 1, observer;
   let payload = { transitClient: { schema: 'soty.transit-profile.v1', profile: profile() },
     transitControllers: paired ? { 'owned-host': token } : {} };
@@ -47,7 +47,8 @@ function fixture({ paired = true, fresh = false, issuing = false } = {}) {
   const client = {
     async extension(operation, args, context) {
       assert.equal(args.expectedAccountId, accountId); assert.equal(context.expectedAccountId, accountId);
-      if (operation === 'transit.access.status') return { enabled: issuing };
+      if (operation === 'transit.access.status') return { enabled: issuing, usageEnabled: !!usage };
+      if (operation === 'transit.access.usage' && usage) return { usage };
       assert.equal(operation, 'transit.access.profile'); issuedProfiles.push(accountId);
       if (heldProfile) { heldProfile.entered.resolve(); await heldProfile.release.promise; }
       return { profile: profile() };
@@ -115,6 +116,7 @@ function fixture({ paired = true, fresh = false, issuing = false } = {}) {
     holdStateAt: at => hold(wait => { selectedRead = { ...wait, at }; }),
     holdDigest: () => hold(wait => { digestRead = wait; }),
     button(label) { const value = descendants(dialog.body).find(node => node.tagName === 'button' && node.textContent === label); assert.ok(value, `missing actual ${label} control`); return value; },
+    get texts() { return descendants(dialog.body).map(node => node.textContent); },
     async settle(predicate = () => true) { for (let index = 0; index < 30; index++) { await turn(); if (predicate()) return; } assert.fail('actual controller did not settle'); },
     get closed() { return !dialog.element.isConnected; },
     get observing() { return typeof observer === 'function'; },
@@ -138,6 +140,15 @@ test('a new person obtains their profile without enrolling, importing into or st
   await f.settle(() => !!f.payload.transitClient); await f.settle();
   assert.deepEqual(f.issuedProfiles, ['account-A']); assert.equal(f.installers.length, 0);
   assert.equal(f.calls.length, 0); assert.ok(f.button('Скачать профиль sing-box')); f.close();
+});
+
+test('shows traffic for the issued profile and marks an incomplete collection', async () => {
+  const usage = { uploadBytes: '512', downloadBytes: '2048', freshEntries: 1, expectedEntries: 2 };
+  const f = fixture({ paired: false, usage }); await f.open();
+  await f.settle(() => f.texts.some(text => text.includes('Трафик выданного профиля')));
+  assert.ok(f.texts.includes('Трафик выданного профиля · Получено 2 КиБ · Отправлено 512 Б'));
+  assert.ok(f.texts.includes('Данные о трафике обновляются.'));
+  f.close();
 });
 
 test('downloading an already saved gVisor profile uses the system stack without changing its credentials or vault', async () => {

@@ -9,6 +9,14 @@ import './transit-client.css';
 
 interface TransitState { configured: boolean; active: boolean; running: boolean; phase: string; version: string; lastError: string; entryCount: number; availableEntryCount?: number; }
 interface TransitReply { ok?: boolean; deviceId?: string; supported?: boolean; runtime?: TransitState; profile?: unknown; error?: string; }
+interface TransitUsage { uploadBytes: string; downloadBytes: string; freshEntries: number; expectedEntries: number; }
+
+function formatTraffic(bytes: string): string {
+  const units = ['Б', 'КиБ', 'МиБ', 'ГиБ', 'ТиБ', 'ПиБ', 'ЭиБ'];
+  let value = Number(bytes), index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
+  return new Intl.NumberFormat('ru', { maximumFractionDigits: index ? 1 : 0 }).format(value) + ' ' + units[index];
+}
 
 const messages: Record<string, string> = {
   'transit-profile-invalid': 'Этот файл не является защищённым профилем TRANSIT.',
@@ -79,6 +87,7 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
   unobserve = observeAccount(state => { if (state.accountId !== owner) dialog.close(); });
   const mobile = /android|iphone|ipad|ipod|mobile/iu.test(`${navigator.userAgent} ${navigator.platform}`);
   let saved: unknown = null, local: TransitReply | null = null, working = false, issuingEnabled = false;
+  let usage: TransitUsage | null = null, usageFailed = false, usageRequest = 0;
   let hostDeviceId = '', controlToken = '', authorized = false;
   const live = (ticket: number) => !disposed && ticket === generation && dialog.element.isConnected;
   const current = async (ticket = generation) => {
@@ -99,12 +108,24 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     const key = error instanceof Error ? error.message : '';
     return messages[key] || 'Не удалось выполнить действие. Доступ и существующие профили сохранены.';
   };
+  async function refreshUsage(enabled: boolean): Promise<void> {
+    const request = ++usageRequest;
+    if (!enabled) { usage = null; usageFailed = false; return; }
+    const ticket = generation;
+    const result = await accountClient.extension('transit.access.usage', { expectedAccountId: owner }, { expectedAccountId: owner })
+      .catch(() => null);
+    if (!(await current(ticket)) || request !== usageRequest) return;
+    usageFailed = result === null;
+    if (result) usage = result.usage as TransitUsage | null;
+    render();
+  }
   async function refresh(): Promise<void> {
     const [account, agent, companion, access] = await Promise.all([
       loadTransitAccountState(accountClient, owner),
       mobile ? Promise.resolve(null) : localTransit().catch(() => null),
       mobile ? Promise.resolve(null) : checkLocalCompanionAgent(2000).catch(() => null),
-      accountClient.extension('transit.access.status', { expectedAccountId: owner }, { expectedAccountId: owner }).catch(() => ({ enabled: false })),
+      accountClient.extension('transit.access.status', { expectedAccountId: owner }, { expectedAccountId: owner })
+        .catch(() => ({ enabled: false, usageEnabled: false })),
     ]);
     if (!(await current())) return;
     saved = account.profile; local = agent; issuingEnabled = access.enabled === true;
@@ -113,7 +134,10 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     if (agent?.deviceId && controlToken) {
       authorized = await ownerPost({ action: 'authorize', deviceId: agent.deviceId, controlToken }).then(() => true, () => false);
     }
-    if (await current()) render();
+    if (await current()) {
+      void refreshUsage(access.usageEnabled === true).catch(() => undefined);
+      render();
+    }
   }
   const agentAction = (body: Record<string, unknown>) => {
     if (!authorized || !controlToken) throw new Error('transit-control-not-paired');
@@ -162,6 +186,15 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     }
     if (state?.active && state.availableEntryCount && state.availableEntryCount < state.entryCount)
       status.append(node('span', `Проверку прошли ${state.availableEntryCount} из ${state.entryCount} выходов. Остальные временно исключены.`));
+    if (usage) {
+      const traffic = node('span', `Трафик выданного профиля · Получено ${formatTraffic(usage.downloadBytes)} · Отправлено ${formatTraffic(usage.uploadBytes)}`);
+      traffic.title = `Получено ${usage.downloadBytes} байт · Отправлено ${usage.uploadBytes} байт`;
+      status.append(traffic);
+      if (usageFailed || usage.freshEntries < usage.expectedEntries)
+        status.append(node('span', 'Данные о трафике обновляются.'));
+    } else if (usageFailed && saved) {
+      status.append(node('span', 'Данные о трафике сейчас недоступны.'));
+    }
     body.append(status, notice);
     const actions = node('div', '', 'transit-client-actions');
     const actionButton = (label: string, action: () => void, primary = false) => {
@@ -213,7 +246,7 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     importButton.disabled ||= state?.running === true;
     actionButton('Обновить состояние', () => void perform(async () => {}, 'Состояние обновлено.'));
     body.append(actions, file);
-    body.append(node('p', 'Установите sing-box, добавьте локальный профиль из файла transit.json и включите его. Для скачивания профиля агент не требуется. Бесплатный доступ работает по доступной мощности сети.', 'transit-client-help'));
+    body.append(node('p', 'Установите sing-box, добавьте локальный профиль из файла transit.json и включите его. Для скачивания профиля агент не требуется.', 'transit-client-help'));
     const clients = node('a', 'Установить sing-box'); clients.href = 'https://sing-box.sagernet.org/clients/'; clients.target = '_blank'; clients.rel = 'noopener noreferrer'; body.append(clients);
     body.append(node('p', 'Файл содержит ваш доступ к интернету. Соты хранят его в зашифрованном хранилище вашего профиля.', 'transit-client-help'));
     if (options.openSharedInternet) {

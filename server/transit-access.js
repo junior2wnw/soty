@@ -2,7 +2,10 @@ import { createDecipheriv, createHash, createPrivateKey, randomBytes, sign } fro
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const domain = Buffer.from('TRANSIT/SOTY-PROFILE/V1\0');
+const profileRequest = Buffer.from('TRANSIT/SOTY-PROFILE/V1\0');
+const profileDelivery = Buffer.from('TRANSIT/PROFILE-DELIVERY/V1\0');
+const usageRequest = Buffer.from('TRANSIT/SOTY-USAGE/V1\0');
+const usageDelivery = Buffer.from('TRANSIT/USAGE-DELIVERY/V1\0');
 const deny = code => { throw Object.assign(new Error(code), { code }); };
 const exact = (value, fields) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join(',') === [...fields].sort().join(',');
@@ -18,16 +21,31 @@ export function loadTransitAccessConfiguration(env = {}, { dataDir } = {}) {
     if (!stat.isFile() || stat.size > 16_384) throw Error();
     const raw = readFileSync(fd, 'utf8'); if (Buffer.byteLength(raw) > 16_384) throw Error();
     const value = JSON.parse(raw);
-    if (!exact(value, ['schema', 'endpoint', 'issuer', 'privateKey', 'deliveryKey', 'appId']) || value.schema !== 'soty.transit-access.v1') throw Error();
+    const fields = ['schema', 'endpoint', 'issuer', 'privateKey', 'deliveryKey', 'appId'];
+    if (value && Object.hasOwn(value, 'usageEnabled')) {
+      if (typeof value.usageEnabled !== 'boolean') throw Error();
+      fields.push('usageEnabled');
+    }
+    if (!exact(value, fields) || value.schema !== 'soty.transit-access.v1') throw Error();
     const url = new URL(value.endpoint), issuer = new URL(value.issuer), key = createPrivateKey(value.privateKey);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/v1/profile'
       || issuer.protocol !== 'https:' || issuer.origin !== value.issuer || key.asymmetricKeyType !== 'ed25519'
       || !/^app-[a-f0-9]{32}$/.test(value.appId)) throw Error();
     const deliveryKey = Buffer.from(value.deliveryKey, 'base64');
     if (deliveryKey.length !== 32 || deliveryKey.toString('base64') !== value.deliveryKey) throw Error();
-    return Object.freeze({ endpoint: url.href, issuer: issuer.origin, key, deliveryKey, appId: value.appId });
+    return Object.freeze({ endpoint: url.href, issuer: issuer.origin, key, deliveryKey, appId: value.appId,
+      usageEnabled: value.usageEnabled === true });
   } catch (error) { if (!explicit && error.code === 'ENOENT') return null; deny('transit_access_configuration_invalid'); }
   finally { if (fd !== undefined) closeSync(fd); }
+}
+
+function validUsage(value) {
+  if (value === null) return true;
+  return exact(value, ['uploadBytes', 'downloadBytes', 'freshEntries', 'expectedEntries', 'latestObservationAt'])
+    && [value.uploadBytes, value.downloadBytes].every(bytes => typeof bytes === 'string' && /^(0|[1-9]\d{0,23})$/.test(bytes))
+    && Number.isSafeInteger(value.freshEntries) && Number.isSafeInteger(value.expectedEntries)
+    && value.freshEntries >= 0 && value.expectedEntries > 0 && value.freshEntries <= value.expectedEntries
+    && (value.latestObservationAt === null || (Number.isSafeInteger(value.latestObservationAt) && value.latestObservationAt >= 0));
 }
 
 /** Uses Connect's original authenticated actor. No caller-supplied account or
@@ -41,17 +59,20 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
     getConnect().withActorAuthorityFence(actor, () => true);
   };
   return Object.freeze({
-    operations: new Set(['transit.access.status', 'transit.access.profile']), maxResultBytes: 256_000,
+    operations: new Set(['transit.access.status', 'transit.access.profile', 'transit.access.usage']), maxResultBytes: 256_000,
     async executeAsync({ op, actor, args }) {
       current(actor, args);
-      if (op === 'transit.access.status') return { enabled: !!configuration, appId: configuration?.appId ?? null };
-      if (op !== 'transit.access.profile' || !configuration) deny('transit_access_unavailable');
-      const issuedAt = now(), body = JSON.stringify({ schema: 'soty.transit-access-request.v1', issuer: configuration.issuer,
+      if (op === 'transit.access.status') return { enabled: !!configuration, appId: configuration?.appId ?? null,
+        usageEnabled: configuration?.usageEnabled === true };
+      const usage = op === 'transit.access.usage';
+      if (!configuration || (usage ? configuration.usageEnabled !== true : op !== 'transit.access.profile')) deny('transit_access_unavailable');
+      const endpoint = usage ? new URL('/v1/usage', configuration.endpoint).href : configuration.endpoint;
+      const issuedAt = now(), body = JSON.stringify({ schema: usage ? 'soty.transit-usage-request.v1' : 'soty.transit-access-request.v1', issuer: configuration.issuer,
         accountId: actor.accountId, deviceId: actor.deviceId, issuedAt, expiresAt: issuedAt + 20_000, nonce: randomBytes(16).toString('hex') });
-      const signature = sign(null, Buffer.concat([domain, Buffer.from(body)]), configuration.key).toString('base64');
+      const signature = sign(null, Buffer.concat([usage ? usageRequest : profileRequest, Buffer.from(body)]), configuration.key).toString('base64');
       let response;
       try {
-        response = await fetchImpl(configuration.endpoint, { method: 'POST', redirect: 'error', cache: 'no-store',
+        response = await fetchImpl(endpoint, { method: 'POST', redirect: 'error', cache: 'no-store',
           signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15_000)]),
           headers: { 'content-type': 'application/json', 'x-transit-signature': signature }, body });
         current(actor, args);
@@ -60,13 +81,18 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
         current(actor, args);
         const envelope = JSON.parse(Buffer.concat(parts));
         if (!response.ok) deny(envelope.error === 'access_capacity' ? 'transit_access_capacity' : 'transit_access_unavailable');
-        if (envelope.schema !== 'transit.encrypted-profile.v1') deny('transit_access_unavailable');
+        if (envelope.schema !== (usage ? 'transit.encrypted-usage.v1' : 'transit.encrypted-profile.v1')) deny('transit_access_unavailable');
         const decipher = createDecipheriv('aes-256-gcm', configuration.deliveryKey, Buffer.from(envelope.nonce, 'base64'));
-        decipher.setAAD(Buffer.concat([Buffer.from('TRANSIT/PROFILE-DELIVERY/V1\0'), Buffer.from(body)]));
+        decipher.setAAD(Buffer.concat([usage ? usageDelivery : profileDelivery, Buffer.from(body)]));
         decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
         const plaintext = Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64')), decipher.final()]);
         if (plaintext.length > 240_000) deny('transit_access_unavailable');
         const value = JSON.parse(plaintext);
+        if (usage) {
+          if (!exact(value, ['schema', 'accountId', 'usage']) || value.schema !== 'transit.personal-usage.v1'
+            || value.accountId !== actor.accountId || !validUsage(value.usage)) deny('transit_access_unavailable');
+          return { usage: value.usage };
+        }
         if (value.schema !== 'transit.personal-profile.v1' || value.accountId !== actor.accountId || value.coreVersion !== '1.13.15'
           || value.mode !== 'free-best-effort' || createHash('sha256').update(JSON.stringify(value.profile)).digest('hex') !== value.sha256) deny('transit_access_unavailable');
         return { profile: value.profile, coreVersion: value.coreVersion, mode: value.mode };
