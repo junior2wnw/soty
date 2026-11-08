@@ -796,7 +796,7 @@ class WorldApplication {
     } catch (error) {
       if (this.destroyed || sequence !== this.requestSequence) return;
       const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
-      if (['NETWORK_ERROR', 'NETWORK_TIMEOUT'].includes(code) && this.options.localAccount) {
+      if (['NETWORK_ERROR', 'NETWORK_TIMEOUT', 'LOCAL_CONFLICT'].includes(code) && this.options.localAccount) {
         const local = await this.options.localAccount().catch(() => null);
         if (this.destroyed || sequence !== this.requestSequence) return;
         if (local?.accountId) {
@@ -1089,10 +1089,10 @@ class WorldApplication {
     this.afterNoteSaved(() => { this.navigateReady('mine'); focus(); });
   }
 
-  private async openConnections(): Promise<void> {
+  private async openConnections(mode?: 'device'): Promise<void> {
     const current = this.accountTask();
     try {
-      if (this.options.openConnections) await this.options.openConnections();
+      if (this.options.openConnections) await this.options.openConnections(mode);
       else await this.options.openAccount('people');
     } catch (error) { if (current()) this.toast(errorText(error)); }
   }
@@ -1191,7 +1191,9 @@ class WorldApplication {
       item(world ? 'Моё' : 'Мир и каталог', world ? 'grid' : 'world', () => this.navigate(world ? 'mine' : 'world')));
     const messages=item('Сообщения','chat',()=>this.navigate('messages'));messages.dataset.navView='messages';
     const contacts=item('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people')));contacts.dataset.inboxRequests='true';
-    grid.prepend(item('Мой профиль','person',()=>this.openProfileMenu()),messages,contacts);
+    grid.prepend(item('Мой профиль','person',()=>this.openProfileMenu()),
+      item('Открыть мои Соты здесь','qr',()=>this.runHook(()=>this.options.openAccount('connect'))),
+      item('Подключить ещё одно устройство','phone',()=>{void this.openConnections('device');}),messages,contacts);
     const tools = el('div', 'of-menu-tools');
     const stateAction=item('Состояние Сот','activity',()=>{void this.openMonitoring();});stateAction.hidden=true;
     tools.append(stateAction);
@@ -3230,7 +3232,7 @@ class WorldApplication {
     option('Приложение', 'grid', () => this.openPreparedApp());
     option('Записку', 'note', () => {if(this.unifiedField)this.openCanvasComposer();else this.afterNoteSaved(()=>this.openNotes('new'));});
     if(this.unifiedField)option('Под паролем','lock',()=>this.openCanvasVaultComposer());
-    option('Устройство', 'laptop', () => this.runHook(this.options.connectDevice));
+    option('Компьютер для приложений', 'laptop', () => this.runHook(this.options.connectDevice));
     option('Комнату', 'people', () => this.openCommunityForm());
     option('Создать с ИИ', 'sparkle', () => this.afterNoteSaved(() => { this.assistantMode = 'create'; this.navigateReady('assistant'); }));
     option('Контакт', 'person', () => this.runHook(() => this.options.openAccount('people')));

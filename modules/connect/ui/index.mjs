@@ -131,8 +131,14 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     }
     const linkHost=tab==='connect'?content.querySelector('[data-other-ways]')||host:host;
     const input = materialElement('input', 'field'); input.readOnly = true; input.value = url; input.setAttribute('aria-label', 'Ссылка для подключения'); linkHost.append(input);
-    const copy = materialElement('button', 'control'); copy.textContent = 'Скопировать ссылку'; copy.type = 'button'; linkHost.append(copy);
-    copy.addEventListener('click', guard(async () => { await navigator.clipboard.writeText(url); note('Ссылка скопирована.'); }));
+    const copy = materialElement('button', 'control'); copy.textContent = 'Скопировать ссылку'; copy.type = 'button'; host.append(copy);
+    copy.addEventListener('click', guard(async () => {
+      try { await navigator.clipboard.writeText(url); note('Ссылка скопирована.'); }
+      catch {
+        const alternatives = linkHost.closest('details'); if (alternatives) alternatives.open = true;
+        input.focus(); input.select(); note('Скопируйте выделенную ссылку.');
+      }
+    }));
   }
   const link = (kind, id) => `${location.origin}/?connect=${kind}&${kind === 'contact' ? 'card' : 'request'}=${encodeURIComponent(id)}`;
   async function render() {
@@ -140,9 +146,10 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     clearTimeout(timer);stopEntry();const generation=++renderGeneration;
     if (stopped) return;
     await refresh();if(stopped||generation!==renderGeneration)return;
-    const titles = { profile: 'Профиль', people: 'Контакты', devices: 'Устройства входа', recovery: 'Восстановление профиля', data: 'Копии данных', profiles: 'Выбрать профиль',connect:'Открыть прежний аккаунт' };
-    dialog.querySelector('nav').hidden=tab==='connect';dialog.className=tab==='connect'?'connect-panel connect-entry':'connect-panel';
-    dialog.querySelector('h2').textContent = titles[tab]; dialog.setAttribute('aria-label', titles[tab]);
+    const titles = { profile: 'Профиль', people: 'Контакты', devices: 'Устройства входа', recovery: 'Восстановление профиля', data: 'Копии данных', profiles: 'Выбрать профиль', connect: 'Открыть мои Соты здесь' };
+    const heading = intent?.kind === 'device' ? 'Подключить ещё одно устройство' : titles[tab];
+    dialog.querySelector('nav').hidden=tab==='connect'||intent?.kind==='device';dialog.className=tab==='connect'?'connect-panel connect-entry':'connect-panel';
+    dialog.querySelector('h2').textContent = heading; dialog.setAttribute('aria-label', heading);
     dialog.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'));
     if (intent) { await renderIntent(); return; }
     if (tab === 'profiles') {
@@ -218,7 +225,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       for (const r of list.blocked || []) row('[data-blocked]', r.label || 'Контакт', [['Разблокировать', async () => { await client.unblockContact(r.peerAccountId); note('Блокировка снята. Дружба автоматически не восстановлена.'); await render(); }]]);
       on('[data-rotate]', async () => { if (!confirm('Сменить адрес визитки? Старые QR и незавершённые запросы перестанут действовать. Контакты сохранятся.')) return; await client.rotateCard(); note('Адрес визитки изменён.'); await render(); });
     } else if (tab === 'connect') {
-      content.innerHTML = `<p>Отсканируйте QR устройством, где уже открыт ваш аккаунт, и подтвердите вход. Здесь аккаунт откроется сам.</p>
+      content.innerHTML = `<p>Покажите этот QR устройству, где уже открыты ваши Соты. Подтвердите вход на нём, и здесь откроется то же полотно.</p>
         <div data-qr></div><p data-pairing-code class="connect-pairing-code"></p>
         <p data-entry-status role="status">Готовим QR…</p><button data-glass-role="control" data-glass-safe-area="off" data-new-qr hidden>Обновить QR</button>
         <details class="connect-other"><summary data-glass-role="control" data-glass-safe-area="off">Другой способ</summary><div data-other-ways></div>
@@ -360,6 +367,29 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       });
     }
   }
+  function waitForConnectedDevice(target, accountId) {
+    const generation = renderGeneration;
+    const current = () => !stopped && dialog.open && generation === renderGeneration && local?.accountId === accountId;
+    const check = async () => {
+      if (!current()) return;
+      if (status?.account?.id === accountId && status.devices.some(device => device.id === target.deviceId && !device.revokedAt)) {
+        await render();
+        if (!stopped && renderGeneration === generation + 1 && local?.accountId === accountId) {
+          note('Устройство подключено. Ваши Соты открыты на обоих устройствах.');
+          const done = materialElement('button', 'control'); done.type = 'button'; done.textContent = 'Готово';
+          done.addEventListener('click', () => dialog.close(), { signal: panelLifetime.signal }); content.prepend(done); done.focus();
+        }
+        return;
+      }
+      if (Date.now() >= target.expiresAt) { note('Срок подключения истёк. Откройте новый QR на втором устройстве.'); return; }
+      timer = setTimeout(async () => {
+        if (!current()) return;
+        try { await refresh(); await check(); }
+        catch (error) { if (current()) note(friendly(error)); }
+      }, 1200);
+    };
+    void check().catch(error => { if (!stopped) note(friendly(error)); });
+  }
   async function renderIntent() {
     if (intent.kind === 'contact') {
       const card = await client.resolveCard(intent.id); if (stopped) return;
@@ -371,7 +401,11 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       if (!expectedAccountId || target.accountId !== expectedAccountId) throw Object.assign(new Error('profile_changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
       const pairingCode = target.requestId.slice(-8).toUpperCase().match(/.{1,4}/g).join(' ');
       content.innerHTML = `<h3>Открыть ваш профиль на устройстве?</h3><p>Получатель: ${escape(target.label || 'Новое устройство')}.</p><p>Сравните код <strong>${escape(pairingCode)}</strong> с экраном, который подключаете.</p><p>Откроется профиль ${escape(status.account.label)} (${escape(expectedAccountId.slice(-8))}) и его сохранённые данные. Подтверждайте только свой запрос.</p><button data-glass-role="control" data-glass-safe-area="off" data-approve>Открыть мой профиль</button><button data-glass-role="control" data-glass-safe-area="off" data-cancel>Отмена</button>`;
-      on('[data-approve]', async () => { await client.approveEnrollment(target.requestId, expectedAccountId); intent = null; tab = 'devices'; note('Доступ разрешён. Проверьте имя профиля и завершите вход на новом устройстве.'); await render(); });
+      on('[data-approve]', async () => {
+        await client.approveEnrollment(target.requestId, expectedAccountId);
+        intent = null; tab = 'devices'; note('Подтверждено. Ждём, пока второе устройство откроет Соты.');
+        await render(); waitForConnectedDevice(target, expectedAccountId);
+      });
     }
     on('[data-cancel]', async () => { intent = null; await render(); });
   }

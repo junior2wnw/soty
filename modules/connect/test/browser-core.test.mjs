@@ -110,6 +110,28 @@ test('parallel AI metadata reads retain account and local-generation fences', as
   } finally { release(); await metadata; }
 });
 
+test('starting a device QR retires a stale live read without reporting loss of the active profile', async t => {
+  let enter, release;
+  const entered = new Promise(done => { enter = done; });
+  const gate = new Promise(done => { release = done; });
+  const operation = 'platform.live.wait';
+  const f = fixture(t, { extensions: [{ operations: new Set([operation]),
+    async executeAsync({ actor }) { enter(); await gate; return { accountId: actor.accountId }; } }] });
+  const { client } = f.client();
+  t.after(() => { release(); client.dispose(); });
+  const account = await client.bootstrap('Existing device');
+  const context = { expectedAccountId: account.accountId };
+  const rejected = assert.rejects(client.extension(operation, {}, context), { code: 'LOCAL_CONFLICT' });
+  await entered;
+  await client.startEnrollment('Second device');
+  release();
+  await rejected;
+  const local = await client.getLocalState();
+  assert.equal(local.deviceId, account.deviceId);
+  assert.equal(local.accountId, account.accountId);
+  assert.equal((await client.extension(operation, {}, context)).accountId, account.accountId);
+});
+
 test('browser/server canonical JSON, digest, key identity and native nonextractable keys agree', async t => {
   const value = { z: ['Ж', -0, true, null], a: { b: 2, a: 1 } };
   assert.equal(canonicalJson(value), serverCanonicalJson(value));
