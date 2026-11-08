@@ -13,6 +13,6 @@ export function createAppHostSessionRenewal<TTimer=ReturnType<typeof setTimeout>
   commit(previous:AppHostSessionBinding,next:AppHostSessionState):boolean;
   close(args:AppHostSessionProof):Promise<unknown>;
   cleanupForReply?(reply:unknown):(()=>Promise<void>)|null;
-  onState?(state:'pending'|'confirmed'|'denied'|'unavailable',error?:unknown):void;
+  onState?(state:'admitting'|'pending'|'confirmed'|'denied'|'unavailable',error?:unknown):void;
   clock?():number;schedule?:(callback:()=>void,delay:number)=>TTimer;cancel?:(timer:TTimer)=>void;randomId?():string;
 }):{start():void;renew(reason?:AppHostSessionRenewReason):Promise<boolean>;dispose():void};

@@ -881,6 +881,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
           }),
           onState:(state,error)=>{
             if(!hostCurrent())return;
+            const remainingAdmission=state==='admitting'?(launcher.hostSession()?.hostSession.expiresAt??0)-serverNow():0;
+            runtimeDisplay?.waitForHostAdmission(remainingAdmission);
             if(state==='denied'){void denyRuntime(error).catch(()=>{});return;}
             if(state==='pending'&&(!message.textContent||messageOwner==='runtime'||messageOwner==='renewal'))showMessage('Восстанавливаем соединение…','renewal');
             else if(state==='confirmed'&&messageOwner==='renewal')showMessage(runtimeDisplay?.snapshot().message??'','runtime');

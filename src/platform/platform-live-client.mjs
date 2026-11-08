@@ -1,6 +1,7 @@
 const schema='soty.platform-live.v1';
 const identityLossCodes=new Set(['ACTIVE_PROFILE_CHANGED','directory_account_changed','field_account_changed','live_authentication_required','live_account_changed','device_revoked','authentication_required','unauthorized','account_mismatch']);
-export const isLiveIdentityLoss=error=>identityLossCodes.has(String(error?.code||''));
+export const isLocalReadConflict=error=>error?.code==='ACTIVE_PROFILE_CHANGED'&&error.cause?.code==='LOCAL_CONFLICT';
+export const isLiveIdentityLoss=error=>!isLocalReadConflict(error)&&identityLossCodes.has(String(error?.code||''));
 const unsupported=error=>/UNKNOWN_OPERATION|OPERATION_NOT_FOUND|UNSUPPORTED_OPERATION|platform_live_unavailable/iu.test(String(error?.code||''));
 
 /** One account-bound wait, followed by fresh ACL reads. The feed carries no display data. */

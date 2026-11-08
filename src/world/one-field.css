@@ -356,6 +356,21 @@ html[data-soty-keyboard=true] .sw-app[data-experience=one-field]>.sw-main>.uf-sc
 }
 :is(.sw-app[data-experience=one-field],.of-compact-preview) :is(.uf-node-app.has-art,.uf-node-builtin.has-art) .uf-app-caption,
 :is(.sw-app[data-experience=one-field],.of-compact-preview) .uf-node-person:has(.uf-avatar>img) .uf-label { color: #fffefa; }
+:is(.sw-app[data-experience=one-field],.of-compact-preview) :is(.uf-node-app,.uf-node-builtin) .uf-app-caption {
+  top: 63%; width: max-content; max-width: calc(var(--uf-node-screen-width,208px) * .85);
+  padding: 3px 6px; border-radius: 10px; font-size: 14px; font-weight: 600; line-height: 18px; text-align: center;
+}
+:is(.sw-app[data-experience=one-field],.of-compact-preview) :is(.uf-node-app,.uf-node-builtin) .uf-app-caption .uf-label-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  white-space: normal; overflow-wrap: anywhere;
+}
+:is(.sw-app[data-experience=one-field],.of-compact-preview) :is(.uf-node-app,.uf-node-builtin)[data-caption=compact] .uf-app-caption {
+  top: 55%; max-width: min(var(--uf-caption-width,100%),calc(var(--uf-node-screen-width,208px) * .68)); font-size: 14px; line-height: 18px;
+}
+:is(.sw-app[data-experience=one-field],.of-compact-preview) :is(.uf-node-app,.uf-node-builtin)[data-caption=compact] .uf-app-caption .uf-label-text {
+  display: block; white-space: nowrap;
+}
+:is(.sw-app[data-experience=one-field],.of-compact-preview) :is(.uf-node-app.has-art,.uf-node-builtin.has-art) .uf-app-caption { background: #141418bc; }
 :is(.sw-app[data-experience=one-field],.of-compact-preview) :is(.uf-node-app.has-art,.uf-node-builtin.has-art)::after,
 :is(.sw-app[data-experience=one-field],.of-compact-preview) .uf-node-person:has(.uf-avatar>img)::after {
   content: ''; position: absolute; z-index: 1; inset: 0; pointer-events: none;
