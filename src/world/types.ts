@@ -165,7 +165,7 @@ export interface WorldAppOptions {
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;
   openAccount: (tab?: ConnectTab) => void | Promise<void>;
   connectDevice: () => void | Promise<void>;
-  openConnections?: () => void | Promise<void>;
+  openConnections?: (mode?: 'device') => void | Promise<void>;
   agentCreate: (communityId?: string, hostOrRestore?: HTMLElement | { hostDeviceId: string; connectorId: string; jobId: string }) => void | Promise<void>;
   openAssistant?: (host: HTMLElement, context?: WorldAssistantMountContext) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
   openAppBuilder?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;

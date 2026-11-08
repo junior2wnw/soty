@@ -145,7 +145,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     throw Object.assign(Error('The local profile keeps changing'), { code: 'ACTIVE_PROFILE_CHANGED' });
   };
   const refresh = async () => { await world?.refresh(); };
-  const actions = createAppActions(accountClient, refresh, () => openAccount('devices'), {
+  const actions = createAppActions(accountClient, refresh, () => openAccount('connect'), {
     openRegisteredApp: async (appId, accountId, continueIf) => {
       const mounted = world, generation = mountGeneration;
       if (!mounted || pageClosed || !root.isConnected || activeAccount !== accountId) throw Error('connection_entry_changed');
@@ -215,7 +215,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (editProfileRequested && world === mountedWorld && activeAccount === accountAtOpen && mountGeneration === generationAtOpen) mountedWorld.editProfile();
   };
   let connectionOpening = false;
-  const openConnections = async (initialInput?: string): Promise<void> => {
+  const openConnections = async (mode?: 'device'): Promise<void> => {
     if (connectionOpening) return;
     const mounted = world, accountId = activeAccount, generation = mountGeneration, route = window.location.href;
     const state = await accountClient.getLocalState();
@@ -229,7 +229,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     window.addEventListener('hashchange', closeIfStale); window.addEventListener('popstate', closeIfStale);
     pageLifetime.signal.addEventListener('abort', closeIfStale);
     const hub = openConnectionHub({ client: accountClient, origin: window.location.origin, isCurrent: current,
-      signal: lifetime.signal, observeAccount: listener => observeAccount(() => listener()), ...(initialInput ? { initialInput } : {}),
+      signal: lifetime.signal, observeAccount: listener => observeAccount(() => listener()), deviceOnly: mode === 'device',
       openAccount: (tab, intent) => openAccount(tab, intent), onConnectComputer: () => actions.connectDevice(),
       onIntent: async (intent: ConnectionIntent, handoff?: ConnectionHandoff) => {
         if (!current()) throw Error('connection_entry_changed');

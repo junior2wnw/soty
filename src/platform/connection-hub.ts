@@ -25,7 +25,7 @@ export interface ConnectionHubOptions {
   observeAccount?: (listener: () => void) => () => void;
   onDispose?: () => void;
   qr?: (url: string) => Promise<string>; scanner?: ConnectionScanner; captures?: MediaCaptureCoordinator;
-  initialInput?: string; entry?: boolean; signal?: AbortSignal;
+  initialInput?: string; entry?: boolean; deviceOnly?: boolean; signal?: AbortSignal;
   /** Fresh personal canvas only. Explicit QR/transfer intents keep their preview. */
   instantPersonal?:boolean;
 }
@@ -93,8 +93,9 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
   status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); preview.hidden = true;
   const title = el('h1', '', options.entry ? 'Ваши соты' : 'Подключить');
   title.hidden = !options.entry;
-  const explanation = el('p', 'sw-muted', options.entry ? 'Один профиль на всех устройствах. Откройте свой или создайте новый.' : 'Покажите свой QR или откройте присланную ссылку.');
-  const input = textInput('', 'Ссылка из сообщения', MAX_CONNECTION_INPUT_BYTES); input.setAttribute('aria-label', 'Ссылка для подключения'); input.autocomplete = 'off';
+  const explanation = el('p', 'sw-muted', options.deviceOnly ? 'На втором устройстве выберите «Открыть мои Соты здесь». Отсканируйте его код или вставьте ссылку.'
+    : options.entry ? 'Один профиль на всех устройствах. Откройте свой или создайте новый.' : 'Покажите свой QR или откройте присланную ссылку.');
+  const input = textInput('', options.deviceOnly ? 'Ссылка со второго устройства' : 'Ссылка из сообщения', MAX_CONNECTION_INPUT_BYTES); input.setAttribute('aria-label', 'Ссылка для подключения'); input.autocomplete = 'off';
   const video = el('video', 'ch-video'); video.playsInline = true; video.muted = true; video.hidden = true;
   const tools = el('div', 'ch-actions ch-scan-tools'), accounts = el('div', 'ch-actions');
   const scanner = options.scanner ?? createConnectionScanner(), captures = options.captures ?? sharedMediaCaptureCoordinator;
@@ -174,6 +175,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
   const previewIntent = (value: string, keepInput = false, fromQr = false): void => {
     const intent = parseConnectionIntent(value, options.origin);
     if (!intent) { note('Это не поддерживаемая ссылка Сот. Проверьте полный адрес.'); return; }
+    if (options.deviceOnly && intent.kind !== 'device') { note('Нужен QR или ссылка для входа со второго устройства.'); return; }
     stopCamera(); sequence++; pending = intent; if (!keepInput) input.value = ''; qrHost.replaceChildren(); update();
     let held = intent.kind === 'platform-invitation' ? value.trim() : null;
     platformHandoff = held ? { takePlatformInvitationLink() { const result = held; held = null; return result; } } : null;
@@ -258,7 +260,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
     }
   };
   const show = button('Мой QR', 'qr', '', () => { void showCard().catch(error => note(friendly(error))); });
-  const scan = button('Сканировать', 'scan', '', () => { void startCamera(); });
+  const scan = button(options.deviceOnly ? 'Сканировать QR' : 'Сканировать', 'scan', '', () => { void startCamera(); });
   const stop = button('Выключить камеру', 'close', 'ch-stop', stopCamera);
   stop.hidden = true;
   const fromFile = button('Выбрать файл', 'folder', '', () => {
@@ -270,12 +272,12 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
       filePending = true;
       void scanner.file(file).then(raw => { if (live() && ticket === sequence) previewIntent(raw, false, true); }, error => { if (live() && ticket === sequence) note(friendly(error)); }).finally(() => { filePending = false; }); }); picker.click();
   });
-  const paste = button('Открыть ссылку', 'next', '', () => { stopCamera(); if (live()) previewIntent(input.value); });
+  const paste = button('Открыть ссылку', 'next', '', () => { stopCamera(); if (live()) previewIntent(input.value, false, options.deviceOnly); });
   input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); paste.click(); } });
   input.addEventListener('input', event => {
     if (!live()) return;
     clearPreview();
-    if (!busy && state && (event as InputEvent).inputType === 'insertFromPaste' && parseConnectionIntent(input.value, options.origin)) previewIntent(input.value, true);
+    if (!options.deviceOnly && !busy && state && (event as InputEvent).inputType === 'insertFromPaste' && parseConnectionIntent(input.value, options.origin)) previewIntent(input.value, true);
   });
   const existing = button('Мой профиль на этом устройстве', 'phone', options.entry ? 'ch-primary' : '', () => { void run(() => openAccount('connect'))(); });
   const recovery = button('Восстановить профиль', 'lock', '', () => { void run(() => openAccount('recovery'))(); });
@@ -298,7 +300,8 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
   }
   update();
   tools.append(show, scan, fromFile, stop); accounts.append(existing, create, recovery, computer);
-  if (options.entry) ui.append(title, explanation, status, accounts, qrHost, tools, video, input, paste, preview);
+  if (options.deviceOnly) { tools.replaceChildren(scan, stop); ui.append(explanation, status, tools, video, input, paste, preview); }
+  else if (options.entry) ui.append(title, explanation, status, accounts, qrHost, tools, video, input, paste, preview);
   else ui.append(title, explanation, status, qrHost, tools, video, input, paste, preview, accounts);
   host.replaceChildren(ui);
   const changed = (): void => { stopCamera(); if (!live()) { dispose(); return; }
@@ -322,7 +325,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
     const initial = await read(); mountedDevice = initial.deviceId; update();
     if (options.initialInput && parseConnectionIntent(options.initialInput, options.origin)) previewIntent(options.initialInput);
     else if (initial.accountId && options.entry) await finish(null);
-    else if (initial.accountId && !options.entry) await showCard();
+    else if (initial.accountId && !options.entry && !options.deviceOnly) await showCard();
   } catch (error) { note(friendly(error)); } })();
   return { ready, dispose };
 }
@@ -330,7 +333,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
 export function openConnectionHub(options: ConnectionHubOptions): { close(): void; closed: Promise<void>; ready: Promise<ConnectionEntryResult> } {
   let handle: ConnectionHubHandle | null = null;
   let resolveClosed!: () => void; const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
-  const dialog = createDialog('Подключить', () => { handle?.dispose(); resolveClosed(); }); dialog.element.classList.add('connection-hub-dialog');
+  const dialog = createDialog(options.deviceOnly ? 'Подключить ещё одно устройство' : 'Подключить', () => { handle?.dispose(); resolveClosed(); }); dialog.element.classList.add('connection-hub-dialog');
   handle = mountConnectionHub(dialog.body, { ...options, onDispose: () => { dialog.close(); options.onDispose?.(); } });
   return { close: () => dialog.close(), closed, ready: handle.ready };
 }
