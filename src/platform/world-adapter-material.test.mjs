@@ -10,16 +10,16 @@ assert.ok(start>=0&&end>start,'test executes the actual account entry, unchanged
 const compiled=ts.transpileModule(source.slice(start,end)+'\nglobalThis.openAccount=openAccount;',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 async function until(predicate){for(let n=0;n<30&&!predicate();n++)await turn();assert.ok(predicate(),'actual host reached the expected boundary');}
-function fixture({holdState=false}={}){
-  const panels=[],mounts=[],calls=[],observers=new Set(),window=new EventTarget(),pageLifetime=new AbortController();let release;
+function fixture({holdState=false,holdRefresh=false}={}){
+  const panels=[],mounts=[],calls=[],observers=new Set(),window=new EventTarget(),pageLifetime=new AbortController();let release, releaseRefresh;
   window.location={href:'https://synthetic.invalid/#mine'};
   const world={supportsDirectMessages:()=>true,async openDirectContact(value){calls.push(['contact',value]);},editProfile(){calls.push(['edit']);}};
-  const context={world,activeAccount:'account-A',mountGeneration:1,currentCallView:null,pageLifetime,window,document:{querySelector(){throw Error('global dialog lookup must not run');}},observeAccount(callback){observers.add(callback);return()=>observers.delete(callback);},accountClient:{getLocalState(){const result={accountId:context.activeAccount,label:'Synthetic'};return holdState?new Promise(resolve=>{release=()=>resolve(result);}):Promise.resolve(result);}},async refresh(){calls.push(['refresh']);},openLegacy(){}};
+  const context={world,activeAccount:'account-A',mountGeneration:1,currentCallView:null,pageLifetime,window,document:{querySelector(){throw Error('global dialog lookup must not run');}},observeAccount(callback){observers.add(callback);return()=>observers.delete(callback);},accountClient:{getLocalState(){const result={accountId:context.activeAccount,label:'Synthetic'};return holdState?new Promise(resolve=>{release=()=>resolve(result);}):Promise.resolve(result);}},async refresh(){calls.push(['refresh']);if(holdRefresh)await new Promise(resolve=>{releaseRefresh=resolve;});},openLegacy(){}};
   const connect={openConnectPanel(options){const element=new EventTarget();element.ownerDocument={defaultView:{HTMLCanvasElement:class{}}};element.close=()=>element.dispatchEvent(new Event('close'));const panel={element,options,close:element.close,refresh:async()=>{}};panels.push(panel);return panel;}};
   const material={mountMaterialGlass(element,options){const row={element,options,disposals:0,dispose(){this.disposals++;}};mounts.push(row);return row;}};
   context.require=name=>name.includes('modules/connect/ui/index.mjs')?connect:name==='qrcode'?{default:{toDataURL:async()=>''}}:name==='../world/shell-glass'?material:{};
   vm.runInNewContext(compiled,context);
-  return {context,panels,mounts,calls,observers,pageLifetime,release:()=>release(),change(){for(const callback of [...observers])callback();},open:()=>context.openAccount()};
+  return {context,panels,mounts,calls,observers,pageLifetime,release:()=>release(),releaseRefresh:()=>releaseRefresh(),change(){for(const callback of [...observers])callback();},open:(...args)=>context.openAccount(...args)};
 }
 
 test('host mounts only the returned panel element and disposes each close/reopen exactly once',async()=>{
@@ -40,4 +40,15 @@ test('account change closes its own panel and rejects late contact/edit callback
 
 test('page teardown closes its material root while readiness remains an independent runtime concern',async()=>{
   const f=fixture(),opened=f.open();await until(()=>f.mounts.length===1);f.pageLifetime.abort();await opened;assert.equal(f.mounts[0].disposals,1);assert.equal(f.observers.size,0);assert.deepEqual(f.calls,[]);
+});
+
+test('dismissing device approval hands the canvas back before a slow field refresh',async()=>{
+  const f=fixture({holdRefresh:true});
+  const opened=f.open('people',{kind:'device',requestId:'test-device-request'},()=>f.calls.push(['dismissed']));
+  await until(()=>f.mounts.length===1);
+  assert.deepEqual(f.calls,[],'the parent remains open while approval is visible');
+  f.panels[0].close();
+  await until(()=>f.calls.some(([type])=>type==='refresh'));
+  try{assert.deepEqual(f.calls,[['dismissed'],['refresh']],'background refresh must not delay dismissing the connection hub');}
+  finally{f.releaseRefresh();await opened;}
 });

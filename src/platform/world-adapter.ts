@@ -168,7 +168,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (tool) url.searchParams.set('tool', tool);
     window.location.assign(url.href);
   };
-  const openAccount = async (initialTab: ConnectTab = 'profile', initialIntent?: ConnectIntent) => {
+  const openAccount = async (initialTab: ConnectTab = 'profile', initialIntent?: ConnectIntent, onDismiss?: () => void) => {
     const callView = currentCallView;
     const mountedWorld = world, accountAtOpen = activeAccount, generationAtOpen = mountGeneration, routeAtOpen = window.location.href;
     let editProfileRequested = false;
@@ -209,6 +209,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     finally { glass?.dispose(); stopObserving(); pageLifetime.signal.removeEventListener('abort', aborted);
       window.removeEventListener('hashchange', routeChanged); window.removeEventListener('popstate', routeChanged); }
     if (!current()) return;
+    onDismiss?.();
     await refresh();
     if (!current()) return;
     if (messageRequest.contact && mountedWorld?.supportsDirectMessages()) await mountedWorld.openDirectContact(messageRequest.contact);
@@ -233,7 +234,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       openAccount: (tab, intent) => openAccount(tab, intent), onConnectComputer: () => actions.connectDevice(),
       onIntent: async (intent: ConnectionIntent, handoff?: ConnectionHandoff) => {
         if (!current()) throw Error('connection_entry_changed');
-        if (intent.kind === 'contact' || intent.kind === 'device') await openAccount('people', intent);
+        if (intent.kind === 'device') await openAccount('people', intent, () => hub.close());
+        else if (intent.kind === 'contact') await openAccount('people', intent);
         else if (intent.kind === 'profile' || intent.kind === 'community' || intent.kind === 'application') await mounted.followConnection(intent);
         else await mounted.followConnection(intent, () => {
           if (!current()) throw Error('connection_entry_changed');
