@@ -9,20 +9,24 @@ function fields(value,keys){
     return Object.fromEntries(keys.map(k=>[k,d[k].value]));
   }catch{return null;}
 }
-export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,onChange=()=>{},timeoutMs=12000}){
+export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,managedHost=false,onChange=()=>{},timeoutMs=12000}){
   const expected=new URL(origin);if(expected.origin!==origin||!['https:','http:'].includes(expected.protocol))throw Error('invalid_runtime_display_origin');
   if(typeof isCurrent!=='function'||typeof readiness!=='function'||timeoutMs!==12000)throw Error('invalid_runtime_display_options');
   let disposed=false,terminal=false,dismissed=false,loaded=false,lateLoaded=false,flight=false,queued=false,checks=0,phase='opening',timer;
   const openedAt=view.performance.now(),openingDeadline=openedAt+timeoutMs;
   let scheduledDeadline=openingDeadline;
+  let hostAdmitted=!managedHost;
   let nonce='';try{const n=view.crypto.randomUUID().replaceAll('-','');if(/^[a-f0-9]{32}$/u.test(n))nonce=n;}catch{}
   const probes=[],live=()=>!disposed&&isCurrent();
   const snapshot=()=>{
     const pending=['opening','boot','authenticating'].includes(phase),failed=['unconfirmed','denied','error'].includes(phase);
+    const retryMessage='Не удалось подтвердить запуск приложения. Попробуйте открыть заново.';
+    let unconfirmed=loaded?'Окно загружено, но запуск приложения не подтверждён. Если оно пустое, откройте заново.':'Загрузка окна не подтверждена. Если оно пустое, откройте заново.';
+    if(!hostAdmitted)unconfirmed=retryMessage;
     const messages={opening:'Открываем окно приложения…',boot:'Окно Сот открыто. Проверяем вход…',authenticating:'Подтверждаем вход в приложение…',ready:'',
-      loaded:'',unconfirmed:loaded?'Окно загружено, но запуск приложения не подтверждён. Если оно пустое, откройте заново.':'Загрузка окна не подтверждена. Если оно пустое, откройте заново.',
+      loaded:'',unconfirmed,
       denied:'Этот вход недоступен. Выберите нужный аккаунт или попросите владельца проверить доступ.',
-      error:'Не удалось подтвердить запуск приложения. Попробуйте открыть заново.'};
+      error:retryMessage};
     return Object.freeze({phase,message:dismissed?'':messages[phase]??'',busy:pending&&!dismissed,
       canRetry:failed&&!dismissed,canExternal:(failed||phase==='loaded')&&!dismissed,canDismiss:failed&&!dismissed});
   };
@@ -41,7 +45,7 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
     timer=view.setTimeout(expire,Math.max(0,deadline-view.performance.now()));
   };
   const check=async()=>{
-    if(!live()||terminal&&!lateDocument()||!loaded||checks>=3)return;
+    if(!live()||terminal&&!lateDocument()||!loaded||!hostAdmitted||checks>=3)return;
     if(flight){queued=true;return;}
     flight=true;checks++;
     try{const answer=await readiness();if(!live()||terminal&&!lateDocument())return;
@@ -57,7 +61,11 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
   const load=()=>{if(!live()||terminal&&!(phase==='unconfirmed'&&!loaded&&!dismissed))return;
     if(!loaded){
       loaded=true;lateLoaded=terminal;
-      if(terminal)notify();else{probe();scheduleDeadline(openingDeadline);}
+      if(terminal)notify();else{
+        probe();
+        // Chromium may dispatch load for a network error document.
+        if(hostAdmitted)scheduleDeadline(openingDeadline);
+      }
     }
     void check();
   };
@@ -82,8 +90,12 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
   // the queued notification runs only once the frame is actually current.
   probes.push(view.setTimeout(notify,0));
   return Object.freeze({snapshot,waitForHostAdmission(remainingMs){
-    if(!live()||terminal||loaded)return;
+    if(!live()||terminal||loaded&&hostAdmitted)return;
     const admissionDeadline=Number.isFinite(remainingMs)&&remainingMs>0?Math.min(openedAt+MAX_HOST_ADMISSION_MS,view.performance.now()+remainingMs):openingDeadline;
     scheduleDeadline(Math.max(openingDeadline,admissionDeadline));
+  },confirmHostTransport(){
+    if(!live()||terminal||hostAdmitted)return;
+    hostAdmitted=true;
+    void check();
   },dismiss(){if(!live()||!terminal||['ready','loaded'].includes(phase))return false;dismissed=true;notify();return true;},dispose:close});
 }

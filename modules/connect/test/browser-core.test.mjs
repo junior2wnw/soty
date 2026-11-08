@@ -133,6 +133,30 @@ test('starting a device QR retires a stale live read without reporting loss of t
   assert.equal((await client.extension(operation, {}, context)).accountId, account.accountId);
 });
 
+for (const operation of ['apps.list', 'apps.catalog']) test(`a held ${operation} read does not hold the device QR or its local state`, async t => {
+  let enter, release, deadline;
+  const entered = new Promise(done => { enter = done; });
+  const gate = new Promise(done => { release = done; });
+  const f = fixture(t, { extensions: [{ operations: new Set([operation]),
+    async executeAsync({ actor }) { enter(); await gate; return { accountId: actor.accountId }; } }] });
+  const { client } = f.client();
+  t.after(() => { release(); client.dispose(); });
+  const account = await client.bootstrap('Existing device');
+  const pending = client.extension(operation, {}, { expectedAccountId: account.accountId }).then(result => ({ result }), error => ({ error }));
+  await entered;
+  let qr;
+  try {
+    qr = await Promise.race([(async () => {
+      assert.equal((await client.getLocalState()).accountId, account.accountId);
+      return client.startEnrollment('Second device');
+    })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Background app read blocked the device QR')), 1000); })]);
+  } finally { clearTimeout(deadline); release(); await pending; }
+  assert.equal((await client.getLocalState()).pendingEnrollment.requestId, qr.requestId);
+  const { error } = await pending;
+  assert.equal(error?.code, 'ACTIVE_PROFILE_CHANGED');
+  assert.equal(error.cause?.code, 'LOCAL_CONFLICT');
+});
+
 test('browser/server canonical JSON, digest, key identity and native nonextractable keys agree', async t => {
   const value = { z: ['Ж', -0, true, null], a: { b: 2, a: 1 } };
   assert.equal(canonicalJson(value), serverCanonicalJson(value));

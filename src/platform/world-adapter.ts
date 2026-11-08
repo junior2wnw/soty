@@ -14,7 +14,7 @@ import { createPlatformLiveClient } from './platform-live-client.mjs';
 import {bindCanvasPageReturn,readWorkspaceReturn,type CanvasPageReturnHandoff,type WorkspaceReturn} from '../world/workspace-return.mjs';
 import type { ConnectIntent, ConnectTab } from '../../modules/connect/ui/index.mjs';
 const startupReadOperations = new Set(['world.profile.get', 'world.community.list', 'world.field.get', 'world.directory.resolve',
-  'apps.directory.resolve', 'apps.directory.search', 'apps.saved.list', 'apps.list', 'apps.discussion.inbox']);
+  'apps.catalog', 'apps.directory.resolve', 'apps.directory.search', 'apps.saved.list', 'apps.list', 'apps.discussion.inbox']);
 // The existing browser-neutral JS owner is tested directly; its runtime is unchanged.
 // @ts-expect-error The reviewed JS component has no TypeScript declaration.
 import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle.mjs';

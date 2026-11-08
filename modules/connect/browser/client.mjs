@@ -17,7 +17,7 @@ const parallelMetadataReads = new Set([
   'canvas.objects.get', 'canvas.widgets.get',
   'apps.entry.get',
   'world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get',
-  'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list',
+  'apps.catalog', 'apps.list', 'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list',
   // Startup polls and visible covers must not hold the field's identity queue.
   'call.inbox', 'notifications.status', 'apps.cover.read', 'apps.discussion.inbox',
   'ai.account.get', 'ai.keys.list',
