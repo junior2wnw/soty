@@ -2,11 +2,11 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {createAppRuntimeDisplay} from './app-runtime-display.mjs';
 const tickFlush=()=>new Promise(r=>setImmediate(r)),deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
 class Events{listeners=new Map();addEventListener(t,f){if(!this.listeners.has(t))this.listeners.set(t,new Set());this.listeners.get(t).add(f);}removeEventListener(t,f){this.listeners.get(t)?.delete(f);}emit(t,e={}){for(const f of [...(this.listeners.get(t)??[])])f(e);}}
-function displayFixture(answer='pending'){
+function displayFixture(answer='pending',managedHost=false){
  const frame=new Events(),view=new Events(),tasks=new Map(),states=[],sent=[];let now=0,next=0,current=true,calls=0;
  Object.assign(view,{crypto:{randomUUID:()=> 'a'.repeat(32)},performance:{now:()=>now},setTimeout(fn,ms){const id=++next;tasks.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>tasks.delete(id)});
  frame.contentWindow={postMessage:(v,o)=>sent.push({v,o})};
- const api=createAppRuntimeDisplay({view,frame,origin:'https://frame.example',isCurrent:()=>current,readiness:async()=>{calls++;return typeof answer==='function'?await answer():answer;},onChange:v=>states.push(v)});
+ const api=createAppRuntimeDisplay({view,frame,origin:'https://frame.example',isCurrent:()=>current,managedHost,readiness:async()=>{calls++;return typeof answer==='function'?await answer():answer;},onChange:v=>states.push(v)});
  const tick=ms=>{const end=now+ms;for(;;){const job=[...tasks].sort((a,b)=>a[1].at-b[1].at)[0];if(!job||job[1].at>end)break;tasks.delete(job[0]);now=job[1].at;job[1].fn();}now=end;};
  const phase=(phase,patch={})=>view.emit('message',{source:frame.contentWindow,origin:'https://frame.example',ports:[],data:{schema:'soty.runtime-display.v1',nonce:'a'.repeat(32),phase},...patch});
  return{api,frame,view,tasks,states,sent,tick,phase,calls:()=>calls,stale:()=>current=false};
@@ -60,6 +60,36 @@ test('a load without readiness or an explicit frame error still uses the ordinar
  unconfirmed.frame.emit('load');await tickFlush();unconfirmed.tick(2000);
  assert.equal(unconfirmed.api.snapshot().phase,'unconfirmed');assert.equal(unconfirmed.api.snapshot().canRetry,true);
  const failed=displayFixture();failed.api.waitForHostAdmission?.(29000);failed.tick(13000);failed.frame.emit('error');
+ assert.equal(failed.api.snapshot().phase,'error');assert.equal(failed.api.snapshot().canRetry,true);
+});
+test('a managed error-document load during admission cannot hide the eventual retry',async()=>{
+ const f=displayFixture('unsupported',true);f.tick(4500);f.api.waitForHostAdmission(24000);f.tick(8300);
+ f.frame.emit('load');await tickFlush();
+ assert.equal(f.api.snapshot().busy,true,'Chromium load alone cannot end an unconfirmed managed opening');
+ assert.equal(f.calls(),0);
+ f.tick(15700);
+ assert.equal(f.api.snapshot().phase,'unconfirmed');
+ assert.equal(f.api.snapshot().canRetry,true);
+ assert.match(f.api.snapshot().message,/Попробуйте открыть заново/u);
+ f.api.confirmHostTransport?.();await tickFlush();
+ assert.equal(f.api.snapshot().phase,'unconfirmed','a timed-out window needs an explicit retry');
+});
+test('ordinary managed transport confirmation and load settle in either order without claiming Source readiness',async()=>{
+ for(const first of ['load','confirmation']){
+  const f=displayFixture('unsupported',true);f.api.waitForHostAdmission(28000);f.tick(12900);
+  if(first==='load')f.frame.emit('load');else f.api.confirmHostTransport?.();
+  await tickFlush();assert.equal(f.api.snapshot().busy,true);assert.equal(f.calls(),0);
+  if(first==='load')f.api.confirmHostTransport?.();else f.frame.emit('load');
+  await tickFlush();assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.calls(),1);
+  assert.equal(f.states.some(state=>state.phase==='ready'||state.phase==='unconfirmed'),false);
+ }
+});
+test('managed host loss restores the ordinary deadline and an explicit Boot error still wins',async()=>{
+ const lost=displayFixture('unsupported',true);lost.api.waitForHostAdmission(28000);lost.tick(11200);
+ lost.frame.emit('load');await tickFlush();lost.api.waitForHostAdmission(0);lost.tick(800);
+ assert.equal(lost.api.snapshot().phase,'unconfirmed');assert.equal(lost.api.snapshot().canRetry,true);
+ const failed=displayFixture('unsupported',true);failed.api.waitForHostAdmission(28000);failed.tick(12800);
+ failed.frame.emit('load');failed.phase('boot_failed');
  assert.equal(failed.api.snapshot().phase,'error');assert.equal(failed.api.snapshot().canRetry,true);
 });
 test('Boot progress is never readiness; only current authenticated Root read clears pending state',async()=>{

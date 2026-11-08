@@ -63,11 +63,17 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
   if (beforeProfileChange !== undefined && typeof beforeProfileChange !== 'function') throw new TypeError('invalid_profile_change_guard');
   const previousFocus = document.activeElement,panelLifetime=new AbortController();
   const dialog = materialElement('dialog', 'overlay');
-  dialog.className = 'connect-panel';
-  dialog.setAttribute('aria-label', 'Входы и данные профиля');
-  dialog.innerHTML = `<header><div><small>${escape(productName)}</small><h2>Входы и данные профиля</h2></div><button data-glass-role="control" data-glass-safe-area="off" type="button" data-close aria-label="Закрыть">×</button></header>
-    <nav aria-label="Разделы профиля"><button data-glass-role="control" data-glass-safe-area="off" data-tab="profile">Профиль</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="people">Люди</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="devices">Устройства входа</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="recovery">Восстановление</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="data">Копии данных</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="profiles">Выбрать профиль</button></nav>
-    <p class="connect-message" role="status" aria-live="polite"></p><section class="connect-content" aria-busy="true"></section>`;
+  const openingDevice = initialTab === 'connect' && !initialIntent;
+  const approvingDevice = initialIntent?.kind === 'device';
+  const deviceTitle = 'Открыть мои Соты здесь';
+  const approvalTitle = 'Подключить ещё одно устройство';
+  const initialTitle = openingDevice ? deviceTitle : approvingDevice ? approvalTitle : 'Входы и данные профиля';
+  const initialProgress = openingDevice ? 'Готовим QR…' : approvingDevice ? 'Проверяем запрос…' : '';
+  dialog.className = openingDevice ? 'connect-panel connect-entry' : 'connect-panel';
+  dialog.setAttribute('aria-label', initialTitle);
+  dialog.innerHTML = `<header><div><small>${escape(productName)}</small><h2>${initialTitle}</h2></div><button data-glass-role="control" data-glass-safe-area="off" type="button" data-close aria-label="Закрыть">×</button></header>
+    <nav${initialProgress ? ' hidden' : ''} aria-label="Разделы профиля"><button data-glass-role="control" data-glass-safe-area="off" data-tab="profile">Профиль</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="people">Люди</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="devices">Устройства входа</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="recovery">Восстановление</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="data">Копии данных</button><button data-glass-role="control" data-glass-safe-area="off" data-tab="profiles">Выбрать профиль</button></nav>
+    <p class="connect-message" role="status" aria-live="polite"></p><section class="connect-content" aria-busy="true">${initialProgress ? `<p role="status">${initialProgress}</p>` : ''}</section>`;
   document.body.append(dialog); dialog.showModal();
   const content = dialog.querySelector('.connect-content');
   const message = dialog.querySelector('.connect-message');
@@ -146,8 +152,8 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     clearTimeout(timer);stopEntry();const generation=++renderGeneration;
     if (stopped) return;
     await refresh();if(stopped||generation!==renderGeneration)return;
-    const titles = { profile: 'Профиль', people: 'Контакты', devices: 'Устройства входа', recovery: 'Восстановление профиля', data: 'Копии данных', profiles: 'Выбрать профиль', connect: 'Открыть мои Соты здесь' };
-    const heading = intent?.kind === 'device' ? 'Подключить ещё одно устройство' : titles[tab];
+    const titles = { profile: 'Профиль', people: 'Контакты', devices: 'Устройства входа', recovery: 'Восстановление профиля', data: 'Копии данных', profiles: 'Выбрать профиль', connect: deviceTitle };
+    const heading = intent?.kind === 'device' ? approvalTitle : titles[tab];
     dialog.querySelector('nav').hidden=tab==='connect'||intent?.kind==='device';dialog.className=tab==='connect'?'connect-panel connect-entry':'connect-panel';
     dialog.querySelector('h2').textContent = heading; dialog.setAttribute('aria-label', heading);
     dialog.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'));
@@ -413,6 +419,9 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     local = await client.getLocalState();
     if (!local.accountId && bootstrapOnOpen && tab !== 'profiles' && tab !== 'connect') { try { await guardedIdentityMutation(null,(fresh,signal)=>client.bootstrap(label,{expectedState:activationSelection(fresh),signal})); } catch (error) { note(friendly(error)); } }
     await render();
-  })();
+  })().catch(error => {
+    if (stopped) return;
+    content.replaceChildren(); content.setAttribute('aria-busy', 'false'); note(friendly(error));
+  });
   return { element: dialog, close: () => dialog.close(), refresh: () => guard(render)() };
 }

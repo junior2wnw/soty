@@ -760,7 +760,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     };
     const loaded = () => { if (live()) { frameGeneration++; stopAssist(); } };
     frame.addEventListener('load', loaded, { signal: controller.signal });
-    const display = createAppRuntimeDisplay({ view, frame, origin: launcher.runtimeOrigin() ?? entry!.origin, isCurrent: live, readiness, onChange: state => {
+    const display = createAppRuntimeDisplay({ view, frame, origin: launcher.runtimeOrigin() ?? entry!.origin,
+      isCurrent: live, readiness, managedHost: Boolean(launcher.hostSession()), onChange: state => {
       if (!live()) return;
       runtime.setAttribute('aria-busy', String(state.busy));
       // Other account/renewal errors own their message and are never erased by
@@ -881,8 +882,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
           }),
           onState:(state,error)=>{
             if(!hostCurrent())return;
-            const remainingAdmission=state==='admitting'?(launcher.hostSession()?.hostSession.expiresAt??0)-serverNow():0;
-            runtimeDisplay?.waitForHostAdmission(remainingAdmission);
+            if(state==='confirmed')runtimeDisplay?.confirmHostTransport();
+            else{
+              const remainingAdmission=state==='admitting'?(launcher.hostSession()?.hostSession.expiresAt??0)-serverNow():0;
+              runtimeDisplay?.waitForHostAdmission(remainingAdmission);
+            }
             if(state==='denied'){void denyRuntime(error).catch(()=>{});return;}
             if(state==='pending'&&(!message.textContent||messageOwner==='runtime'||messageOwner==='renewal'))showMessage('Восстанавливаем соединение…','renewal');
             else if(state==='confirmed'&&messageOwner==='renewal')showMessage(runtimeDisplay?.snapshot().message??'','runtime');
