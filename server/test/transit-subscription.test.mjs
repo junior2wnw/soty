@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTransitAccess, loadTransitAccessConfiguration } from '../transit-access.js';
+import { profileFeaturesResponse } from './support/transit-features-fixture.mjs';
 
 const keys = generateKeyPairSync('ed25519'), deliveryKey = Buffer.alloc(32, 7);
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -24,6 +25,7 @@ async function fixture(t, options = {}) {
   const service = createTransitAccess({ configuration: base, now: () => 100_000,
     getConnect: () => ({ withActorAuthorityFence(actor, fn) { assert.ok(actors.includes(actor)); if (!active) throw Error('revoked'); return fn(); } }),
     async fetchImpl(url, request) {
+      const features = profileFeaturesResponse(url, request, keys.publicKey, deliveryKey); if (features) return features;
       const path = new URL(url).pathname, value = JSON.parse(request.body);
       requests.push({ path, value, body: request.body });
       assert.equal(request.redirect, 'error'); assert.equal(request.cache, 'no-store');
@@ -135,6 +137,10 @@ test('the actual Root HTTP app serves the private issuer capability route withou
   const issuer = createServer(async (req, res) => {
     const parts = []; for await (const part of req) parts.push(part);
     const body = Buffer.concat(parts).toString(), value = JSON.parse(body), management = req.url === '/v1/subscription/get';
+    if (req.url === '/v1/features') {
+      const response = profileFeaturesResponse('http://fixture.invalid/v1/features', { body, headers: req.headers }, keys.publicKey, deliveryKey);
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(await response.text()); return;
+    }
     const domain = management ? 'TRANSIT/SOTY-SUBSCRIPTION-GET/V1\0' : 'TRANSIT/SOTY-SUBSCRIPTION-FETCH/V1\0';
     assert.ok(verify(null, Buffer.concat([Buffer.from(domain), Buffer.from(body)]), keys.publicKey, Buffer.from(req.headers['x-transit-signature'], 'base64')));
     if (management) owner = value.accountId;

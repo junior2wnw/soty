@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createCipheriv, createHash, createPublicKey, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { createTransitAccess } from '../transit-access.js';
 import { signedFixture } from '../../modules/connect/test/support/direct-signed-fixture.mjs';
+import { profileFeaturesResponse } from './support/transit-features-fixture.mjs';
 
 const keys = generateKeyPairSync('ed25519'), profile = { outbounds: [{ type: 'vless', tag: 'entry' }], route: { final: 'entry' } };
 const deliveryKey = Buffer.alloc(32, 7);
@@ -20,7 +21,8 @@ function fixture(t, respond) {
   const service = createTransitAccess({ configuration, now: () => 100_000,
     getConnect: () => ({ withActorAuthorityFence(value, fn) { assert.equal(value, actor); if (!active) throw Error('revoked'); return fn(); } }),
     async fetchImpl(url, options) {
-      calls++; assert.equal(url, configuration.endpoint); assert.equal(options.redirect, 'error');
+      const features = profileFeaturesResponse(url, options, keys.publicKey, deliveryKey); if (features) return features;
+      calls++; assert.equal(url, new URL('/v1/profile/portable', configuration.endpoint).href); assert.equal(options.redirect, 'error');
       assert.ok(verify(null, Buffer.concat([Buffer.from('TRANSIT/SOTY-PROFILE/V1\0'), Buffer.from(options.body)]),
         createPublicKey(keys.privateKey), Buffer.from(options.headers['x-transit-signature'], 'base64')));
       const body = JSON.parse(options.body); assert.equal(body.accountId, actor.accountId); assert.equal(body.deviceId, actor.deviceId);
@@ -59,6 +61,7 @@ test('real Connect signatures bind two people and reject a foreign account selec
   const connect = signedFixture(t, [{ operations: new Set(['transit.access.profile']), executeAsync: request => bridge.executeAsync(request) }]);
   bridge = createTransitAccess({ configuration, getConnect: () => connect.service,
     async fetchImpl(_url, options) {
+      const features = profileFeaturesResponse(_url, options, keys.publicKey, deliveryKey); if (features) return features;
       const actor = JSON.parse(options.body), personal = { ...profile, owner: actor.accountId };
       return Response.json(encrypted({ schema: 'transit.personal-profile.v1', accountId: actor.accountId, coreVersion: '1.13.15', profile: personal,
         sha256: createHash('sha256').update(JSON.stringify(personal)).digest('hex'), mode: 'free-best-effort' }, options.body));
@@ -94,6 +97,7 @@ test('usage is an opt-in signed owner read, with exact byte counts and no profil
   const usage = { uploadBytes: '9007199254740993', downloadBytes: '42', freshEntries: 1, expectedEntries: 2, latestObservationAt: 100_000 };
   bridge = createTransitAccess({ configuration: { ...configuration, usageEnabled: true }, getConnect: () => connect.service,
     async fetchImpl(url, options) {
+      const features = profileFeaturesResponse(url, options, keys.publicKey, deliveryKey, { usage: true }); if (features) return features;
       calls++;
       assert.equal(url, 'http://fixture.invalid/v1/usage');
       const actor = JSON.parse(options.body);

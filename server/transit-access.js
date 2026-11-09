@@ -9,6 +9,8 @@ const usageDelivery = Buffer.from('TRANSIT/USAGE-DELIVERY/V1\0');
 const subscriptionDelivery = Buffer.from('TRANSIT/SUBSCRIPTION-DELIVERY/V1\0');
 const subscriptionProfileDelivery = Buffer.from('TRANSIT/SUBSCRIPTION-PROFILE-DELIVERY/V1\0');
 const subscriptionFetchRequest = Buffer.from('TRANSIT/SOTY-SUBSCRIPTION-FETCH/V1\0');
+const featuresRequest = Buffer.from('TRANSIT/SOTY-PROFILE-FEATURES/V1\0');
+const featuresDelivery = Buffer.from('TRANSIT/PROFILE-FEATURES-DELIVERY/V1\0');
 const subscriptionPrefix = '/transit/subscriptions/';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const deny = code => { throw Object.assign(new Error(code), { code }); };
@@ -42,7 +44,7 @@ export function loadTransitAccessConfiguration(env = {}, { dataDir } = {}) {
     const subscriptionBaseUrl = value.subscriptionBaseUrl;
     if (subscriptionBaseUrl !== undefined && subscriptionBaseUrl !== issuer.origin + '/transit/subscriptions') throw Error();
     return Object.freeze({ endpoint: url.href, issuer: issuer.origin, key, deliveryKey, appId: value.appId,
-      usageEnabled: value.usageEnabled === true, subscriptionBaseUrl });
+      usageEnabled: value.usageEnabled, subscriptionBaseUrl });
   } catch (error) { if (!explicit && error.code === 'ENOENT') return null; deny('transit_access_configuration_invalid'); }
   finally { if (fd !== undefined) closeSync(fd); }
 }
@@ -60,6 +62,7 @@ function validUsage(value) {
  * device can select another person's profile. Lost replies are safe to retry. */
 export function createTransitAccess({ configuration, getConnect, fetchImpl = fetch, now = Date.now }) {
   let closed = false, inFlight = 0, windowStarted = now(), requests = 0;
+  let featurePromise, featureValue = null, featureAt = 0, featureTtl = 0;
   const buckets = new Map(), abort = new AbortController();
   const current = (actor, args) => {
     if (closed) deny('transit_access_unavailable');
@@ -104,6 +107,23 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
   };
   const validProfile = value => value?.coreVersion === '1.13.15' && value.profile && typeof value.profile === 'object'
     && !Array.isArray(value.profile) && sha256(JSON.stringify(value.profile)) === value.sha256;
+  const features = async () => {
+    if (!configuration || closed) return null;
+    if (featureTtl && now() >= featureAt && now() - featureAt < featureTtl) return featureValue;
+    if (!featurePromise) featurePromise = (async () => {
+      try {
+        const value = await exchange('/v1/features', { schema: 'soty.transit-profile-features.v1' }, featuresRequest, featuresDelivery,
+          'transit.encrypted-profile-features.v1', () => { if (closed) deny('transit_access_unavailable'); }, true,
+          AbortSignal.any([abort.signal, AbortSignal.timeout(2500)]));
+        if (!exact(value, ['schema', 'portableProfiles', 'subscriptions', 'usage', 'topology']) || value.schema !== 'transit.profile-features.v1'
+          || ['portableProfiles', 'subscriptions', 'usage', 'topology'].some(name => typeof value[name] !== 'boolean')) deny('transit_access_unavailable');
+        featureValue = Object.freeze(value); featureTtl = 30_000;
+      } catch { featureValue = null; featureTtl = 2000; }
+      featureAt = now(); return featureValue;
+    })();
+    try { return await featurePromise; } finally { featurePromise = null; }
+  };
+  const subscriptionBase = configuration?.subscriptionBaseUrl || (configuration ? configuration.issuer + '/transit/subscriptions' : null);
   const limited = tokenHash => {
     const time = now();
     if (time < windowStarted || time - windowStarted >= 60_000) { windowStarted = time; requests = 0; buckets.clear(); }
@@ -120,14 +140,15 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
       'transit.access.subscription', 'transit.access.subscription.rotate', 'transit.access.subscription.revoke']), maxResultBytes: 256_000,
     async executeAsync({ op, actor, args }) {
       current(actor, args);
+      const available = await features(); current(actor, args);
       if (op === 'transit.access.status') return { enabled: !!configuration, appId: configuration?.appId ?? null,
-        usageEnabled: configuration?.usageEnabled === true, subscriptionEnabled: !!configuration?.subscriptionBaseUrl };
+        usageEnabled: configuration?.usageEnabled !== false && available?.usage === true, subscriptionEnabled: available?.subscriptions === true };
       const usage = op === 'transit.access.usage', actions = new Map([['transit.access.subscription', 'get'],
         ['transit.access.subscription.rotate', 'rotate'], ['transit.access.subscription.revoke', 'revoke']]), action = actions.get(op);
-      if (!configuration || (usage ? configuration.usageEnabled !== true
-        : action ? !configuration.subscriptionBaseUrl : op !== 'transit.access.profile')) deny('transit_access_unavailable');
+      if (!configuration || (usage ? configuration.usageEnabled === false || available?.usage !== true
+        : action ? available?.subscriptions !== true : op !== 'transit.access.profile')) deny('transit_access_unavailable');
       try {
-        const value = await exchange(action ? `/v1/subscription/${action}` : usage ? '/v1/usage' : '/v1/profile',
+        const value = await exchange(action ? `/v1/subscription/${action}` : usage ? '/v1/usage' : available?.portableProfiles ? '/v1/profile/portable' : '/v1/profile',
           { schema: action ? `soty.transit-subscription-${action}.v1` : usage ? 'soty.transit-usage-request.v1' : 'soty.transit-access-request.v1',
             accountId: actor.accountId, deviceId: actor.deviceId },
           action ? Buffer.from(`TRANSIT/SOTY-SUBSCRIPTION-${action.toUpperCase()}/V1\0`) : usage ? usageRequest : profileRequest,
@@ -138,7 +159,7 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
           if (!exact(value, ['schema', 'accountId', 'revoked', 'token']) || value.schema !== 'transit.personal-subscription.v1'
             || value.accountId !== actor.accountId || typeof value.revoked !== 'boolean'
             || (value.revoked ? value.token !== null : typeof value.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value.token))) deny('transit_access_unavailable');
-          return { subscription: { revoked: value.revoked, url: value.revoked ? null : `${configuration.subscriptionBaseUrl}/${value.token}/profile.json` } };
+          return { subscription: { revoked: value.revoked, url: value.revoked ? null : `${subscriptionBase}/${value.token}/profile.json` } };
         }
         if (usage) {
           if (!exact(value, ['schema', 'accountId', 'usage']) || value.schema !== 'transit.personal-usage.v1'
@@ -166,11 +187,12 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
         res.end(JSON.stringify(value));
       };
       const match = /^\/transit\/subscriptions\/([A-Za-z0-9_-]{43})\/profile\.json$/.exec(req.url);
-      if (req.method !== 'GET' || !match || closed || !configuration?.subscriptionBaseUrl) { reply(404, { error: 'not_found' }); return; }
+      if (req.method !== 'GET' || !match || closed || !configuration) { reply(404, { error: 'not_found' }); return; }
       const tokenHash = sha256(match[1]);
       if (limited(tokenHash)) { reply(429, { error: 'rate_limited' }); return; }
       inFlight++;
       try {
+        if ((await features())?.subscriptions !== true) { reply(503, { error: 'subscription_unavailable' }); return; }
         const value = await exchange('/v1/subscription/profile', { schema: 'soty.transit-subscription-fetch.v1', tokenHash },
           subscriptionFetchRequest, subscriptionProfileDelivery, 'transit.encrypted-subscription-profile.v1',
           () => { if (closed) deny('transit_access_unavailable'); });

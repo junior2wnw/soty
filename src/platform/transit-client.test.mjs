@@ -224,6 +224,22 @@ test('portable export supports the object form of the default domain resolver', 
   assert.deepEqual(f.payload, before); f.close();
 });
 
+test('portable FakeIP export preserves domains until the selected Exit resolves them', async () => {
+  const f = fixture({ paired: false });
+  const profile = f.payload.transitClient.profile;
+  profile.dns = { servers: [{ type: 'fakeip', tag: 'transit-fakeip', inet4_range: '198.18.0.0/15' }] };
+  profile.route = { final: 'entry', default_domain_resolver: 'exit', rules: [
+    { action: 'sniff' }, { protocol: 'dns', action: 'hijack-dns' },
+    { network: 'udp', ip_is_private: true, action: 'reject' }] };
+  const before = structuredClone(profile);
+  await f.open(); f.button('Скачать профиль sing-box').click();
+  const downloaded = JSON.parse(await f.downloads[0].text());
+  assert.deepEqual(downloaded.route, before.route);
+  assert.deepEqual(downloaded.dns, before.dns);
+  assert.deepEqual(f.payload.transitClient.profile, before);
+  f.close();
+});
+
 test('a delayed new profile cannot be saved after account A-B-A', async () => {
   const f = fixture({ paired: false, fresh: true, issuing: true }); await f.open();
   const held = f.holdProfile(); f.button('Получить профиль sing-box').click(); await f.settle(() => held.entered.settled);

@@ -7,11 +7,18 @@ Transit usage/fresh-download changes from 454ef35a and f577b564 are included as
 small additive code in their original modules.
 
 Enable only after updating the private issuer and checking the current ingress
-logger. Existing Root config is backward compatible. Add the optional field
-subscriptionBaseUrl with the exact value `<issuer-origin>/transit/subscriptions`
-to private DATA_DIR/transit-access.json. It must use the existing HTTPS issuer
-origin, without a trailing slash. Keep the issuer internal, existing pool,
-claims, signing/delivery keys, mounts, app ID and network listeners unchanged.
+logger. Keep the old six-field private DATA_DIR/transit-access.json unchanged:
+new Root negotiates the private issuer's signed, request-bound AES-GCM features
+without allocating a claim and derives the HTTPS subscription base from the
+existing issuer origin. Authenticated features cache for 30 seconds through one
+shared promise; old/unavailable issuers retry after 2 seconds under a 2.5-second
+negotiation deadline. Remote GET lazily negotiates after Root restart. Existing
+explicit optional settings retain their overrides, including usageEnabled:false.
+Usage is shown only when the actual issuer reports a configured reader; the
+private old config needs no extra fields and remains readable by the rollback
+image. Old issuers retain signed local file delivery with Remote/usage disabled.
+Keep the issuer internal, existing pool, claims, signing/delivery keys, mounts,
+app ID and network listeners unchanged.
 
 The public GET route runs before monitoring/session collectors and never emits
 the token in a diagnostic. If actual Caddy access logging is active, exclude

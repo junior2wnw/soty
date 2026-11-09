@@ -48,6 +48,7 @@ async function localTransit(body?: Record<string, unknown>): Promise<TransitRepl
 function downloadProfile(profile: unknown): void {
   const portable = structuredClone(profile) as {
     inbounds?: Record<string, unknown>[];
+    dns?: { servers?: Record<string, unknown>[] };
     route?: { default_domain_resolver?: string | { server?: string }; rules?: Record<string, unknown>[] };
   };
   for (const inbound of portable.inbounds || []) {
@@ -58,7 +59,8 @@ function downloadProfile(profile: unknown): void {
   const route = portable.route;
   const resolver = route?.default_domain_resolver;
   const resolverTag = typeof resolver === 'string' ? resolver : resolver?.server;
-  if (typeof resolverTag === 'string' && resolverTag && Array.isArray(route?.rules)
+  const preservesDomain = portable.dns?.servers?.some(server => server.type === 'fakeip');
+  if (!preservesDomain && typeof resolverTag === 'string' && resolverTag && Array.isArray(route?.rules)
     && !route.rules.some(rule => rule.action === 'resolve' && rule.network === 'udp')) {
     // Resolve through Transit before URLTest's UDP adapter and the IP deny rules.
     // Pinned cores otherwise lose unresolved UDP destinations in outbound groups.
