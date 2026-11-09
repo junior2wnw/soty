@@ -2135,13 +2135,13 @@ return { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSetting
 })();
 // bundled connector module: ./agent-modules/transit-client.mjs
 const { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease } = (() => {
-const transitClientVersion = '1.13.15';
+const transitClientVersion = '1.14.4';
 const transitClientWindowsRelease = Object.freeze({
   version: transitClientVersion, platform: 'win32', arch: 'x64',
-  sha256: '599b296f6e57511d36d2a6f3011aed1a86fa98418578bbb06bd6dc241b5d8877',
-  binarySha256: '4db8218dea131668ccd5e0b32e773e916a37be730e655b176e0d3a930276cbe7',
-  executable: 'sing-box-1.13.15-windows-amd64/sing-box.exe',
-  urls: ['https://github.com/SagerNet/sing-box/releases/download/v1.13.15/sing-box-1.13.15-windows-amd64.zip'],
+  sha256: '99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df',
+  binarySha256: '8f30682ee198855440d2a7fe070d5d3653793b2d01bb8c85eea88f93bbe7c8b9',
+  executable: 'sing-box-1.14.4-windows-amd64/sing-box.exe',
+  urls: ['https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip'],
 });
 
 /** The installer establishes this authority after OS consent. Public health and
@@ -2172,7 +2172,15 @@ function normalizeTransitClientProfile(input) {
   const deny = () => { throw new Error('transit-profile-invalid'); };
   if (!value || !Array.isArray(value.outbounds) || value.outbounds.length < 1 || value.outbounds.length > 32
     || !value.dns?.servers?.length || !value.route?.final || value.route.rule_set?.length
-    || value.experimental || value.services || value.endpoints || value.ntp || value.certificate) deny();
+    || value.services || value.endpoints || value.ntp || value.certificate) deny();
+  // Only persistent FakeIP mappings are portable. Never import controllers,
+  // arbitrary file paths, APIs or other experimental capabilities.
+  if (value.experimental !== undefined) {
+    const experimental = value.experimental, cache = experimental?.cache_file;
+    if (!experimental || Object.keys(experimental).join(',') !== 'cache_file' || !cache
+      || Object.keys(cache).sort().join(',') !== 'enabled,store_fakeip'
+      || cache.enabled !== true || cache.store_fakeip !== true) deny();
+  }
   const tags = new Set();
   for (const row of value.outbounds) {
     if (!row.tag || tags.has(row.tag) || !['vless', 'hysteria2', 'urltest', 'selector'].includes(row.type)) deny();
@@ -3183,7 +3191,7 @@ function localAppsHeaders(value, direction) {
   const allow = new Set(direction === 'response' ? ['content-type', 'content-encoding', 'content-language', 'content-disposition', 'etag', 'last-modified', 'accept-ranges', 'content-range', 'vary']
     : direction === 'ws-request' ? ['sec-websocket-key', 'sec-websocket-version', 'sec-websocket-protocol', 'sec-websocket-extensions', 'origin']
       : direction === 'ws-response' ? ['sec-websocket-accept', 'sec-websocket-protocol', 'sec-websocket-extensions']
-        : ['accept', 'accept-language', 'content-type', 'content-encoding', 'if-none-match', 'if-modified-since', 'range', 'if-range', 'idempotency-key']);
+        : ['accept', 'accept-language', 'accept-encoding', 'content-type', 'content-encoding', 'if-none-match', 'if-modified-since', 'range', 'if-range', 'idempotency-key']);
   const result = {}; let bytes = 0;
   for (const [key, raw] of Object.entries(value || {})) {
     if (!allow.has(key.toLowerCase()) || typeof raw !== 'string' || /[\r\n\u0000]/u.test(raw)) continue;
@@ -3461,7 +3469,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.18";
+const connectorVersion = "1.4.20";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

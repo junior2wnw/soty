@@ -10,7 +10,7 @@ const configuration={endpoint:'http://fixture.invalid/v1/profile',issuer:'https:
 const status=service=>service.executeAsync({op:'transit.access.status',actor,args:{expectedAccountId:actor.accountId}});
 const encrypted=(profile,body)=>{
  const nonce=randomBytes(12),c=createCipheriv('aes-256-gcm',deliveryKey,nonce);c.setAAD(Buffer.concat([Buffer.from('TRANSIT/SUBSCRIPTION-PROFILE-DELIVERY/V1\0'),Buffer.from(body)]));
- const value={schema:'transit.subscription-profile.v1',coreVersion:'1.13.15',profile,sha256:createHash('sha256').update(JSON.stringify(profile)).digest('hex')};
+ const value={schema:'transit.subscription-profile.v1',coreVersion:'1.14.4',profile,sha256:createHash('sha256').update(JSON.stringify(profile)).digest('hex')};
  const bytes=Buffer.concat([c.update(JSON.stringify(value)),c.final()]);return Response.json({schema:'transit.encrypted-subscription-profile.v1',nonce:nonce.toString('base64'),tag:c.getAuthTag().toString('base64'),ciphertext:bytes.toString('base64')});
 };
 function fixture(t,{flags={},configuration:changes={},hold,old=false,invalid=false}={}){
@@ -28,7 +28,7 @@ function fixture(t,{flags={},configuration:changes={},hold,old=false,invalid=fal
 test('a shared bounded feature promise negotiates old six-field config without claims or duplicate requests',async t=>{
  let release;const hold=new Promise(resolve=>{release=resolve});const f=fixture(t,{hold,flags:{usage:true}});
  const a=status(f.service),b=status(f.service);await new Promise(resolve=>setImmediate(resolve));assert.equal(f.calls(),1);release();
- for(const result of await Promise.all([a,b]))assert.deepEqual(result,{enabled:true,appId:configuration.appId,usageEnabled:true,subscriptionEnabled:true});
+ for(const result of await Promise.all([a,b]))assert.deepEqual(result,{enabled:true,appId:configuration.appId,usageEnabled:true,subscriptionEnabled:true,minimumCoreVersion:'1.14.4'});
  f.advance(29_999);await status(f.service);assert.equal(f.calls(),1);f.advance(2);await status(f.service);assert.equal(f.calls(),2);assert.notEqual(f.nonces[0],f.nonces[1]);
  const disabled=fixture(t,{flags:{usage:true},configuration:{usageEnabled:false}});assert.equal((await status(disabled.service)).usageEnabled,false);
 });
@@ -36,7 +36,7 @@ test('an old or unauthenticated issuer disables new features and is rechecked af
  const f=fixture(t,{old:true});const result=await status(f.service);assert.equal(result.enabled,true);assert.equal(result.subscriptionEnabled,false);assert.equal(result.usageEnabled,false);
  f.upgrade();await status(f.service);assert.equal(f.calls(),1);f.advance(2001);assert.equal((await status(f.service)).subscriptionEnabled,true);assert.equal(f.calls(),2);
  const tampered=fixture(t,{invalid:true,flags:{usage:true}});assert.equal((await status(tampered.service)).usageEnabled,false);
- for(const flags of [{usage:'yes'},{extra:true},{schema:'foreign'}]){const wrong=fixture(t,{flags});assert.equal((await status(wrong.service)).subscriptionEnabled,false)}
+ for(const flags of [{usage:'yes'},{extra:true},{schema:'foreign'},{portableCoreVersion:'1.13.15'}]){const wrong=fixture(t,{flags});assert.equal((await status(wrong.service)).subscriptionEnabled,false)}
 });
 test('owner revocation during feature negotiation suppresses the original actor result',async t=>{
  let release;const hold=new Promise(resolve=>{release=resolve});const f=fixture(t,{hold});const pending=status(f.service);

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { createTransitClientRuntime, executeTransitClientAction, normalizeTransitClientProfile, transitCheckedProfile, transitUnderlayProfile } from './agent-modules/transit-client.mjs';
+import { createTransitClientRuntime, executeTransitClientAction, normalizeTransitClientProfile, transitCheckedProfile, transitUnderlayProfile, transitClientWindowsRelease } from './agent-modules/transit-client.mjs';
 
 const profile = () => ({
   inbounds: [{ type: 'tun', tag: 'existing-phone' }],
@@ -160,4 +160,27 @@ test('public device metadata and an installer hash cannot grant start or export 
   assert.equal(calls, 0);
   assert.deepEqual(await executeTransitClientAction({ action: 'authorize', deviceId: 'owned-machine', controlToken: token }, authority), { runtime: { active: false } });
   assert.equal(calls, 1);
+});
+
+
+test('portable FakeIP cache policy preserves domains and denies arbitrary cache paths or controllers', async () => {
+  const modern = profile();
+  modern.dns.servers.push({ type: 'fakeip', tag: 'fakeip', inet4_range: '198.18.0.0/15' });
+  modern.experimental = { cache_file: { enabled: true, store_fakeip: true } };
+  const before = JSON.stringify(modern), normalized = normalizeTransitClientProfile(modern);
+  assert.deepEqual(normalized.experimental, modern.experimental);
+  assert.deepEqual(normalized.dns, modern.dns); assert.equal(JSON.stringify(modern), before);
+  for (const experimental of [null, {}, { cache_file: {} }, { cache_file: { enabled: true, store_fakeip: false } },
+    { cache_file: { enabled: true, store_fakeip: true, path: 'outside.db' } },
+    { cache_file: { enabled: true, store_fakeip: true }, clash_api: {} }]) {
+    assert.throws(() => normalizeTransitClientProfile({ ...modern, experimental }), /transit-profile-invalid/u);
+  }
+  const f = fixture(); await f.runtime.configure(modern);
+  assert.equal((await f.runtime.status()).version, '1.14.4');
+  assert.deepEqual(f.stored.experimental, modern.experimental); assert.equal(f.spawns, 0);
+  await f.runtime.configure(profile());
+  assert.equal(f.stored.outbounds[0].uuid, modern.outbounds[0].uuid); assert.equal(f.spawns, 0);
+  assert.equal(transitClientWindowsRelease.version, '1.14.4');
+  assert.equal(transitClientWindowsRelease.sha256, '99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df');
+  assert.equal(transitClientWindowsRelease.binarySha256, '8f30682ee198855440d2a7fe070d5d3653793b2d01bb8c85eea88f93bbe7c8b9');
 });

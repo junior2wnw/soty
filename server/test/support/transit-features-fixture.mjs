@@ -10,6 +10,6 @@ export function profileFeaturesResponse(url, request, publicKey, deliveryKey, ch
     Buffer.from(request.headers['x-transit-signature'],'base64')));
   const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',deliveryKey,nonce);
   cipher.setAAD(Buffer.concat([Buffer.from('TRANSIT/PROFILE-FEATURES-DELIVERY/V1\0'),Buffer.from(request.body)]));
-  const bytes=Buffer.concat([cipher.update(JSON.stringify({schema:'transit.profile-features.v1',portableProfiles:true,subscriptions:true,usage:false,topology:false,...changes})),cipher.final()]);
+  const bytes=Buffer.concat([cipher.update(JSON.stringify({schema:'transit.profile-features.v1',portableProfiles:true,portableCoreVersion:'1.14.4',subscriptions:true,usage:false,topology:false,...changes})),cipher.final()]);
   return Response.json({schema:'transit.encrypted-profile-features.v1',nonce:nonce.toString('base64'),tag:cipher.getAuthTag().toString('base64'),ciphertext:bytes.toString('base64')});
 }

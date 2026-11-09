@@ -21,7 +21,7 @@ import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
 import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.19";
+const connectorVersion = "1.4.20";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

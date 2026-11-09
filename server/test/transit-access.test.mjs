@@ -27,7 +27,7 @@ function fixture(t, respond) {
         createPublicKey(keys.privateKey), Buffer.from(options.headers['x-transit-signature'], 'base64')));
       const body = JSON.parse(options.body); assert.equal(body.accountId, actor.accountId); assert.equal(body.deviceId, actor.deviceId);
       return respond?.({ revoke() { active = false; }, body, rawBody: options.body }) ?? Response.json(encrypted({ schema: 'transit.personal-profile.v1', accountId: actor.accountId,
-        coreVersion: '1.13.15', profile, sha256, mode: 'free-best-effort' }, options.body));
+        coreVersion: '1.14.4', profile, sha256, mode: 'free-best-effort' }, options.body));
     } });
   t.after(() => service.close());
   return { actor, args: { expectedAccountId: actor.accountId }, service, calls: () => calls };
@@ -50,8 +50,8 @@ test('revocation while the issuer replies suppresses the profile', async t => {
   await assert.rejects(f.service.executeAsync({ op: 'transit.access.profile', actor: f.actor, args: f.args }), /revoked/);
 });
 test('wrong account, altered bytes, oversized body and issuer outage disclose no profile', async t => {
-  for (const value of [{ accountId: 'account-B', sha256 }, { accountId: 'account-A', sha256: '0'.repeat(64) }, null]) {
-    const f = fixture(t, ({ rawBody }) => value ? Response.json(encrypted({ schema: 'transit.personal-profile.v1', coreVersion: '1.13.15', mode: 'free-best-effort', profile, ...value }, rawBody)) : new Response('x'.repeat(400_001)));
+  for (const value of [{ accountId: 'account-A', sha256, coreVersion: '1.13.15' }, { accountId: 'account-A', sha256, coreVersion: '9.0.0' }, { accountId: 'account-B', sha256 }, { accountId: 'account-A', sha256: '0'.repeat(64) }, null]) {
+    const f = fixture(t, ({ rawBody }) => value ? Response.json(encrypted({ schema: 'transit.personal-profile.v1', coreVersion: '1.14.4', mode: 'free-best-effort', profile, ...value }, rawBody)) : new Response('x'.repeat(400_001)));
     await assert.rejects(f.service.executeAsync({ op: 'transit.access.profile', actor: f.actor, args: f.args }), { code: 'transit_access_unavailable' });
   }
 });
@@ -63,7 +63,7 @@ test('real Connect signatures bind two people and reject a foreign account selec
     async fetchImpl(_url, options) {
       const features = profileFeaturesResponse(_url, options, keys.publicKey, deliveryKey); if (features) return features;
       const actor = JSON.parse(options.body), personal = { ...profile, owner: actor.accountId };
-      return Response.json(encrypted({ schema: 'transit.personal-profile.v1', accountId: actor.accountId, coreVersion: '1.13.15', profile: personal,
+      return Response.json(encrypted({ schema: 'transit.personal-profile.v1', accountId: actor.accountId, coreVersion: '1.14.4', profile: personal,
         sha256: createHash('sha256').update(JSON.stringify(personal)).digest('hex'), mode: 'free-best-effort' }, options.body));
     } });
   t.after(() => bridge.close());
@@ -77,7 +77,7 @@ test('real Connect signatures bind two people and reject a foreign account selec
 test('an intercepted, tampered or replayed response cannot supply a profile', async t => {
   for (const mode of ['other-request', 'tampered']) {
     const f = fixture(t, ({ rawBody }) => {
-      const value = encrypted({ schema: 'transit.personal-profile.v1', accountId: 'account-A', coreVersion: '1.13.15', profile, sha256, mode: 'free-best-effort' }, mode === 'other-request' ? rawBody + ' ' : rawBody);
+      const value = encrypted({ schema: 'transit.personal-profile.v1', accountId: 'account-A', coreVersion: '1.14.4', profile, sha256, mode: 'free-best-effort' }, mode === 'other-request' ? rawBody + ' ' : rawBody);
       if (mode === 'tampered') value.tag = Buffer.alloc(16).toString('base64');
       return Response.json(value);
     });

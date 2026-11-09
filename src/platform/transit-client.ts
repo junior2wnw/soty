@@ -74,6 +74,12 @@ function downloadProfile(profile: unknown): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+function supportsPortableCore(version?: string): boolean {
+  if (!version || !/^\d+\.\d+\.\d+$/u.test(version)) return false;
+  const [major = 0, minor = 0, patch = 0] = version.split('.').map(Number);
+  return major > 1 || (major === 1 && (minor > 14 || (minor === 14 && patch >= 4)));
+}
+
 export async function openTransitClient(options: { openSharedInternet?: () => void } = {}): Promise<void> {
   let unobserve = () => {};
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -253,7 +259,9 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     }, 'Добавьте скачанный файл в sing-box.'), false, extra);
     if (!mobile && local?.supported && state && authorized) {
       const shouldStop = state.running || state.phase === 'unknown';
-      if (shouldStop || state.configured || saved) actionButton(shouldStop ? 'Выключить' : 'Включить', () => void perform(async () => {
+      const needsNewCore = (saved as any)?.dns?.servers?.some((server: any) => server.type === 'fakeip') === true;
+      const agentReady = supportsPortableCore(state.version);
+      if (shouldStop || state.configured || (saved && (!needsNewCore || agentReady))) actionButton(shouldStop ? 'Выключить' : 'Включить', () => void perform(async () => {
         if (!shouldStop && !state.configured) {
           if (!saved) throw new Error('transit-profile-required');
           await agentAction({ action: 'import', profile: saved });
@@ -266,6 +274,7 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
         const exported = await agentAction({ action: 'export' });
         await saveTransitAccountProfile(accountClient, owner, normalizeTransitClientProfile(exported.profile));
       }, 'Доступ сохранён в зашифрованном профиле Сот. На телефоне откройте тот же профиль.'));
+      if (needsNewCore && !agentReady) body.append(node('p', 'Этот профиль требует sing-box 1.14.4 или новее. Откройте его в приложении sing-box; агент на этом компьютере использует прежнее ядро.', 'transit-client-help'));
     } else if (!mobile) {
       body.append(node('p', local ? 'Чтобы включать VPN на этом компьютере через агент Сот, разрешите управление. Для приложения sing-box достаточно скачать профиль.'
         : 'Для управления VPN через Соты установите агент. Скачать профиль и подключиться в sing-box можно без него.'));
@@ -281,7 +290,8 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
         try { profile = normalizeTransitClientProfile(JSON.parse(await chosen.text())); }
         catch { throw new Error('transit-profile-invalid'); }
         await saveTransitAccountProfile(accountClient, owner, profile);
-        if ((await current()) && local?.supported && authorized) await agentAction({ action: 'import', profile });
+        if ((await current()) && local?.supported && authorized && (!(profile as any)?.dns?.servers?.some((server: any) => server.type === 'fakeip') || supportsPortableCore(local.runtime?.version)))
+          await agentAction({ action: 'import', profile });
       }, 'Существующий доступ добавлен. Его можно использовать на ваших устройствах.');
     });
     const importButton = actionButton(saved ? 'Заменить сохранённый профиль' : 'Добавить существующий профиль', () => file.click());
@@ -293,6 +303,7 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
       ? 'Добавьте ссылку как удалённый профиль (Remote) и включите автоматическое обновление в sing-box. Если кнопка не открывает приложение, скопируйте ссылку. Агент Сот не требуется.'
       : 'Установите sing-box, добавьте локальный профиль из файла transit.json и включите его. Для скачивания профиля агент не требуется.', 'transit-client-help'));
     if (subscriptionEnabled) body.append(node('p', 'Ранее добавленный локальный файл сам не обновится. Один раз добавьте удалённый профиль по ссылке: далее sing-box будет получать изменения сети автоматически. Файл остаётся запасным способом подключения.', 'transit-client-help'));
+    if (subscriptionEnabled) body.append(node('p', 'Для обновляемого профиля используйте sing-box 1.14.4 или новее.', 'transit-client-help'));
     const clients = node('a', 'Установить sing-box'); clients.href = 'https://sing-box.sagernet.org/clients/'; clients.target = '_blank'; clients.rel = 'noopener noreferrer'; body.append(clients);
     body.append(node('p', 'Файл содержит ваш доступ к интернету. Соты хранят его в зашифрованном хранилище вашего профиля.', 'transit-client-help'));
     if (subscriptionEnabled) body.append(node('p', 'Ссылка тоже даёт доступ к вашему профилю: передавайте её только своим устройствам. Замена или отключение ссылки прекращает обновления по старой ссылке, но не отзывает уже скачанный доступ.', 'transit-client-help'));

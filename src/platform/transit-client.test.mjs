@@ -313,3 +313,21 @@ test('a delayed subscription cannot appear or be copied after the owning dialog 
   assert.ok(!f.links.some(link => link.textContent === 'Добавить в sing-box'));
   assert.ok(!JSON.stringify(f.payload).includes('/transit/subscriptions/'));
 });
+
+
+test('a FakeIP profile requires the corrected core for agent import while old local access stays usable', async () => {
+  for (const version of ['1.13.15', '1.14.3', '1.14.4', '1.15.0']) {
+    const f = fixture(); f.state.version = version;
+    f.payload.transitClient.profile.dns.servers.push({ type: 'fakeip', tag: 'fakeip', inet4_range: '198.18.0.0/15' });
+    f.payload.transitClient.profile.experimental = { cache_file: { enabled: true, store_fakeip: true } };
+    await f.open();
+    if (['1.13.15', '1.14.3'].includes(version)) {
+      assert.throws(() => f.button('Включить'), /missing actual/); await f.settle();
+      assert.equal(f.calls.filter(call => call.action === 'import').length, 0);
+    } else {
+      f.button('Включить').click(); await f.settle(() => f.state.active);
+      assert.equal(f.calls.filter(call => call.action === 'import').length, 1);
+    }
+    f.close();
+  }
+});

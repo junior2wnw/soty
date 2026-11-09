@@ -41,7 +41,7 @@ async function fixture(t, options = {}) {
         if (!owner) return Response.json({ error: 'access_subscription_not_found' }, { status: 404 });
         const profile = { outbounds: [{ type: 'vless', uuid: owner, tag: 'entry' }], route: { final: 'entry' }, generation };
         profiles.set(owner, profile);
-        return Response.json(envelope({ schema: 'transit.subscription-profile.v1', coreVersion: '1.13.15', profile, sha256: hash(JSON.stringify(profile)) }, request.body,
+        return Response.json(envelope({ schema: 'transit.subscription-profile.v1', coreVersion: '1.14.4', profile, sha256: hash(JSON.stringify(profile)) }, request.body,
           'TRANSIT/SUBSCRIPTION-PROFILE-DELIVERY/V1\0', 'transit.encrypted-subscription-profile.v1'));
       }
       let token = tokens.get(value.accountId);
@@ -147,7 +147,7 @@ test('the actual Root HTTP app serves the private issuer capability route withou
     else assert.equal(value.tokenHash, hash(token));
     const profile = { outbounds: [{ type: 'vless', uuid: owner, tag: 'entry' }], route: { final: 'entry' } };
     const reply = management ? { schema: 'transit.personal-subscription.v1', accountId: value.accountId, revoked: false, token }
-      : { schema: 'transit.subscription-profile.v1', coreVersion: '1.13.15', profile, sha256: hash(JSON.stringify(profile)) };
+      : { schema: 'transit.subscription-profile.v1', coreVersion: '1.14.4', profile, sha256: hash(JSON.stringify(profile)) };
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(envelope(reply, body, management ? 'TRANSIT/SUBSCRIPTION-DELIVERY/V1\0' : 'TRANSIT/SUBSCRIPTION-PROFILE-DELIVERY/V1\0',
       management ? 'transit.encrypted-subscription.v1' : 'transit.encrypted-subscription-profile.v1')));

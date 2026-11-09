@@ -105,7 +105,7 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
       return JSON.parse(plaintext);
     } finally { try { await response?.body?.cancel(); } catch {} }
   };
-  const validProfile = value => value?.coreVersion === '1.13.15' && value.profile && typeof value.profile === 'object'
+  const validProfile = value => ['1.13.15', '1.14.4'].includes(value?.coreVersion) && value.profile && typeof value.profile === 'object'
     && !Array.isArray(value.profile) && sha256(JSON.stringify(value.profile)) === value.sha256;
   const features = async () => {
     if (!configuration || closed) return null;
@@ -115,7 +115,8 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
         const value = await exchange('/v1/features', { schema: 'soty.transit-profile-features.v1' }, featuresRequest, featuresDelivery,
           'transit.encrypted-profile-features.v1', () => { if (closed) deny('transit_access_unavailable'); }, true,
           AbortSignal.any([abort.signal, AbortSignal.timeout(2500)]));
-        if (!exact(value, ['schema', 'portableProfiles', 'subscriptions', 'usage', 'topology']) || value.schema !== 'transit.profile-features.v1'
+        if (!exact(value, ['schema', 'portableProfiles', 'portableCoreVersion', 'subscriptions', 'usage', 'topology']) || value.schema !== 'transit.profile-features.v1'
+          || value.portableCoreVersion !== '1.14.4'
           || ['portableProfiles', 'subscriptions', 'usage', 'topology'].some(name => typeof value[name] !== 'boolean')) deny('transit_access_unavailable');
         featureValue = Object.freeze(value); featureTtl = 30_000;
       } catch { featureValue = null; featureTtl = 2000; }
@@ -142,7 +143,8 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
       current(actor, args);
       const available = await features(); current(actor, args);
       if (op === 'transit.access.status') return { enabled: !!configuration, appId: configuration?.appId ?? null,
-        usageEnabled: configuration?.usageEnabled !== false && available?.usage === true, subscriptionEnabled: available?.subscriptions === true };
+        usageEnabled: configuration?.usageEnabled !== false && available?.usage === true, subscriptionEnabled: available?.subscriptions === true,
+        minimumCoreVersion: available?.portableProfiles ? available.portableCoreVersion : '1.13.15' };
       const usage = op === 'transit.access.usage', actions = new Map([['transit.access.subscription', 'get'],
         ['transit.access.subscription.rotate', 'rotate'], ['transit.access.subscription.revoke', 'revoke']]), action = actions.get(op);
       if (!configuration || (usage ? configuration.usageEnabled === false || available?.usage !== true
@@ -167,7 +169,8 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
           return { usage: value.usage };
         }
         if (value.schema !== 'transit.personal-profile.v1' || value.accountId !== actor.accountId
-          || value.mode !== 'free-best-effort' || !validProfile(value)) deny('transit_access_unavailable');
+          || value.mode !== 'free-best-effort' || !validProfile(value)
+          || available?.portableProfiles && value.coreVersion !== available.portableCoreVersion) deny('transit_access_unavailable');
         return { profile: value.profile, coreVersion: value.coreVersion, mode: value.mode };
       } catch (error) {
         current(actor, args);
@@ -197,7 +200,7 @@ export function createTransitAccess({ configuration, getConnect, fetchImpl = fet
           subscriptionFetchRequest, subscriptionProfileDelivery, 'transit.encrypted-subscription-profile.v1',
           () => { if (closed) deny('transit_access_unavailable'); });
         if (!exact(value, ['schema', 'coreVersion', 'profile', 'sha256']) || value.schema !== 'transit.subscription-profile.v1'
-          || !validProfile(value)) deny('transit_access_unavailable');
+          || !validProfile(value) || value.coreVersion !== '1.14.4') deny('transit_access_unavailable');
         reply(200, value.profile);
       } catch (error) { reply(error.code === 'transit_subscription_not_found' ? 404 : 503,
         { error: error.code === 'transit_subscription_not_found' ? 'not_found' : 'subscription_unavailable' }); }
