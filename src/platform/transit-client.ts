@@ -7,7 +7,7 @@ import { normalizeTransitClientProfile } from '../../scripts/agent-modules/trans
 import { loadTransitAccountState, saveTransitAccountProfile, saveTransitController } from './transit-profile-store.mjs';
 import './transit-client.css';
 
-interface TransitState { configured: boolean; active: boolean; running: boolean; phase: string; version: string; lastError: string; entryCount: number; availableEntryCount?: number; }
+interface TransitState { configured: boolean; active: boolean; running: boolean; phase: string; version: string; lastError: string; entryCount: number; availableEntryCount?: number; profileCacheIsolation?: number; }
 interface TransitReply { ok?: boolean; deviceId?: string; supported?: boolean; runtime?: TransitState; profile?: unknown; error?: string; }
 interface TransitUsage { uploadBytes: string; downloadBytes: string; freshEntries: number; expectedEntries: number; }
 
@@ -260,7 +260,8 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     if (!mobile && local?.supported && state && authorized) {
       const shouldStop = state.running || state.phase === 'unknown';
       const needsNewCore = (saved as any)?.dns?.servers?.some((server: any) => server.type === 'fakeip') === true;
-      const agentReady = supportsPortableCore(state.version);
+      const needsPrivateCache = typeof (saved as any)?.experimental?.cache_file?.path === 'string';
+      const agentReady = supportsPortableCore(state.version) && (!needsPrivateCache || state.profileCacheIsolation === 1);
       if (shouldStop || state.configured || (saved && (!needsNewCore || agentReady))) actionButton(shouldStop ? 'Выключить' : 'Включить', () => void perform(async () => {
         if (!shouldStop && !state.configured) {
           if (!saved) throw new Error('transit-profile-required');
@@ -274,7 +275,11 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
         const exported = await agentAction({ action: 'export' });
         await saveTransitAccountProfile(accountClient, owner, normalizeTransitClientProfile(exported.profile));
       }, 'Доступ сохранён в зашифрованном профиле Сот. На телефоне откройте тот же профиль.'));
-      if (needsNewCore && !agentReady) body.append(node('p', 'Этот профиль требует sing-box 1.14.4 или новее. Откройте его в приложении sing-box; агент на этом компьютере использует прежнее ядро.', 'transit-client-help'));
+      if (needsNewCore && !supportsPortableCore(state.version)) body.append(node('p', 'Этот профиль требует sing-box 1.14.4 или новее. Откройте его в приложении sing-box; агент на этом компьютере использует прежнее ядро.', 'transit-client-help'));
+      if (needsPrivateCache && state.profileCacheIsolation !== 1) {
+        body.append(node('p', 'Обновите агент Сот для нового профиля. Существующее подключение сохранено.', 'transit-client-help'));
+        actionButton('Обновить агент Сот', () => void perform(pairComputer, 'Запустите установщик, затем обновите состояние. Подключение включается отдельно.'));
+      }
     } else if (!mobile) {
       body.append(node('p', local ? 'Чтобы включать VPN на этом компьютере через агент Сот, разрешите управление. Для приложения sing-box достаточно скачать профиль.'
         : 'Для управления VPN через Соты установите агент. Скачать профиль и подключиться в sing-box можно без него.'));
@@ -290,7 +295,9 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
         try { profile = normalizeTransitClientProfile(JSON.parse(await chosen.text())); }
         catch { throw new Error('transit-profile-invalid'); }
         await saveTransitAccountProfile(accountClient, owner, profile);
-        if ((await current()) && local?.supported && authorized && (!(profile as any)?.dns?.servers?.some((server: any) => server.type === 'fakeip') || supportsPortableCore(local.runtime?.version)))
+        if ((await current()) && local?.supported && authorized
+          && (!(profile as any)?.dns?.servers?.some((server: any) => server.type === 'fakeip') || supportsPortableCore(local.runtime?.version))
+          && (!(profile as any)?.experimental?.cache_file?.path || local.runtime?.profileCacheIsolation === 1))
           await agentAction({ action: 'import', profile });
       }, 'Существующий доступ добавлен. Его можно использовать на ваших устройствах.');
     });

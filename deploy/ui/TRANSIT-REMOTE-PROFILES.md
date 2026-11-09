@@ -78,6 +78,27 @@ need one Remote import; only Remote clients with automatic updates enabled
 fetch future topology. Rotation/revocation disables old update links, not
 credentials already downloaded. This limitation is explicit in the panel.
 
+Persistent FakeIP must also remain private to one profile. Issuer projections
+now use only `transit-cache-<64 lowercase hex>.db`, derived from network/slot;
+the shared client validator accepts precisely that basename or the historical
+two-field cache policy, never arbitrary paths. Agent1.4.21 advertises
+`runtime.profileCacheIsolation:1`. UI requires that capability before importing
+a new file into an older Agent, offers its ordinary updater and preserves
+control of an already configured connection. The existing core version check
+remains separate. Local historical JSON gains a credential-derived private
+cache only in the managed Agent projection. Long-running cache files live in
+the Agent's private data directory across core updates; every parallel probe
+uses its own temporary private working directory and retains it on unknown
+exit. No probe locks, deletes or writes the running profile cache.
+
+The UI publisher excludes Agent artifacts. Therefore this coordinated change
+requires a full Root image containing the generated1.4.21 runtime, manifest and
+installer, followed by the retained-asset UI publish; a UI-only update does not
+publish the new Agent. Publish that compatible client before activating the
+issuer's new cache projection. The Root runtime import graph does not itself
+import this shared Agent validator. Do not infer artifact delivery from that
+import-graph fact or add another static overlay to avoid the normal release.
+
 Before replacing production backend files, freshly compare their actual SHA
 against the approved baseline; on drift rebase/review the two-file delta. Ship
 UI through deploy/ui/host-publisher.mjs using an immutable build, retaining old

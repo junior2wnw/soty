@@ -170,13 +170,18 @@ test('portable FakeIP cache policy preserves domains and denies arbitrary cache 
   const before = JSON.stringify(modern), normalized = normalizeTransitClientProfile(modern);
   assert.deepEqual(normalized.experimental, modern.experimental);
   assert.deepEqual(normalized.dns, modern.dns); assert.equal(JSON.stringify(modern), before);
+  const isolated = structuredClone(modern); isolated.experimental.cache_file.path = 'transit-cache-' + 'a'.repeat(64) + '.db';
+  assert.deepEqual(normalizeTransitClientProfile(isolated).experimental, isolated.experimental);
   for (const experimental of [null, {}, { cache_file: {} }, { cache_file: { enabled: true, store_fakeip: false } },
     { cache_file: { enabled: true, store_fakeip: true, path: 'outside.db' } },
+    ...['../transit-cache-' + 'a'.repeat(64) + '.db', 'C:\\cache.db', '/tmp/cache.db', 'transit-cache-' + 'A'.repeat(64) + '.db', 'transit-cache-' + 'a'.repeat(63) + '.db']
+      .map(path => ({ cache_file: { enabled: true, store_fakeip: true, path } })),
     { cache_file: { enabled: true, store_fakeip: true }, clash_api: {} }]) {
     assert.throws(() => normalizeTransitClientProfile({ ...modern, experimental }), /transit-profile-invalid/u);
   }
   const f = fixture(); await f.runtime.configure(modern);
   assert.equal((await f.runtime.status()).version, '1.14.4');
+  assert.equal((await f.runtime.status()).profileCacheIsolation, 1);
   assert.deepEqual(f.stored.experimental, modern.experimental); assert.equal(f.spawns, 0);
   await f.runtime.configure(profile());
   assert.equal(f.stored.outbounds[0].uuid, modern.outbounds[0].uuid); assert.equal(f.spawns, 0);

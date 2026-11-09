@@ -43,13 +43,14 @@ export function normalizeTransitClientProfile(input) {
   if (!value || !Array.isArray(value.outbounds) || value.outbounds.length < 1 || value.outbounds.length > 32
     || !value.dns?.servers?.length || !value.route?.final || value.route.rule_set?.length
     || value.services || value.endpoints || value.ntp || value.certificate) deny();
-  // Only persistent FakeIP mappings are portable. Never import controllers,
-  // arbitrary file paths, APIs or other experimental capabilities.
+  // Only persistent FakeIP mappings are portable. The issuer supplies a fixed
+  // profile-derived basename; arbitrary paths/controllers remain forbidden.
   if (value.experimental !== undefined) {
     const experimental = value.experimental, cache = experimental?.cache_file;
     if (!experimental || Object.keys(experimental).join(',') !== 'cache_file' || !cache
-      || Object.keys(cache).sort().join(',') !== 'enabled,store_fakeip'
-      || cache.enabled !== true || cache.store_fakeip !== true) deny();
+      || !['enabled,store_fakeip', 'enabled,path,store_fakeip'].includes(Object.keys(cache).sort().join(','))
+      || cache.enabled !== true || cache.store_fakeip !== true
+      || (Object.hasOwn(cache, 'path') && (typeof cache.path !== 'string' || !/^transit-cache-[a-f0-9]{64}\.db$/u.test(cache.path)))) deny();
   }
   const tags = new Set();
   for (const row of value.outbounds) {
@@ -143,7 +144,7 @@ export function createTransitClientRuntime(deps) {
     }
     return { schema: 'soty.transit-client.v1', configured: !!profile, running: !!alive(),
       active: !!alive() && phase === 'connected', phase, version: transitClientVersion, lastError,
-      availableEntryCount,
+      availableEntryCount, profileCacheIsolation: 1,
       entryCount: profile?.outbounds?.filter(row => ['vless', 'hysteria2'].includes(row.type)).length || 0 };
   }
   async function prepare() {

@@ -331,3 +331,27 @@ test('a FakeIP profile requires the corrected core for agent import while old lo
     f.close();
   }
 });
+
+test('a profile-specific cache requires the Agent capability while its existing owned connection remains controllable', async () => {
+  for (const capability of [undefined, 1]) {
+    const f = fixture(); f.state.version = '1.14.4'; f.state.profileCacheIsolation = capability;
+    f.payload.transitClient.profile.dns.servers.push({ type: 'fakeip', tag: 'fakeip', inet4_range: '198.18.0.0/15' });
+    f.payload.transitClient.profile.experimental = { cache_file: { enabled: true, path: 'transit-cache-' + 'a'.repeat(64) + '.db', store_fakeip: true } };
+    await f.open();
+    if (capability === 1) {
+      f.button('Включить').click(); await f.settle(() => f.state.active);
+      assert.equal(f.calls.filter(call => call.action === 'import').length, 1);
+    } else {
+      assert.throws(() => f.button('Включить'), /missing actual/);
+      assert.ok(f.button('Обновить агент Сот'));
+      assert.ok(!f.texts.some(text => text.includes('использует прежнее ядро')));
+      assert.equal(f.installers.length, 0); assert.equal(f.calls.filter(call => call.action !== 'authorize').length, 0);
+    }
+    f.close();
+  }
+  const existing = fixture(); existing.state.version = '1.14.4'; existing.state.configured = true; existing.state.running = true; existing.state.active = true; existing.state.phase = 'connected';
+  existing.payload.transitClient.profile.experimental = { cache_file: { enabled: true, path: 'transit-cache-' + 'b'.repeat(64) + '.db', store_fakeip: true } };
+  await existing.open(); existing.button('Выключить').click(); await existing.settle(() => !existing.state.running);
+  assert.equal(existing.calls.filter(call => call.action === 'import').length, 0);
+  assert.equal(existing.calls.filter(call => call.action === 'stop').length, 1); existing.close();
+});

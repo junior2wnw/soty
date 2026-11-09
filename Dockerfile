@@ -31,6 +31,8 @@ RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
   && node --test deploy/ui/*.test.mjs \
   && SOTY_UI_CADDY_BINARY=/usr/local/bin/soty-test-caddy node --test --test-concurrency=1 deploy/ui/*.acceptance.mjs \
   && node --test deploy/connector/*.test.mjs deploy/connect/*.test.mjs \
+  && node --test scripts/transit-client.test.mjs scripts/transit-probe.test.mjs \
+  && node scripts/agent-release-selftest.mjs && node scripts/agent-update-selftest.mjs \
   && node --test --test-concurrency=2 deploy/connect/private-attach/test/*.test.mjs deploy/connect/private-attach/vendor/*/*.test.mjs \
   && node scripts/connector-durable-protocol-selftest.mjs && node scripts/connector-persistence-selftest.mjs
 RUN pnpm prune --prod \

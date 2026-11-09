@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from 'node:events';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, opendir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -12,7 +12,8 @@ import { createConnectorScopedFactory } from "../modules/apps/scoped-embed/conne
 import { parseSourceJson } from "../modules/source-app/shared/strict-json.mjs";
 import { createTrafficFabric, trafficFabricSchema } from "./agent-modules/traffic-fabric.mjs";
 import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema } from "./agent-modules/traffic-core.mjs";
-import { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease, transitOwnedWindowsCores } from "./agent-modules/transit-client.mjs";
+import { createTransitClientRuntime, executeTransitClientAction, normalizeTransitClientProfile, transitCheckedProfile, transitClientWindowsRelease, transitOwnedWindowsCores } from "./agent-modules/transit-client.mjs";
+import { createTransitCacheProjection, createTransitProbeWorkspace } from './agent-modules/transit-probe.mjs';
 import { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
 import { createLocalAppsRuntime, normalizeLocalAppManifest, prepareLocalAppWorkspace, probeLocalApp, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
 import { createPreparedProjectBrowser } from "./agent-modules/prepared-projects.mjs";
@@ -21,7 +22,7 @@ import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
 import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.20";
+const connectorVersion = "1.4.21";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -144,6 +145,8 @@ const trafficCoreRuntime = createTrafficCoreRuntime(trafficCoreDependencies);
 const transitInstaller = createTrafficCoreRuntime(trafficCoreDependencies);
 const transitRoot = join(connectorDir, 'transit-client');
 const transitProfilePath = join(transitRoot, 'profile.json');
+const isolateLegacyTransitCache = createTransitCacheProjection({ normalize: normalizeTransitClientProfile, hash: sha256 });
+const withTransitProbeWorkspace = createTransitProbeWorkspace({ lstat, mkdtemp, realpath, rm, writeFile, join, relative, resolve, sep });
 let transitDirectoryReady = null;
 const transitControlHash = /^[a-f0-9]{64}$/u.test(persisted.transitControlHash || '') ? persisted.transitControlHash : '';
 const transitClient = createTransitClientRuntime({
@@ -154,14 +157,14 @@ const transitClient = createTransitClientRuntime({
   },
   verifyCore: async core => sha256(await readFile(core.executable)) === transitClientWindowsRelease.binarySha256,
   readProfile: async () => {
-    try { return JSON.parse(await readFile(transitProfilePath, 'utf8')); }
+    try { return isolateLegacyTransitCache(JSON.parse(await readFile(transitProfilePath, 'utf8'))); }
     catch (error) { if (error.code === 'ENOENT') return null; throw new Error('transit-profile-unreadable'); }
   },
   saveCheckedProfile: saveTransitProfile,
   underlayInterface: transitUnderlayInterface,
   writeRunProfile: async (_core, profile) => writeTransitPrivate('run.json', profile),
   probe: probeTransitProfile,
-  spawnCore: (core, file) => spawn(core.executable, ['run', '-c', file], { windowsHide: true, stdio: 'ignore', cwd: core.installDir }),
+  spawnCore: (core, file) => spawn(core.executable, ['run', '-c', file], { windowsHide: true, stdio: 'ignore', cwd: transitRoot }),
   rememberOwned: rememberTransitProcess,
   recoverOwned: recoverTransitProcess,
   forgetOwned: async child => {
@@ -1193,7 +1196,7 @@ async function ensureTransitPrivateDirectory() {
 }
 
 async function saveTransitProfile(core, profile) {
-  const staged = await writeTransitPrivate('profile.next.json', profile);
+  const staged = await writeTransitPrivate('profile.next.json', isolateLegacyTransitCache(profile));
   try {
     await transitCommand(core.executable, ['check', '-c', staged], 20_000);
     await rename(staged, transitProfilePath);
@@ -1289,17 +1292,19 @@ async function probeTransitProfile(core, profile) {
   return { profile: checked, availableEntryCount: healthy.length, exitIps: [...exitIps] };
 }
 
-async function probeTransitCandidate(core, profile, fileName) {
+async function probeTransitCandidate(core, profile, _fileName) {
+  await ensureTransitPrivateDirectory();
+  return withTransitProbeWorkspace(transitRoot, protectSecretFile, async workspace => {
   const reservation = createServer();
   await new Promise((resolveListen, reject) => { reservation.once('error', reject); reservation.listen(0, '127.0.0.1', resolveListen); });
   const probePort = reservation.address().port;
   await new Promise(resolveClose => reservation.close(resolveClose));
-  const file = await writeTransitPrivate(fileName, { ...profile,
+  const file = await workspace.write({ ...profile,
     inbounds: [{ type: 'socks', tag: 'transit-soty', listen: '127.0.0.1', listen_port: probePort }] });
   let probe = null;
   try {
     await transitCommand(core.executable, ['check', '-c', file], 20_000);
-    probe = spawn(core.executable, ['run', '-c', file], { cwd: core.installDir, windowsHide: true, stdio: 'ignore' });
+    probe = spawn(core.executable, ['run', '-c', file], { cwd: workspace.root, windowsHide: true, stdio: 'ignore' });
     let failed = false;
     probe.once('error', () => { failed = true; });
     await sleep(1200);
@@ -1318,10 +1323,10 @@ async function probeTransitCandidate(core, profile, fileName) {
         probe.kill('SIGKILL');
         await Promise.race([new Promise(resolveExit => probe.once('exit', resolveExit)), sleep(2000)]);
       }
-      if (probe.exitCode === null && !probe.signalCode) throw new Error('transit-probe-stop-unconfirmed');
+      if (probe.exitCode === null && !probe.signalCode) { workspace.retain(); throw new Error('transit-probe-stop-unconfirmed'); }
     }
-    await rm(file, { force: true }).catch(() => undefined);
   }
+  });
 }
 
 async function handleTrafficCore(request, response, headers) {
