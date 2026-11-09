@@ -31,6 +31,18 @@ verify a real HTTPS capability GET and all security headers. It changes no
 other host, upstream, TLS setting, logging encoder or immutable UI rule. A
 repeated or ambiguous boundary is refused instead of guessing.
 
+Also compare the actual public `Referrer-Policy` with Root's response. A general
+deferred Caddy security header can overwrite Root's `no-referrer` even when the
+GET succeeds. `prepareTransitSubscriptionReferrer` prepends a deferred header
+scoped to this path and Root host, retaining the complete existing header,
+compression and routing chain. Its complete adapted-tree insertion must match
+exactly; qualify it with the real pinned Caddy before encrypted CAS. Ordinary
+routes keep their original policy. Public acceptance requires `no-store,
+private`, `no-referrer`, `nosniff`, malformed/unknown capability 404 without
+metadata, repeated stable credentials and unchanged claim rows. Test raw URI
+and token absence in actual readable Root logs and the Caddy journal as well
+as the isolated success/unavailable-upstream redaction cases.
+
 If actual Caddy access logging is active, exclude
 `/transit/subscriptions/*` with a canonical scoped log_skip rule before enabling
 the endpoint. log_skip does not suppress runtime error logs: independently
