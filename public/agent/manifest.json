@@ -5,7 +5,7 @@
   "connectorUrl": "/agent/soty-connector.mjs",
   "agentUrl": "/agent/soty-connector.mjs",
   "compatibilityUrl": "/agent/soty-agent.mjs",
-  "sha256": "09733ad8095ae99a9bbed68fddea9f266beb46439370b36842e04e3130770286",
+  "sha256": "bf9fd7f5e94dd3b0d6ea90c03af9da4093dae7c74dbc6b73519f3eabc8f6d802",
   "protocol": {
     "schema": "soty.connector-job.v2",
     "entities": [

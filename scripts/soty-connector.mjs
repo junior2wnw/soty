@@ -12,7 +12,7 @@ import { createConnectorScopedFactory } from "../modules/apps/scoped-embed/conne
 import { parseSourceJson } from "../modules/source-app/shared/strict-json.mjs";
 import { createTrafficFabric, trafficFabricSchema } from "./agent-modules/traffic-fabric.mjs";
 import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema } from "./agent-modules/traffic-core.mjs";
-import { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease } from "./agent-modules/transit-client.mjs";
+import { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease, transitOwnedWindowsCores } from "./agent-modules/transit-client.mjs";
 import { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
 import { createLocalAppsRuntime, normalizeLocalAppManifest, prepareLocalAppWorkspace, probeLocalApp, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
 import { createPreparedProjectBrowser } from "./agent-modules/prepared-projects.mjs";
@@ -1208,8 +1208,8 @@ async function readTransitProcess() {
   } catch (error) { if (error.code === 'ENOENT') return null; throw new Error('transit-process-record-invalid'); }
 }
 
-function transitProcessGuard(pid, created = '') {
-  const executable = join(transitRoot, 'core', `${transitClientWindowsRelease.version}-win32-x64`, transitClientWindowsRelease.executable);
+function transitProcessGuard(pid, created = '', release = transitClientWindowsRelease) {
+  const executable = join(transitRoot, 'core', `${release.version}-win32-x64`, release.executable);
   const file = join(transitRoot, 'run.json');
   return `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction Stop; if($p -and $p.ExecutablePath -eq ${psQuote(executable)} -and $p.CommandLine.Contains(${psQuote(file)})${created ? ` -and $p.CreationDate.ToUniversalTime().ToString('o') -eq ${psQuote(created)}` : ''})`;
 }
@@ -1224,8 +1224,15 @@ async function rememberTransitProcess(child) {
 async function recoverTransitProcess() {
   const record = await readTransitProcess();
   if (!record || process.platform !== 'win32') return null;
-  const matches = () => transitPowerShell(`${transitProcessGuard(record.pid, record.created)}{'yes'}`);
-  if ((await matches()) !== 'yes') return null;
+  let release;
+  for (const known of transitOwnedWindowsCores) {
+    // Verify old/current image bytes once before adoption; subsequent checks
+    // stay bound to that exact path, PID and creation instant.
+    const check = `${transitProcessGuard(record.pid, record.created, known)}{if((Get-FileHash -LiteralPath $p.ExecutablePath -Algorithm SHA256 -ErrorAction Stop).Hash -eq ${psQuote(known.binarySha256)}){'yes'}}`;
+    if ((await transitPowerShell(check)) === 'yes') { release = known; break; }
+  }
+  if (!release) return null;
+  const matches = () => transitPowerShell(`${transitProcessGuard(record.pid, record.created, release)}{'yes'}`);
   // Reclaim only the exact executable, private config path and creation instant.
   // A reused PID or another VPN is never considered our process.
   const owned = new EventEmitter();
@@ -1240,7 +1247,7 @@ async function recoverTransitProcess() {
   }, 500);
   timer.unref();
   owned.kill = () => {
-    void transitPowerShell(`${transitProcessGuard(record.pid, record.created)}{Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}`).catch(() => undefined);
+    void transitPowerShell(`${transitProcessGuard(record.pid, record.created, release)}{Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}`).catch(() => undefined);
     return true;
   };
   return owned;

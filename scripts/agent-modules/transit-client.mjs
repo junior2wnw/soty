@@ -7,6 +7,13 @@ export const transitClientWindowsRelease = Object.freeze({
   urls: ['https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip'],
 });
 
+// Recovery may adopt only a formerly pinned core of this same owned tunnel.
+// Keep old pins here when upgrading so an updater restart cannot orphan it.
+export const transitOwnedWindowsCores = Object.freeze([transitClientWindowsRelease, Object.freeze({
+  version: '1.13.15', executable: 'sing-box-1.13.15-windows-amd64/sing-box.exe',
+  binarySha256: '4db8218dea131668ccd5e0b32e773e916a37be730e655b176e0d3a930276cbe7',
+})]);
+
 /** The installer establishes this authority after OS consent. Public health and
  * a copied Device ID never grant control or disclose an access profile. */
 export async function executeTransitClientAction(body, authority) {

@@ -2134,7 +2134,7 @@ function trafficCoreSafeError(error) {
 return { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema };
 })();
 // bundled connector module: ./agent-modules/transit-client.mjs
-const { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease } = (() => {
+const { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease, transitOwnedWindowsCores } = (() => {
 const transitClientVersion = '1.14.4';
 const transitClientWindowsRelease = Object.freeze({
   version: transitClientVersion, platform: 'win32', arch: 'x64',
@@ -2143,6 +2143,13 @@ const transitClientWindowsRelease = Object.freeze({
   executable: 'sing-box-1.14.4-windows-amd64/sing-box.exe',
   urls: ['https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip'],
 });
+
+// Recovery may adopt only a formerly pinned core of this same owned tunnel.
+// Keep old pins here when upgrading so an updater restart cannot orphan it.
+const transitOwnedWindowsCores = Object.freeze([transitClientWindowsRelease, Object.freeze({
+  version: '1.13.15', executable: 'sing-box-1.13.15-windows-amd64/sing-box.exe',
+  binarySha256: '4db8218dea131668ccd5e0b32e773e916a37be730e655b176e0d3a930276cbe7',
+})]);
 
 /** The installer establishes this authority after OS consent. Public health and
  * a copied Device ID never grant control or disclose an access profile. */
@@ -2365,7 +2372,7 @@ function createTransitClientRuntime(deps) {
   };
 }
 
-return { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease };
+return { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease, transitOwnedWindowsCores };
 })();
 // bundled connector module: ./agent-modules/opencode-release.mjs
 const { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } = (() => {
@@ -4656,8 +4663,8 @@ async function readTransitProcess() {
   } catch (error) { if (error.code === 'ENOENT') return null; throw new Error('transit-process-record-invalid'); }
 }
 
-function transitProcessGuard(pid, created = '') {
-  const executable = join(transitRoot, 'core', `${transitClientWindowsRelease.version}-win32-x64`, transitClientWindowsRelease.executable);
+function transitProcessGuard(pid, created = '', release = transitClientWindowsRelease) {
+  const executable = join(transitRoot, 'core', `${release.version}-win32-x64`, release.executable);
   const file = join(transitRoot, 'run.json');
   return `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction Stop; if($p -and $p.ExecutablePath -eq ${psQuote(executable)} -and $p.CommandLine.Contains(${psQuote(file)})${created ? ` -and $p.CreationDate.ToUniversalTime().ToString('o') -eq ${psQuote(created)}` : ''})`;
 }
@@ -4672,8 +4679,15 @@ async function rememberTransitProcess(child) {
 async function recoverTransitProcess() {
   const record = await readTransitProcess();
   if (!record || process.platform !== 'win32') return null;
-  const matches = () => transitPowerShell(`${transitProcessGuard(record.pid, record.created)}{'yes'}`);
-  if ((await matches()) !== 'yes') return null;
+  let release;
+  for (const known of transitOwnedWindowsCores) {
+    // Verify old/current image bytes once before adoption; subsequent checks
+    // stay bound to that exact path, PID and creation instant.
+    const check = `${transitProcessGuard(record.pid, record.created, known)}{if((Get-FileHash -LiteralPath $p.ExecutablePath -Algorithm SHA256 -ErrorAction Stop).Hash -eq ${psQuote(known.binarySha256)}){'yes'}}`;
+    if ((await transitPowerShell(check)) === 'yes') { release = known; break; }
+  }
+  if (!release) return null;
+  const matches = () => transitPowerShell(`${transitProcessGuard(record.pid, record.created, release)}{'yes'}`);
   // Reclaim only the exact executable, private config path and creation instant.
   // A reused PID or another VPN is never considered our process.
   const owned = new EventEmitter();
@@ -4688,7 +4702,7 @@ async function recoverTransitProcess() {
   }, 500);
   timer.unref();
   owned.kill = () => {
-    void transitPowerShell(`${transitProcessGuard(record.pid, record.created)}{Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}`).catch(() => undefined);
+    void transitPowerShell(`${transitProcessGuard(record.pid, record.created, release)}{Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}`).catch(() => undefined);
     return true;
   };
   return owned;
