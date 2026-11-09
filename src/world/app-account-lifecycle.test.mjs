@@ -1927,10 +1927,10 @@ test('account field owner keeps one pending load after the screen closes', async
   };
   const refreshing = f.app.refresh();
   try {
-    for (let i = 0; i < 100 && reads < 1; i++) await turn();
+    await until(() => reads >= 1, 'the retained field read begins');
     assert.equal(reads, 1); assert.equal(field, f.app.accountField);
     f.app.view = 'notes'; f.app.cleanScreen(); const eventsAtClose = screenEvents;
-    barrier.resolve(); await refreshing; for (let i = 0; i < 30 && h.local().pending.length; i++) await turn();
+    barrier.resolve(); await refreshing; await until(() => h.local().pending.length === 0, 'the retained field acknowledges its pending write');
     assert.equal(reads, 1); assert.equal(screenEvents, eventsAtClose); assert.equal(h.local().pending.length, 0); assert.deepEqual(h.remote().document, document);
   } finally { barrier.resolve(); await refreshing; f.app.cleanScreen(); h.dispose(); }
 });
@@ -2965,13 +2965,13 @@ test('account field owner rejects an old pending load on A to B to A and resumes
   };
   const refreshing = f.app.refresh();
   try {
-    for (let i = 0; i < 100 && reads < 1; i++) await turn(); assert.equal(reads, 1);
+    await until(() => reads >= 1, 'the account field read begins'); assert.equal(reads, 1);
     const staleOwner = f.app.accountField;
     f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
     barrier.resolve(); await refreshing;
     assert.equal(h.local().pending.length, 1); assert.equal(h.remote().revision, 0); assert.equal(f.app.accountField, null);
     assert.throws(() => staleOwner.getState(), { code: 'field_account_changed' });
-    f.app.syncFieldOutbox(); for (let i = 0; i < 50 && h.local().pending.length; i++) await turn();
+    f.app.syncFieldOutbox(); await until(() => h.local().pending.length === 0, 'the current account acknowledges its retained outbox');
     assert.equal(h.local().pending.length, 0); assert.deepEqual(h.remote().document, document);
   } finally { barrier.resolve(); await refreshing; f.app.accountField?.dispose(); f.app.cleanScreen(); h.dispose(); }
 });
@@ -2990,7 +2990,7 @@ test('reconnect drains the retained account owner after the offline field is clo
     await f.app.refresh(); const owner = f.app.accountField; assert.equal(h.local().pending.length, 1);
     f.app.view = 'notes'; f.app.cleanScreen(); h.offline(false); h.operations.length = 0;
     f.connectionChanged({ connection: 'online' });
-    for (let i = 0; i < 50 && h.local().pending.length; i++) await turn();
+    await until(() => h.local().pending.length === 0, 'reconnection drains the retained account outbox');
     assert.equal(f.app.accountField, owner); assert.equal(h.local().pending.length, 0); assert.deepEqual(h.remote().document, document);
     assert.deepEqual(h.operations, ['world.field.get', 'world.field.put']);
   } finally { f.app.accountField?.dispose(); f.app.cleanScreen(); h.dispose(); }
@@ -3012,7 +3012,7 @@ test('closing the page during the account field load keeps pending work for the 
   f.app.avatars.destroy = () => {};
   const refreshing = f.app.refresh();
   try {
-    for (let i = 0; i < 100 && reads < 1; i++) await turn(); assert.equal(reads, 1);
+    await until(() => reads >= 1, 'the field read begins before page close'); assert.equal(reads, 1);
     f.app.destroy(); barrier.resolve(); await refreshing;
     assert.equal(h.local().pending.length, 1); assert.equal(h.remote().revision, 0);
     const next = createFieldPersistence({ api: f.app.api, accountId: 'account-A', store: h.port(), localFirst: true });
