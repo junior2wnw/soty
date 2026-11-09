@@ -34,12 +34,13 @@ class ElementPort {
   remove() { this.isConnected = false; }
   click() { if (!this.disabled) this.emit('click'); }
 }
-function fixture({ paired = true, fresh = false, issuing = false } = {}) {
+function fixture({ paired = true, fresh = false, issuing = false, usage = null, subscription = false } = {}) {
   let accountId = 'account-A', selectedRead, stateReads = 0, digestRead, importRead, revision = 1, observer;
   let payload = { transitClient: { schema: 'soty.transit-profile.v1', profile: profile() },
     transitControllers: paired ? { 'owned-host': token } : {} };
   if (fresh) delete payload.transitClient;
-  let heldProfile;
+  let heldProfile, heldSubscription, subscriptionRevision = 0, subscriptionRevoked = false;
+  const subscriptionCalls = [], copied = [];
   const issuedProfiles = [];
   const calls = [], installers = [], downloads = [], intervals = new Map(); let nextTimer = 0, dialog;
   const state = { configured: false, running: false, active: false, phase: 'off', version: '1.13.15', entryCount: 1 };
@@ -47,7 +48,16 @@ function fixture({ paired = true, fresh = false, issuing = false } = {}) {
   const client = {
     async extension(operation, args, context) {
       assert.equal(args.expectedAccountId, accountId); assert.equal(context.expectedAccountId, accountId);
-      if (operation === 'transit.access.status') return { enabled: issuing };
+      if (operation === 'transit.access.status') return { enabled: issuing, usageEnabled: !!usage, subscriptionEnabled: subscription };
+      if (operation === 'transit.access.usage' && usage) return { usage };
+      if (operation.startsWith('transit.access.subscription')) {
+        subscriptionCalls.push({ operation, accountId });
+        if (heldSubscription) { heldSubscription.entered.resolve(); await heldSubscription.release.promise; }
+        if (operation.endsWith('.rotate')) { subscriptionRevision++; subscriptionRevoked = false; }
+        if (operation.endsWith('.revoke')) subscriptionRevoked = true;
+        return { subscription: { revoked: subscriptionRevoked, url: subscriptionRevoked ? null
+          : `https://soty.example/transit/subscriptions/${String(subscriptionRevision).repeat(43)}/profile.json` } };
+      }
       assert.equal(operation, 'transit.access.profile'); issuedProfiles.push(accountId);
       if (heldProfile) { heldProfile.entered.resolve(); await heldProfile.release.promise; }
       return { profile: profile() };
@@ -82,7 +92,7 @@ function fixture({ paired = true, fresh = false, issuing = false } = {}) {
     document: { visibilityState: 'visible', body: new ElementPort('body'), createElement: tag => new ElementPort(tag) },
     structuredClone, Blob, URL: { createObjectURL(blob) { downloads.push(blob); return 'blob:profile-fixture'; }, revokeObjectURL() {} },
     window: { setTimeout() {} },
-    navigator: { userAgent: 'Windows', platform: 'Win32' },
+    navigator: { userAgent: 'Windows', platform: 'Win32', clipboard: { async writeText(value) { copied.push(value); } } },
     setInterval(fn) { const id = ++nextTimer; intervals.set(id, fn); return id; }, clearInterval(id) { intervals.delete(id); },
     AbortSignal: { timeout() {} }, TextEncoder, Uint8Array, btoa: value => Buffer.from(value, 'binary').toString('base64'),
     crypto: { randomUUID: () => 'synthetic-id', getRandomValues: array => webcrypto.getRandomValues(array),
@@ -107,14 +117,17 @@ function fixture({ paired = true, fresh = false, issuing = false } = {}) {
   function hold(slot) { const wait = { entered: deferred(), release: deferred() }; slot(wait); return wait; }
   const descendants = node => [node, ...node.children.flatMap(descendants)];
   return {
-    calls, installers, downloads, state, open: () => exported.exports.openTransitClient(),
+    calls, installers, downloads, copied, subscriptionCalls, state, open: () => exported.exports.openTransitClient(),
     issuedProfiles, get payload() { return payload; }, holdProfile: () => hold(wait => { heldProfile = wait; }),
     close: () => dialog.close(),
     select(next) { accountId = next; observer?.({ accountId }); },
     holdImport: () => hold(wait => { importRead = wait; }),
     holdStateAt: at => hold(wait => { selectedRead = { ...wait, at }; }),
     holdDigest: () => hold(wait => { digestRead = wait; }),
+    holdSubscription: () => hold(wait => { heldSubscription = wait; }),
     button(label) { const value = descendants(dialog.body).find(node => node.tagName === 'button' && node.textContent === label); assert.ok(value, `missing actual ${label} control`); return value; },
+    get links() { return descendants(dialog.body).filter(node => node.tagName === 'a'); },
+    get texts() { return descendants(dialog.body).map(node => node.textContent); },
     async settle(predicate = () => true) { for (let index = 0; index < 30; index++) { await turn(); if (predicate()) return; } assert.fail('actual controller did not settle'); },
     get closed() { return !dialog.element.isConnected; },
     get observing() { return typeof observer === 'function'; },
@@ -138,6 +151,30 @@ test('a new person obtains their profile without enrolling, importing into or st
   await f.settle(() => !!f.payload.transitClient); await f.settle();
   assert.deepEqual(f.issuedProfiles, ['account-A']); assert.equal(f.installers.length, 0);
   assert.equal(f.calls.length, 0); assert.ok(f.button('Скачать профиль sing-box')); f.close();
+});
+
+test('an existing owner can download a fresh issued profile without replacing the saved one', async () => {
+  const f = fixture({ paired: false, issuing: true });
+  f.payload.transitClient.profile.outbounds[0].server = 'saved.example';
+  await f.open();
+  assert.equal(f.issuedProfiles.length, 0);
+  assert.equal(f.payload.transitClient.profile.outbounds[0].server, 'saved.example');
+  f.button('Скачать актуальный профиль Transit').click();
+  await f.settle(() => f.downloads.length === 1);
+  assert.equal(JSON.parse(await f.downloads[0].text()).outbounds[0].server, 'entry.example');
+  assert.equal(f.payload.transitClient.profile.outbounds[0].server, 'saved.example');
+  assert.deepEqual(f.issuedProfiles, ['account-A']);
+  assert.equal(f.calls.length, 0);
+  f.close();
+});
+
+test('shows traffic for the issued profile and marks an incomplete collection', async () => {
+  const usage = { uploadBytes: '512', downloadBytes: '2048', freshEntries: 1, expectedEntries: 2 };
+  const f = fixture({ paired: false, usage }); await f.open();
+  await f.settle(() => f.texts.some(text => text.includes('Трафик выданного профиля')));
+  assert.ok(f.texts.includes('Трафик выданного профиля · Получено 2 КиБ · Отправлено 512 Б'));
+  assert.ok(f.texts.includes('Данные о трафике обновляются.'));
+  f.close();
 });
 
 test('downloading an already saved gVisor profile uses the system stack without changing its credentials or vault', async () => {
@@ -229,4 +266,34 @@ test('actual TRANSIT closure during initial account read does not register a ret
   await f.settle(() => held.entered.settled); f.close(); held.release.resolve(); await opening;
   assert.equal(f.closed, true); assert.equal(f.observing, false); assert.equal(f.intervalCount, 0);
   assert.equal(f.calls.length, 0);
+});
+
+test('Remote import and copy use the same personal URL without storing it in the vault or starting the agent', async () => {
+  const f = fixture({ paired: false, fresh: true, issuing: true, subscription: true }); await f.open();
+  f.button('Получить профиль sing-box').click();
+  await f.settle(() => f.links.some(link => link.textContent === 'Добавить в sing-box'));
+  const add = f.links.find(link => link.textContent === 'Добавить в sing-box');
+  assert.equal(add.href, `sing-box://import-remote-profile?url=${encodeURIComponent('https://soty.example/transit/subscriptions/' + '0'.repeat(43) + '/profile.json')}#TRANSIT`);
+  assert.deepEqual(f.issuedProfiles, ['account-A']); assert.equal(f.subscriptionCalls.length, 1);
+  assert.equal(f.calls.length, 0); assert.equal(f.installers.length, 0);
+  assert.ok(!JSON.stringify(f.payload).includes('/transit/subscriptions/'));
+  f.button('Скопировать ссылку').click(); await f.settle(() => f.copied.length === 1); await f.settle();
+  assert.equal(f.copied[0], 'https://soty.example/transit/subscriptions/' + '0'.repeat(43) + '/profile.json');
+  f.button('Заменить ссылку').click();
+  await f.settle(() => f.links.some(link => link.href.includes(encodeURIComponent('1'.repeat(43))))); await f.settle();
+  f.button('Отключить ссылку обновления').click();
+  await f.settle(() => !f.links.some(link => link.textContent === 'Добавить в sing-box')); await f.settle();
+  assert.ok(f.button('Создать новую ссылку sing-box')); assert.ok(f.button('Скачать профиль sing-box'));
+  assert.ok(f.texts.some(text => text.includes('локальный файл сам не обновится')));
+  assert.ok(!JSON.stringify(f.payload).includes('/transit/subscriptions/')); f.close();
+});
+
+test('a delayed subscription cannot appear or be copied after the owning dialog is retired', async () => {
+  const f = fixture({ paired: false, issuing: true, subscription: true }); await f.open();
+  const wait = f.holdSubscription(); f.button('Получить ссылку sing-box').click();
+  await f.settle(() => wait.entered.settled); f.select('account-B'); f.select('account-A'); wait.release.resolve();
+  for (let index = 0; index < 10; index++) await turn();
+  assert.equal(f.closed, true); assert.equal(f.copied.length, 0);
+  assert.ok(!f.links.some(link => link.textContent === 'Добавить в sing-box'));
+  assert.ok(!JSON.stringify(f.payload).includes('/transit/subscriptions/'));
 });

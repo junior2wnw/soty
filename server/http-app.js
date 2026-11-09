@@ -171,6 +171,8 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.disable("x-powered-by");
   if (env.SOTY_TRUST_PROXY) app.set('trust proxy', env.SOTY_TRUST_PROXY.split(',').map(value => value.trim()).filter(Boolean));
   app.use(fenceClosingHttpSocket);
+  // Capability URLs contain secrets: finish before monitoring/session collectors.
+  app.use((req,res,next)=>transitAccess?.handlesSubscription(req)?void transitAccess.serveSubscription(req,res):next());
   app.use((req,res,next)=>monitoringCollectors?monitoringCollectors.middleware(req,res,next):next());
   app.use((req, res, next) => {
     if (!hasSingleHostHeader(req)) { res.status(400).set('Cache-Control', 'no-store').end(); return; }

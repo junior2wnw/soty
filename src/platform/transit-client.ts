@@ -9,6 +9,14 @@ import './transit-client.css';
 
 interface TransitState { configured: boolean; active: boolean; running: boolean; phase: string; version: string; lastError: string; entryCount: number; availableEntryCount?: number; }
 interface TransitReply { ok?: boolean; deviceId?: string; supported?: boolean; runtime?: TransitState; profile?: unknown; error?: string; }
+interface TransitUsage { uploadBytes: string; downloadBytes: string; freshEntries: number; expectedEntries: number; }
+
+function formatTraffic(bytes: string): string {
+  const units = ['Б', 'КиБ', 'МиБ', 'ГиБ', 'ТиБ', 'ПиБ', 'ЭиБ'];
+  let value = Number(bytes), index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
+  return new Intl.NumberFormat('ru', { maximumFractionDigits: index ? 1 : 0 }).format(value) + ' ' + units[index];
+}
 
 const messages: Record<string, string> = {
   'transit-profile-invalid': 'Этот файл не является защищённым профилем TRANSIT.',
@@ -67,9 +75,9 @@ function downloadProfile(profile: unknown): void {
 export async function openTransitClient(options: { openSharedInternet?: () => void } = {}): Promise<void> {
   let unobserve = () => {};
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
-  let generation = 0, disposed = false;
+  let generation = 0, disposed = false, subscriptionUrl = '';
   const dialog = createDialog('TRANSIT', () => {
-    disposed = true; generation++; unobserve(); clearInterval(refreshTimer);
+    disposed = true; generation++; subscriptionUrl = ''; unobserve(); clearInterval(refreshTimer);
   });
   dialog.element.classList.add('transit-client-dialog');
   const selectedAccount = (await accountClient.getLocalState()).accountId;
@@ -79,6 +87,8 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
   unobserve = observeAccount(state => { if (state.accountId !== owner) dialog.close(); });
   const mobile = /android|iphone|ipad|ipod|mobile/iu.test(`${navigator.userAgent} ${navigator.platform}`);
   let saved: unknown = null, local: TransitReply | null = null, working = false, issuingEnabled = false;
+  let usage: TransitUsage | null = null, usageFailed = false, usageRequest = 0;
+  let subscriptionEnabled = false, subscriptionRevoked = false;
   let hostDeviceId = '', controlToken = '', authorized = false;
   const live = (ticket: number) => !disposed && ticket === generation && dialog.element.isConnected;
   const current = async (ticket = generation) => {
@@ -99,21 +109,38 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     const key = error instanceof Error ? error.message : '';
     return messages[key] || 'Не удалось выполнить действие. Доступ и существующие профили сохранены.';
   };
+  async function refreshUsage(enabled: boolean): Promise<void> {
+    const request = ++usageRequest;
+    if (!enabled) { usage = null; usageFailed = false; return; }
+    const ticket = generation;
+    const result = await accountClient.extension('transit.access.usage', { expectedAccountId: owner }, { expectedAccountId: owner })
+      .catch(() => null);
+    if (!(await current(ticket)) || request !== usageRequest) return;
+    usageFailed = result === null;
+    if (result) usage = result.usage as TransitUsage | null;
+    render();
+  }
   async function refresh(): Promise<void> {
     const [account, agent, companion, access] = await Promise.all([
       loadTransitAccountState(accountClient, owner),
       mobile ? Promise.resolve(null) : localTransit().catch(() => null),
       mobile ? Promise.resolve(null) : checkLocalCompanionAgent(2000).catch(() => null),
-      accountClient.extension('transit.access.status', { expectedAccountId: owner }, { expectedAccountId: owner }).catch(() => ({ enabled: false })),
+      accountClient.extension('transit.access.status', { expectedAccountId: owner }, { expectedAccountId: owner })
+        .catch(() => ({ enabled: false, usageEnabled: false })),
     ]);
     if (!(await current())) return;
     saved = account.profile; local = agent; issuingEnabled = access.enabled === true;
+    subscriptionEnabled = access.subscriptionEnabled === true;
+    if (!subscriptionEnabled) subscriptionUrl = '';
     hostDeviceId = agent?.deviceId || companion?.deviceId || hostDeviceId;
     controlToken = account.controllers[hostDeviceId] || ''; authorized = false;
     if (agent?.deviceId && controlToken) {
       authorized = await ownerPost({ action: 'authorize', deviceId: agent.deviceId, controlToken }).then(() => true, () => false);
     }
-    if (await current()) render();
+    if (await current()) {
+      void refreshUsage(access.usageEnabled === true).catch(() => undefined);
+      render();
+    }
   }
   const agentAction = (body: Record<string, unknown>) => {
     if (!authorized || !controlToken) throw new Error('transit-control-not-paired');
@@ -132,6 +159,23 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     const ticket = generation;
     if (!(await current(ticket)) || !live(ticket)) return;
     downloadAgentInstallerForDevice('machine', { id: hostDeviceId }, '', hash);
+  }
+  async function requestIssuedProfile(): Promise<unknown> {
+    const ticket = generation;
+    const result = await accountClient.extension('transit.access.profile', { expectedAccountId: owner }, { expectedAccountId: owner });
+    return await current(ticket) ? normalizeTransitClientProfile(result.profile) : null;
+  }
+  async function requestSubscription(action = ''): Promise<void> {
+    const ticket = generation;
+    const result = await accountClient.extension(`transit.access.subscription${action}`, { expectedAccountId: owner }, { expectedAccountId: owner });
+    if (!(await current(ticket))) return;
+    const subscription = result.subscription as { url?: unknown; revoked?: unknown };
+    // This capability is kept in the open dialog only, outside profile storage.
+    if (!subscription || typeof subscription.revoked !== 'boolean'
+      || (!subscription.revoked && (typeof subscription.url !== 'string'
+        || !/^https:\/\/[^/?#]+\/transit\/subscriptions\/[A-Za-z0-9_-]{43}\/profile\.json$/u.test(subscription.url)))) throw new Error('transit_access_unavailable');
+    subscriptionUrl = subscription.revoked ? '' : subscription.url as string;
+    subscriptionRevoked = subscription.revoked;
   }
   async function perform(action: () => Promise<void>, success: string): Promise<void> {
     if (working || !(await current())) return;
@@ -162,20 +206,49 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     }
     if (state?.active && state.availableEntryCount && state.availableEntryCount < state.entryCount)
       status.append(node('span', `Проверку прошли ${state.availableEntryCount} из ${state.entryCount} выходов. Остальные временно исключены.`));
+    if (usage) {
+      const traffic = node('span', `Трафик выданного профиля · Получено ${formatTraffic(usage.downloadBytes)} · Отправлено ${formatTraffic(usage.uploadBytes)}`);
+      traffic.title = `Получено ${usage.downloadBytes} байт · Отправлено ${usage.uploadBytes} байт`;
+      status.append(traffic);
+      if (usageFailed || usage.freshEntries < usage.expectedEntries)
+        status.append(node('span', 'Данные о трафике обновляются.'));
+    } else if (usageFailed && saved) {
+      status.append(node('span', 'Данные о трафике сейчас недоступны.'));
+    }
     body.append(status, notice);
     const actions = node('div', '', 'transit-client-actions');
-    const actionButton = (label: string, action: () => void, primary = false) => {
+    const settings = node('details', '', 'transit-client-settings');
+    settings.append(node('summary', 'Управление ссылкой и запасной файл'));
+    const extra = node('div', '', 'transit-client-actions'); settings.append(extra);
+    const actionButton = (label: string, action: () => void, primary = false, container = actions) => {
       const button = node('button', label, `sw-button${primary ? ' primary' : ''}`); button.type = 'button'; button.disabled = working;
-      button.addEventListener('click', action); actions.append(button); return button;
+      button.addEventListener('click', action); container.append(button); return button;
     };
     if (!saved && issuingEnabled) actionButton('Получить профиль sing-box', () => void perform(async () => {
-      const ticket = generation;
-      const result = await accountClient.extension('transit.access.profile', { expectedAccountId: owner }, { expectedAccountId: owner });
-      if (!(await current(ticket))) return;
-      const profile = normalizeTransitClientProfile(result.profile);
-      await saveTransitAccountProfile(accountClient, owner, profile);
-    }, 'Личный профиль готов. Скачайте его и добавьте в sing-box.'), true);
-    if (saved) actionButton('Скачать профиль sing-box', () => downloadProfile(saved), true);
+      const profile = await requestIssuedProfile();
+      if (profile) {
+        await saveTransitAccountProfile(accountClient, owner, profile);
+        if (subscriptionEnabled && await current()) await requestSubscription();
+      }
+    }, subscriptionEnabled ? 'Личный профиль готов. Добавьте его в sing-box по ссылке.' : 'Личный профиль готов. Скачайте его и добавьте в sing-box.'), true);
+    if (saved && subscriptionEnabled && !subscriptionUrl) actionButton(subscriptionRevoked ? 'Создать новую ссылку sing-box' : 'Получить ссылку sing-box',
+      () => void perform(() => requestSubscription(subscriptionRevoked ? '.rotate' : ''), 'Ссылка готова. Добавьте её в sing-box.'), true);
+    if (subscriptionUrl) {
+      const add = node('a', 'Добавить в sing-box', 'sw-button primary');
+      add.href = `sing-box://import-remote-profile?url=${encodeURIComponent(subscriptionUrl)}#TRANSIT`;
+      add.rel = 'noreferrer'; add.setAttribute('referrerpolicy', 'no-referrer');
+      actions.append(add);
+      actionButton('Скопировать ссылку', () => void perform(async () => {
+        if (await current()) await navigator.clipboard.writeText(subscriptionUrl);
+      }, 'Ссылка скопирована. В sing-box выберите удалённый профиль (Remote) и вставьте её.'));
+      actionButton('Заменить ссылку', () => void perform(() => requestSubscription('.rotate'), 'Новая ссылка готова. Замените её в sing-box на своих устройствах.'), false, extra);
+      actionButton('Отключить ссылку обновления', () => void perform(() => requestSubscription('.revoke'), 'Обновление по этой ссылке отключено. Уже скачанные профили продолжают работать.'), false, extra);
+    }
+    if (saved) actionButton('Скачать профиль sing-box', () => downloadProfile(saved), !subscriptionEnabled);
+    if (saved && issuingEnabled) actionButton('Скачать актуальный профиль Transit', () => void perform(async () => {
+      const profile = await requestIssuedProfile();
+      if (profile) downloadProfile(profile);
+    }, 'Добавьте скачанный файл в sing-box.'), false, extra);
     if (!mobile && local?.supported && state && authorized) {
       const shouldStop = state.running || state.phase === 'unknown';
       if (shouldStop || state.configured || saved) actionButton(shouldStop ? 'Выключить' : 'Включить', () => void perform(async () => {
@@ -213,9 +286,14 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     importButton.disabled ||= state?.running === true;
     actionButton('Обновить состояние', () => void perform(async () => {}, 'Состояние обновлено.'));
     body.append(actions, file);
-    body.append(node('p', 'Установите sing-box, добавьте локальный профиль из файла transit.json и включите его. Для скачивания профиля агент не требуется. Бесплатный доступ работает по доступной мощности сети.', 'transit-client-help'));
+    if ((saved && issuingEnabled) || subscriptionUrl) body.append(settings);
+    body.append(node('p', subscriptionEnabled
+      ? 'Добавьте ссылку как удалённый профиль (Remote) и включите автоматическое обновление в sing-box. Если кнопка не открывает приложение, скопируйте ссылку. Агент Сот не требуется.'
+      : 'Установите sing-box, добавьте локальный профиль из файла transit.json и включите его. Для скачивания профиля агент не требуется.', 'transit-client-help'));
+    if (subscriptionEnabled) body.append(node('p', 'Ранее добавленный локальный файл сам не обновится. Один раз добавьте удалённый профиль по ссылке: далее sing-box будет получать изменения сети автоматически. Файл остаётся запасным способом подключения.', 'transit-client-help'));
     const clients = node('a', 'Установить sing-box'); clients.href = 'https://sing-box.sagernet.org/clients/'; clients.target = '_blank'; clients.rel = 'noopener noreferrer'; body.append(clients);
     body.append(node('p', 'Файл содержит ваш доступ к интернету. Соты хранят его в зашифрованном хранилище вашего профиля.', 'transit-client-help'));
+    if (subscriptionEnabled) body.append(node('p', 'Ссылка тоже даёт доступ к вашему профилю: передавайте её только своим устройствам. Замена или отключение ссылки прекращает обновления по старой ссылке, но не отзывает уже скачанный доступ.', 'transit-client-help'));
     if (options.openSharedInternet) {
       const sharing = node('button', 'Общий интернет через компьютер', 'sw-button'); sharing.type = 'button';
       sharing.addEventListener('click', () => { dialog.close(); options.openSharedInternet?.(); }); body.append(sharing);

@@ -8,11 +8,12 @@ const keys = generateKeyPairSync('ed25519'), profile = { outbounds: [{ type: 'vl
 const deliveryKey = Buffer.alloc(32, 7);
 const configuration = { endpoint: 'http://fixture.invalid/v1/profile', issuer: 'https://soty.example', key: keys.privateKey, deliveryKey, appId: 'app-' + 'a'.repeat(32) };
 const sha256 = createHash('sha256').update(JSON.stringify(profile)).digest('hex');
-function encrypted(value, body) {
+function encrypted(value, body, usage = false) {
   const nonce = randomBytes(12), cipher = createCipheriv('aes-256-gcm', deliveryKey, nonce);
-  cipher.setAAD(Buffer.concat([Buffer.from('TRANSIT/PROFILE-DELIVERY/V1\0'), Buffer.from(body)]));
+  cipher.setAAD(Buffer.concat([Buffer.from(usage ? 'TRANSIT/USAGE-DELIVERY/V1\0' : 'TRANSIT/PROFILE-DELIVERY/V1\0'), Buffer.from(body)]));
   const bytes = Buffer.concat([cipher.update(JSON.stringify(value)), cipher.final()]);
-  return { schema: 'transit.encrypted-profile.v1', nonce: nonce.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: bytes.toString('base64') };
+  return { schema: usage ? 'transit.encrypted-usage.v1' : 'transit.encrypted-profile.v1',
+    nonce: nonce.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: bytes.toString('base64') };
 }
 function fixture(t, respond) {
   const actor = Object.freeze({ accountId: 'account-A', deviceId: 'device-A' }); let active = true, calls = 0;
@@ -79,4 +80,34 @@ test('an intercepted, tampered or replayed response cannot supply a profile', as
     });
     await assert.rejects(f.service.executeAsync({ op: 'transit.access.profile', actor: f.actor, args: f.args }), { code: 'transit_access_unavailable' });
   }
+});
+
+test('usage is an opt-in signed owner read, with exact byte counts and no profile claim', async t => {
+  const disabled = fixture(t);
+  await assert.rejects(disabled.service.executeAsync({ op: 'transit.access.usage', actor: disabled.actor, args: disabled.args }),
+    { code: 'transit_access_unavailable' });
+  assert.equal(disabled.calls(), 0);
+
+  let bridge, calls = 0;
+  const op = 'transit.access.usage';
+  const connect = signedFixture(t, [{ operations: new Set([op]), executeAsync: request => bridge.executeAsync(request) }]);
+  const usage = { uploadBytes: '9007199254740993', downloadBytes: '42', freshEntries: 1, expectedEntries: 2, latestObservationAt: 100_000 };
+  bridge = createTransitAccess({ configuration: { ...configuration, usageEnabled: true }, getConnect: () => connect.service,
+    async fetchImpl(url, options) {
+      calls++;
+      assert.equal(url, 'http://fixture.invalid/v1/usage');
+      const actor = JSON.parse(options.body);
+      assert.equal(actor.schema, 'soty.transit-usage-request.v1');
+      assert.ok(verify(null, Buffer.concat([Buffer.from('TRANSIT/SOTY-USAGE/V1\0'), Buffer.from(options.body)]),
+        createPublicKey(keys.privateKey), Buffer.from(options.headers['x-transit-signature'], 'base64')));
+      return Response.json(encrypted({ schema: 'transit.personal-usage.v1', accountId: actor.accountId,
+        usage: calls === 1 ? usage : null }, options.body, true));
+    } });
+  t.after(() => bridge.close());
+  const a = await connect.person('A'), b = await connect.person('B');
+  assert.deepEqual((await connect.call(a, op, { expectedAccountId: a.accountId })).usage, usage);
+  assert.equal((await connect.call(b, op, { expectedAccountId: b.accountId })).usage, null);
+  const denied = await connect.raw(b, op, { expectedAccountId: a.accountId });
+  assert.equal(denied.error.code, 'transit_access_context_changed');
+  assert.equal(calls, 2);
 });
