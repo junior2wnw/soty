@@ -20,10 +20,19 @@ const wait = ms => new Promise(done => setTimeout(done, ms));
 const secret = () => randomBytes(32).toString('base64url');
 const digest = value => createHash('sha256').update(value).digest('hex');
 async function until(check, label, timeout = 5000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) { const value = await check(); if (value) return value; await wait(10); }
+  const deadline = performance.now() + timeout;
+  while (performance.now() < deadline) { const value = await check(); if (value) return value; await wait(10); }
   throw new Error(`liveness_acceptance_timeout:${label}`);
 }
+
+test('acceptance polling keeps its elapsed-time budget across a wall-clock correction', async () => {
+  const original = Date.now; let correction = 0, checks = 0;
+  Date.now = () => original() + correction;
+  try {
+    await until(() => { correction = 60_000; return ++checks === 2; }, 'wall-clock correction', 1000);
+    assert.equal(checks, 2);
+  } finally { Date.now = original; }
+});
 function bounded(promise, label, timeout = 5000) {
   let timer;
   return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`liveness_acceptance_timeout:${label}`)), timeout); })])
