@@ -119,7 +119,7 @@ test('ticket reuse, wrong Origin, ownership forgery, redirect SSRF and forbidden
 
 test('bounded streaming sends large real assets and revoke terminates active HTTP', async t => {
   const env = await setup(); t.after(env.close); const cookie = await env.launch(member);
-  const response = await http(env.port, '/large', { host: env.appHost, cookie }); assert.equal(response.status, 200); assert.equal(response.body.length, 4 * 1024 * 1024);
+  const response = await http(env.port, '/large', { host: env.appHost, cookie }); assert.equal(response.status, 200, response.status === 200 ? undefined : response.body.toString('utf8', 0, 512)); assert.equal(response.body.length, 4 * 1024 * 1024);
   for (let i = 0; i < 64; i++) assert.equal(response.body[i * 65536], i);
   const slow = request({ hostname: '127.0.0.1', port: env.port, path: '/slow', headers: { host: env.appHost, cookie } });
   const res = await new Promise(resolve => { slow.on('response', resolve); slow.end(); });

@@ -1968,7 +1968,7 @@ test('reconnection from a non-field screen resumes its durable field outbox', as
   f.app.connection = 'unreachable'; f.app.renderPwaBanner = () => {};
   try {
     f.connectionChanged({ connection: 'online' });
-    for (let i = 0; i < 50 && h.local()?.pending.length; i++) await turn();
+    await until(() => h.local()?.pending.length === 0, 'reconnection acknowledges the durable field outbox');
     assert.equal(h.local().pending.length, 0); assert.deepEqual(h.remote().document, document);
     assert.deepEqual(h.operations, ['world.field.get', 'world.field.put']);
   } finally { f.app.cleanScreen(); h.dispose(); }
@@ -3140,7 +3140,9 @@ test('history acknowledgement clears the shared old intent without erasing a dif
     async acknowledge(_ids,value){events.push('ack:'+value.clientId);if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}});
   const old={messageId:'message_queued_old',clientId:'queued_old',seq:1,text:'Already delivered',author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false};
   const target={kind:'community',id:'room_ack',draftKey:'room_ack',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[old],hasMore:false};throw Error('Unexpected network operation');}};
-  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});
+  await f.app.chatDraftSession.ready;
+  await until(()=>events.includes('ack:queued_old'),'history acknowledges the shared old intent');
   assert.deepEqual(events,['ack:queued_old']);assert.equal(pending,null);assert.equal(drafts.read('account-A','room_ack').pending.clientId,'local_next');assert.equal(drafts.read('account-A','room_ack').text,'Next thought');
   f.app.chatCleanup();
 });
@@ -3170,7 +3172,10 @@ test('queue reopening restores its earlier pending ID and retains the other loca
   f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=()=>{attempts++;if(attempts===1)return {ready:Promise.reject(Object.assign(Error('Synthetic IDB failure'),{code:'attachment_local_storage'})),canSend:()=>false,pendingIntent:()=>null,acceptedIntent:()=>null,close(){}};
     return {ready:Promise.resolve(),canSend:()=>false,refs:()=>[],pendingIntent:()=>pending,acceptedIntent:()=>null,close(){},async prepareSend(value){if(!pending)pending={clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]};return {state:'pending',intent:pending};},async acknowledge(_ids,value){if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}};};
   const target={kind:'community',id:'room_recover_pending',draftKey:'room_recover_pending',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push(args.clientId);return {message:{messageId:'message_old',clientId:args.clientId,seq:1,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
-  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
+  const parent=f.makeElement('div');f.mountOwnedConversation(parent,target,{showHeader:false,notify(){}});
+  await f.app.chatDraftSession.ready;
+  await until(()=>parent.querySelector('.sw-error').textContent==='chat_local_storage_unavailable','the failed queue is ready to retry');
+  await submitChat(parent.querySelector('.sw-composer'));
   assert.equal(attempts,2);assert.deepEqual(events,['idb_before_error']);assert.equal(pending,null);assert.equal(drafts.read('account-A','room_recover_pending').pending.clientId,'local_after_error');assert.equal(drafts.read('account-A','room_recover_pending').text,'Next thought');
   f.app.chatCleanup();
 });
