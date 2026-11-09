@@ -185,7 +185,8 @@ test('the signed Core envelope reaches the actual ordinary controller without st
 
 test('trusted server-relative host deadlines accept both 13s clock offsets without rewriting the opaque proof',async t=>{
  for(const serverSkew of [13000,-13000]){
-  const f=await fixture(t,{serverSkew,serverDate:true}),initial=f.member({expiresAt:f.serverNow()+30000});
+  const wall=Date.now(),started=performance.now(),serverClock=()=>Math.trunc(wall+serverSkew+performance.now()-started);
+  const f=await fixture(t,{serverClock,serverDate:true}),initial=f.member({expiresAt:f.serverNow()+30000});
   f.result(f.host({hostSession:initial,hostSessionExpiresAt:initial.expiresAt}));
   const first=await f.launch(),cleanup=f.client.appSlotCleanup(first);assert.equal(typeof cleanup,'function');
   const admitted={...initial,expiresAt:f.serverNow()+86400000};
