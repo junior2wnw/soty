@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, basename, dirname, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import WebSocket, { WebSocketServer } from 'ws';
 import { createReleasePlan, nativeIngress } from './release.mjs';
 import { deployment, manifest } from './fixtures.mjs';
 
@@ -28,16 +28,12 @@ test('real Caddy preserves app query/cookie/CSP and closes the ingress when acce
     res.setHeader('Set-Cookie', '__Host-own_app=session; Secure; HttpOnly; Path=/; SameSite=Lax');
     res.end('application');
   });
-  app.on('upgrade', (req, socket) => {
+  const wss = new WebSocketServer({ noServer: true });
+  app.on('upgrade', (req, socket, head) => {
     sockets.add(socket); socket.on('close', () => sockets.delete(socket));
     upgraded.push({ origin: req.headers.origin, cookie: req.headers.cookie });
-    const accept = createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
-    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
-    // Echo one valid masked client frame: exercise the actual upgraded tunnel.
-    socket.once('data', frame => {
-      const size = frame[1] & 127, mask = frame.subarray(2, 6), payload = frame.subarray(6, 6 + size);
-      const text = Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]));
-      socket.write(Buffer.concat([Buffer.from([0x81, text.length]), text]));
+    wss.handleUpgrade(req, socket, head, ws => {
+      ws.once('message', bytes => ws.send(bytes.toString()));
     });
   });
   await new Promise(done => gateway.listen(0, '127.0.0.1', done)); await new Promise(done => app.listen(0, '127.0.0.1', done));
@@ -87,20 +83,15 @@ test('real Caddy preserves app query/cookie/CSP and closes the ingress when acce
   assert.match(response.headers['content-security-policy'], /frame-ancestors 'self' https:\/\/shell\.example/u);
   assert.match(response.headers['set-cookie'][0], /__Host-own_app=/u);
   const websocket = (origin = plan.origin, { upgrade = 'websocket', cookie = '__Host-soty_app_session=valid; __Host-own_app=own' } = {}) => new Promise((done, fail) => {
-    const req = request({ host: '127.0.0.1', port, path: '/ws?channel=fixture', headers: {
-      Host: 'project.example', ...(origin === null ? {} : { Origin: origin }), Upgrade: upgrade, Connection: 'Upgrade',
-      'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13',
-      Cookie: cookie,
-    } });
-    req.on('response', res => { res.resume(); done({ status: res.statusCode }); });
-    req.on('error', fail);req.setTimeout(3000, () => req.destroy(new Error('websocket probe timeout')));
-    req.on('upgrade', (res, socket, head) => {
-      const timer = setTimeout(() => { socket.destroy(); fail(new Error('websocket echo timeout')); }, 3000);
-      socket.once('error', error => { clearTimeout(timer); fail(error); });
-      const received = data => { clearTimeout(timer);socket.destroy();done({ status: res.statusCode, echo: data.subarray(2).toString() }); };
-      if (head.length) received(head); else socket.once('data', received);
-      socket.write(Buffer.from([0x81, 0x82, 1, 2, 3, 4, 'o'.charCodeAt(0) ^ 1, 'k'.charCodeAt(0) ^ 2]));
-    });req.end();
+    const ws = new WebSocket('ws://127.0.0.1:' + port + '/ws?channel=fixture', {
+      handshakeTimeout: 3000, headers: { Host: 'project.example', ...(origin === null ? {} : { Origin: origin }),
+        Upgrade: upgrade, Cookie: cookie },
+    });
+    const timer = setTimeout(() => { ws.terminate(); fail(new Error('websocket echo timeout')); }, 3000);
+    ws.once('error', error => { clearTimeout(timer); fail(error); });
+    ws.once('unexpected-response', (_req, res) => { clearTimeout(timer); res.resume(); done({ status: res.statusCode }); });
+    ws.once('open', () => ws.send('ok'));
+    ws.once('message', bytes => { clearTimeout(timer); ws.terminate(); done({ status: 101, echo: bytes.toString() }); });
   });
   assert.deepEqual(await websocket(), { status: 101, echo: 'ok' });
   assert.equal(authUpgrades, 0, 'forward_auth must remain an ordinary HTTP request');
