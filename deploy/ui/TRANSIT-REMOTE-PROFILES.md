@@ -21,7 +21,17 @@ Keep the issuer internal, existing pool, claims, signing/delivery keys, mounts,
 app ID and network listeners unchanged.
 
 The public GET route runs before monitoring/session collectors and never emits
-the token in a diagnostic. If actual Caddy access logging is active, exclude
+the token in a diagnostic. The Root host's existing API path boundary must also
+include `/transit/subscriptions/*`. Root's HTTP registration alone does not
+publish a path excluded by Caddy. `prepareTransitSubscriptionIngress` in
+`transit-ingress.mjs` prepares this exact one-expression extension and verifies
+the complete adapted configuration. Qualify actual disk/active provenance,
+preserve encrypted rollback, apply through maintained configuration CAS, then
+verify a real HTTPS capability GET and all security headers. It changes no
+other host, upstream, TLS setting, logging encoder or immutable UI rule. A
+repeated or ambiguous boundary is refused instead of guessing.
+
+If actual Caddy access logging is active, exclude
 `/transit/subscriptions/*` with a canonical scoped log_skip rule before enabling
 the endpoint. log_skip does not suppress runtime error logs: independently
 redact secret path segments in each runtime encoder, including request>uri,
