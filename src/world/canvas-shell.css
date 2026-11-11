@@ -32,3 +32,12 @@
   html[data-soty-keyboard=true] .uf-canvas-dock { display:none; }
 }
 @media(forced-colors:active) { .uf-canvas-dock,.uf-canvas-scale.sw-button { background:Canvas;border:1px solid CanvasText; } .uf-canvas-dock>.uf-canvas-add { background:ButtonFace;color:ButtonText;border:1px solid ButtonText; } }
+
+/* An honest first action, not a saved canvas object or a cover over app targets. */
+.uf-screen[data-shell=canvas]>.uf-scene-host:has(>.uf-personal-start:not([hidden])) { display:flex;flex-direction:column; }
+.sw-app[data-experience=one-field] .uf-screen[data-shell=canvas]>.uf-scene-host:has(>.uf-personal-start:not([hidden]))>.uf-viewport { flex:1 1 0;height:auto;min-height:0; }
+.uf-screen[data-shell=canvas] .uf-empty.uf-personal-start { position:static;order:1;align-self:center;transform:none;width:auto;max-width:calc(100% - 24px);margin:8px 12px 20px;padding:0;border:0;border-radius:0;background:transparent; }
+.uf-personal-start>.uf-first-note { min-height:44px;min-width:140px; }
+@media(max-width:720px) {
+  .uf-screen[data-shell=canvas] .uf-empty.uf-personal-start { margin-bottom:calc(var(--uf-canvas-dock-bottom,12px) + var(--uf-canvas-dock-height,56px) + 12px);padding-bottom:0; }
+}

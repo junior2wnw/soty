@@ -581,15 +581,31 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     updateMineEmpty(summary?.document ?? engine.snapshot());
   }
   function updateMineEmpty(doc: FieldDocument): void {
-    if (mode !== 'mine') return;
+    if (!current()) { empty.hidden = true; emptyDocument = null; return; }
+    if (mode !== 'mine') {
+      if (empty.className?.split(/\s+/u).includes('uf-personal-start')) { empty.className = 'uf-empty'; empty.hidden = true; emptyDocument = null; }
+      return;
+    }
     if (renderMineSearchResults()) { empty.hidden = true; emptyDocument = null; return; }
     if (mineResolvedGeneration !== mineGeneration && element.dataset.mineState !== 'error') {
       empty.hidden = true; emptyDocument = null; return;
     }
-    const scope = `${queries.mine}:${filter}`;
+    const query = queries.mine.trim().toLocaleLowerCase('ru');
+    const personalStart = !query && filter === 'all' && doc.shortcuts.length === 0 && liveApps.length > 0
+      && element.dataset.mineState === 'ready' && element.dataset.liveAppsState === 'ready' && ownedAppsState === 'ready'
+      && element.dataset.search !== 'open' && !summary?.arranging && !selected && typeof options.onCreateMenu === 'function';
+    const scope = `${queries.mine}:${filter}:${personalStart}`;
     if (doc === emptyDocument && scope === emptyScope && metadataRevision === emptyMetadataRevision) return;
     emptyDocument = doc; emptyScope = scope; emptyMetadataRevision = metadataRevision;
-    const query = queries.mine.trim().toLocaleLowerCase('ru');
+    empty.className = 'uf-empty';
+    if (personalStart) {
+      const note = button('Записка', 'note', 'uf-first-note', () => {
+        if (current() && mode === 'mine' && filter === 'all' && !queries.mine.trim() && engine?.snapshot().shortcuts.length === 0) options.onCreateMenu?.();
+      });
+      note.setAttribute('aria-label', 'Создать первую записку'); note.setAttribute('aria-haspopup', 'dialog');
+      note.setAttribute('data-glass-role', 'control'); note.setAttribute('data-glass-safe-area', 'off');
+      empty.className = 'uf-empty uf-personal-start'; empty.hidden = false; empty.replaceChildren(note); return;
+    }
     const matchingContexts = new Set(doc.contexts.filter(context => context.title.toLocaleLowerCase('ru').includes(query)).map(context => context.contextId));
     const count = doc.shortcuts.filter(shortcut => {
       const item = metadata.get(fieldEntityKey(shortcut.entity));
