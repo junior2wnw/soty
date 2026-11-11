@@ -195,8 +195,14 @@ The private operator reader creates and starts its fixed read-only Docker exec
 once. A complete, validated DTO can arrive before Docker marks that exec stopped.
 In that case it polls only `GET /exec/<same-id>/json`, with the original configured
 timeout as one operation deadline (10 seconds by default). Every HTTP request and
-the metadata-settling wait shares that budget; the server socket deadline stays
-unchanged. Terminal exit0, the exact fixed command/identity/privilege/TTY metadata
+the metadata-settling wait shares that budget. Private socket admission still has
+a 1-second deadline and at most8 connections: only the exact bounded request and
+EOF start a separate 3-second response budget. The client allows1 second to
+connect, then3 seconds for the complete response. These phases fit inside the
+outer10-second operation deadline, leaving room for Node startup and Docker
+identity/metadata checks without increasing the idle-client limit. A monotonic
+post-capture check also rejects a synchronous callback that overruns the response
+budget, even when it blocked the timer. Terminal exit0, the exact fixed command/identity/privilege/TTY metadata
 and the unchanged running container are still required. Invalid or lost stdout,
 HTTP ambiguity, nonzero exit and changed metadata never authorize another
 CREATE/START or output recovery by replay.
@@ -204,7 +210,13 @@ CREATE/START or output recovery by replay.
 Existing top-level error codes remain. Reader failures additionally carry a
 closed `soty.universal-measurement-diagnostic.v1` record: container/exec IDs,
 failed stage, observed HTTP status (null if headers did not arrive), safe exit and
-identity booleans, error category and bounded timing/poll counts. This metadata
+identity booleans, error category and bounded timing/poll counts. A nonzero fixed
+reader can additionally supply only a closed `readerReason`: `client_deadline`,
+`socket`, `path`, `response_parse`, `capture`, `response_deadline` or `unavailable`.
+The reason is accepted only after exact terminal exec metadata; an attached
+failure waits only for that same exec to settle. Malformed/extra envelopes and
+exit0 with an error envelope never qualify as a DTO. Older success DTOs remain
+valid; old/unknown reader errors map to `unavailable`. This metadata
 is reader-owned; arbitrary error properties are not serialized. CLI failures
 return it and activation failures retain it in the existing journal before
 restoration. It contains no stdout/stderr, command arguments, response body,

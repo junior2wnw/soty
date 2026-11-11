@@ -49,9 +49,18 @@ Trusted Docker-exec reader импортирует `readUniversalOperator()` бе
 Client half-closes запись после exact ASCII
 `soty.universal-preparedness.v1\n`; server отвечает одной закрытой JSON measurement
 и newline. Request≤128 bytes, response≤64KiB, не более8 accepted sockets,
-absolute timeout1000ms. Только полный exact request вызывает synchronous capture;
+request admission timeout1000ms; только после полного exact request и EOF начинается
+отдельный response budget3000ms. Client ограничивает connect1000ms и полный response3000ms;
+общий fixed Docker-exec reader сохраняет outer deadline10000ms. Это разделение от
+12.11.2026 допускает корректный ответ дольше секунды, не увеличивая время для idle/
+незавершённых запросов. Monotonic post-capture fence отвергает и synchronous callback,
+заблокировавший timer дольше response budget. Только полный exact request вызывает synchronous capture;
 extra fields/commands, неизвестный формат, Promise/throw/credentials дают безопасный
-отказ. Ошибки не выводят исходный input/cause/key или host callback result.
+отказ. Ошибки не выводят исходный input/cause/key или host callback result. Private
+error envelope содержит только закрытые schema/reason; он всегда является отказом,
+а не measurement. Fixed exec отображает известный код в конечный набор причин;
+DockerApi сохраняет `readerReason` только после точного terminal exec metadata.
+Успешный DTO и его строгая валидация не изменены.
 
 Существующий live listener не заменяется. Stale owned0600 socket убирается только
 после ECONNREFUSED и повторной проверки inode/owner/mode/parent. Сокет публикуется

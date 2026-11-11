@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, rm, realpath, mkdir, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DockerApi, SafeError, universalMeasurementDiagnostic } from './docker-api.mjs';
@@ -13,7 +14,7 @@ async function fixture(t) {
   const root = await mkdtemp(path.join(await realpath(tmpdir()), 'soty-universal-policy-')), f = await dockerHttpFixture(root);
   t.after(async () => { await f.close(); assert.equal(path.dirname(path.resolve(root)), await realpath(tmpdir()));
     assert.match(path.basename(root), /^soty-universal-policy-/u); await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); });
-  return { ...f, api: new DockerApi({ socketPath: f.socket }) };
+  return { ...f, root, api: new DockerApi({ socketPath: f.socket }) };
 }
 
 test('actual Docker HTTP fixture runs only the fixed private reader and sanitizes its closed stdout', async t => {
@@ -133,6 +134,76 @@ test('a running exec cannot extend its original operation deadline or authorize 
 test('untrusted error properties cannot manufacture a journal-safe measurement diagnostic',()=>{
   const error=new SafeError('universal_measurement_unresolved');error.universalMeasurementDiagnostic={stdout:'PRIVATE_SYNTHETIC_SECRET'};
   assert.equal(universalMeasurementDiagnostic(error),null);
+});
+
+test('the actual fixed Node command keeps old success compatibility and emits only closed private failure reasons', async t => {
+  const f = await fixture(t); await f.api.universalPreparedness(args.originalId);
+  const command = f.calls.find(call => call.route.endsWith('/exec') && call.method === 'POST').body.Cmd;
+  await mkdir(path.join(f.root, 'server')); await writeFile(path.join(f.root, 'package.json'), '{"type":"module"}');
+  for (const [code, reason] of [[null, null], ['universal_operator_client_deadline', 'client_deadline'], ['universal_operator_socket_error', 'socket'],
+    ['universal_operator_path_invalid', 'path'], ['universal_operator_path_changed', 'path'], ['universal_operator_response_invalid', 'response_parse'],
+    ['universal_operator_capture_failed', 'capture'], ['universal_operator_response_deadline', 'response_deadline'],
+    ['universal_operator_unavailable', 'unavailable'], ['PRIVATE_SYNTHETIC_SECRET', 'unavailable'], ['__proto__', 'unavailable']]) {
+    await writeFile(path.join(f.root, 'server/universal-operator.js'), code === null
+      ? `export async function readUniversalOperator(){return ${JSON.stringify(dto())};}`
+      : `export async function readUniversalOperator(){throw Object.assign(Error('PRIVATE_SYNTHETIC_SECRET'),{code:${JSON.stringify(code)}});}`);
+    const child = spawn(process.execPath, command.slice(1), { cwd: f.root, stdio: ['ignore', 'pipe', 'pipe'] }), stdout = [], stderr = [];
+    child.stdout.on('data', bytes => stdout.push(bytes)); child.stderr.on('data', bytes => stderr.push(bytes));
+    const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+    assert.equal(exit, code === null ? 0 : 1); assert.equal(Buffer.concat(stderr).length, 0);
+    assert.deepEqual(JSON.parse(Buffer.concat(stdout)), code === null ? dto() : { schema: 'soty.universal-operator-error.v1', reason });
+  }
+});
+
+test('closed private failure reasons enter the WeakMap only after exact terminal exec metadata', async t => {
+  for (const reason of ['client_deadline', 'socket', 'path', 'response_parse', 'capture', 'response_deadline', 'unavailable']) await t.test(reason, async t => {
+    const f = await fixture(t), request = f.api.request.bind(f.api); f.setOriginalMeasurement({ schema: 'soty.universal-operator-error.v1', reason });
+    f.api.request = async (method, route, ...rest) => { const value = await request(method, route, ...rest);
+      if (route.startsWith('/exec/') && route.endsWith('/json')) value.ExitCode = 1; return value; };
+    await assert.rejects(f.api.universalPreparedness(args.originalId), error => {
+      const d = universalMeasurementDiagnostic(error); assert.equal(error.code, 'universal_measurement_unresolved');
+      assert.equal(d.errorCategory, 'exec_nonzero_exit'); assert.equal(d.readerReason, reason); assert.equal(d.exec.exitCode, 1);
+      assert.equal(d.exec.argumentsMatch, true); assert.equal(d.exec.containerMatches, true); assert.equal(d.exec.running, false);
+      assert.equal(Object.hasOwn(d, 'stdout'), false); assert.equal(Object.hasOwn(d, 'stderr'), false); return true;
+    });
+    assert.equal(f.calls.filter(c => c.route.endsWith('/exec')).length, 1);
+    assert.equal(f.calls.filter(c => c.route.startsWith('/exec/') && c.route.endsWith('/start')).length, 1);
+  });
+});
+
+test('a closed failure waits only for the same exec to settle and never becomes a successful DTO', async t => {
+  for (const exitCode of [0, 1]) await t.test(String(exitCode), async t => {
+    const f = await fixture(t), request = f.api.request.bind(f.api); let polls = 0;
+    f.setOriginalMeasurement({ schema: 'soty.universal-operator-error.v1', reason: 'capture' });
+    f.api.request = async (method, route, ...rest) => { const value = await request(method, route, ...rest);
+      if (route.startsWith('/exec/') && route.endsWith('/json')) { value.Running = ++polls < 2; value.ExitCode = exitCode; } return value; };
+    await assert.rejects(f.api.universalPreparedness(args.originalId), error => {
+      const d = universalMeasurementDiagnostic(error); assert.equal(d.inspectPolls, 2);
+      assert.equal(d.errorCategory, exitCode ? 'exec_nonzero_exit' : 'runtime_output_invalid'); assert.equal(d.readerReason, exitCode ? 'capture' : null); return true;
+    });
+    assert.equal(f.calls.filter(c => c.route.endsWith('/exec')).length, 1);
+    const started = f.calls.filter(c => c.route.startsWith('/exec/') && c.route.endsWith('/start')); assert.equal(started.length, 1);
+    const sameId = started[0].route.split('/')[2];
+    assert.equal(f.calls.filter(c => c.route.startsWith('/exec/') && c.route.endsWith('/json')).every(c => c.route === `/exec/${sameId}/json`), true);
+  });
+});
+
+test('malformed, extra and untrusted failure envelopes cannot supply a private reason or readiness', async t => {
+  for (const fault of ['extra', 'unknown', 'duplicate', 'zero-exit', 'command']) await t.test(fault, async t => {
+    const f = await fixture(t), request = f.api.request.bind(f.api);
+    const envelope = { schema: 'soty.universal-operator-error.v1', reason: 'capture' };
+    f.setOriginalMeasurement(fault === 'duplicate' ? '{"schema":"soty.universal-operator-error.v1","reason":"capture","reason":"path"}'
+      : fault === 'extra' ? { ...envelope, extra: 'PRIVATE_SYNTHETIC_SECRET' } : fault === 'unknown' ? { ...envelope, reason: 'PRIVATE_SYNTHETIC_SECRET' } : envelope);
+    f.api.request = async (method, route, ...rest) => { const value = await request(method, route, ...rest);
+      if (route.startsWith('/exec/') && route.endsWith('/json')) { value.ExitCode = fault === 'zero-exit' ? 0 : 1;
+        if (fault === 'command') value.ProcessConfig.arguments = ['PRIVATE_SYNTHETIC_SECRET']; } return value; };
+    await assert.rejects(f.api.universalPreparedness(args.originalId), error => {
+      const d = universalMeasurementDiagnostic(error); assert.match(error.code, /^universal_measurement_/u); assert.equal(d.readerReason, null);
+      assert.equal(JSON.stringify(d).includes('PRIVATE_SYNTHETIC_SECRET'), false); return true;
+    });
+    assert.equal(f.calls.filter(c => c.route.endsWith('/exec')).length, 1);
+    assert.equal(f.calls.filter(c => c.route.startsWith('/exec/') && c.route.endsWith('/start')).length, 1);
+  });
 });
 
 test('actual HTTP status is retained without an engine response body or a duplicate CREATE',async t=>{

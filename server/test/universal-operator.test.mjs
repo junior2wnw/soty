@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createConnection, createServer } from 'node:net';
 import { lstat, mkdir, chmod, unlink, writeFile, readFile, rmdir, symlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { startUniversalOperator, readUniversalOperator, universalOperatorPath, UNIVERSAL_OPERATOR_LIMITS } from '../universal-operator.js';
 import { captureUniversalPreparedness, UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
 
@@ -26,6 +27,25 @@ async function raw(value, { end = true } = {}) {
     socket.on('data', chunk => { length += chunk.length; assert.equal(length <= 65536, true); chunks.push(chunk); });
     socket.on('error', () => {}); socket.once('close', () => { clearTimeout(timer); resolve(Buffer.concat(chunks, length).toString('utf8')); });
   });
+}
+async function responseFixture(t, { delayMs = 0, response = JSON.stringify(baseline()) + '\n' } = {}) {
+  assert.equal(await exists(universalOperatorPath), null);
+  try { await mkdir(directory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const sockets = new Set(), timers = new Set();
+  const server = createServer({ allowHalfOpen: true }, socket => {
+    sockets.add(socket); socket.on('error', () => {}); socket.once('close', () => sockets.delete(socket));
+    const chunks = []; socket.on('data', bytes => chunks.push(bytes));
+    socket.once('end', () => {
+      assert.equal(Buffer.concat(chunks).toString(), UNIVERSAL_RUNTIME_SCHEMA + '\n');
+      if (response === null) return;
+      const timer = setTimeout(() => { timers.delete(timer); socket.end(response); }, delayMs); timers.add(timer);
+    });
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(universalOperatorPath, resolve); }); await chmod(universalOperatorPath, 0o600);
+  let closing;
+  const close = () => closing ??= (async () => { for (const timer of timers) clearTimeout(timer); for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => server.close(resolve)); await cleanupDirectory(); })();
+  t.after(close); return { close };
 }
 
 test('Windows returns unsupported without creating a listener or invoking the host capture', { skip: posix }, async () => {
@@ -56,7 +76,9 @@ test('only the exact bounded request is accepted; extra command/body/oversize an
   for (const input of [UNIVERSAL_RUNTIME_SCHEMA, UNIVERSAL_RUNTIME_SCHEMA + '\n{}', 'revoke\n', 'x'.repeat(129)]) {
     const result = await raw(input); assert.equal(result.includes('universalConfigured'), false);
   }
+  const started = performance.now();
   assert.equal(await raw(UNIVERSAL_RUNTIME_SCHEMA + '\n', { end: false }), ''); assert.equal(called, 0);
+  assert.equal(performance.now() - started >= 900 && performance.now() - started < 2000, true, 'incomplete requests retain the 1s admission bound');
   assert.deepEqual(await readUniversalOperator(), baseline()); assert.equal(called, 1);
 });
 
@@ -76,9 +98,49 @@ test('eight pending sockets are a hard bound and close destroys them without ret
 test('callback failure/async result/credentials never reach private output', options, async t => {
   const failures = [() => { throw new Error('PRIVATE_SYNTHETIC_KEY_DO_NOT_EMIT'); }, () => Promise.reject(new Error('PRIVATE_SYNTHETIC_KEY_DO_NOT_EMIT')),
     () => ({ ...baseline(), secret: 'PRIVATE_SYNTHETIC_KEY_DO_NOT_EMIT' })];
-  for (const capture of failures) {
+  for (const [index, capture] of failures.entries()) {
     const handle = await fixture(t, capture), response = await raw(UNIVERSAL_RUNTIME_SCHEMA + '\n');
-    assert.equal(response, '{"error":"universal_operator_unavailable"}\n'); await assert.rejects(readUniversalOperator()); await handle.close();
+    assert.deepEqual(JSON.parse(response), { schema: 'soty.universal-operator-error.v1', reason: index < 2 ? 'capture' : 'response_parse' });
+    const started = performance.now();
+    await assert.rejects(readUniversalOperator(), { code: index < 2 ? 'universal_operator_capture_failed' : 'universal_operator_response_invalid' });
+    assert.equal(performance.now() - started < 500, true, 'capture/DTO failures do not wait for the response deadline'); await handle.close();
+  }
+});
+
+test('an exact completed Unix request accepts a valid response delayed 1.2s without changing its DTO', options, async t => {
+  await responseFixture(t, { delayMs: 1200 }); const started = performance.now();
+  assert.deepEqual(await readUniversalOperator(), baseline());
+  assert.equal(performance.now() - started >= 1100 && performance.now() - started < 3000, true);
+});
+
+test('an admitted Unix peer cannot hold a response beyond the explicit 3s budget', options, async t => {
+  await responseFixture(t, { response: null }); const started = performance.now();
+  await assert.rejects(readUniversalOperator(), { code: 'universal_operator_client_deadline' });
+  assert.equal(UNIVERSAL_OPERATOR_LIMITS.timeoutMs, 1000); assert.equal(UNIVERSAL_OPERATOR_LIMITS.responseTimeoutMs, 3000);
+  assert.equal(performance.now() - started >= 2900 && performance.now() - started < 4000, true);
+});
+
+test('admitted synchronous captures get a response phase but cannot overrun its monotonic fence', options, async t => {
+  for (const delayMs of [1200, 3100]) {
+    const handle = await fixture(t, () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs); return baseline(); });
+    const code = `const net=require('node:net');const socket=net.createConnection({path:${JSON.stringify(universalOperatorPath)}}),chunks=[];const timer=setTimeout(()=>{socket.destroy();process.exitCode=2;},5000);socket.on('error',()=>{});socket.once('connect',()=>socket.end(${JSON.stringify(UNIVERSAL_RUNTIME_SCHEMA + '\n')}));socket.on('data',bytes=>chunks.push(bytes));socket.once('close',()=>{clearTimeout(timer);process.stdout.write(Buffer.concat(chunks));});`;
+    const child = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'pipe'] }), stdout = [], stderr = [];
+    child.stdout.on('data', bytes => stdout.push(bytes)); child.stderr.on('data', bytes => stderr.push(bytes));
+    const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+    assert.equal(exit, 0); assert.equal(Buffer.concat(stderr).length, 0);
+    assert.deepEqual(JSON.parse(Buffer.concat(stdout)), delayMs < 3000 ? baseline() : { schema: 'soty.universal-operator-error.v1', reason: 'response_deadline' });
+    await handle.close();
+  }
+});
+
+test('private response parsing rejects malformed, oversized and extra/unknown diagnostic envelopes immediately', options, async t => {
+  for (const response of ['not json', '', 'x'.repeat(65537), JSON.stringify({ ...baseline(), extra: 'PRIVATE_SYNTHETIC_SECRET' }),
+    '{"schema":"soty.universal-operator-error.v1","reason":"capture","reason":"path"}',
+    JSON.stringify({ schema: 'soty.universal-operator-error.v1', reason: 'capture', extra: 'PRIVATE_SYNTHETIC_SECRET' }),
+    JSON.stringify({ schema: 'soty.universal-operator-error.v1', reason: 'PRIVATE_SYNTHETIC_SECRET' })]) {
+    const peer = await responseFixture(t, { response }), started = performance.now();
+    await assert.rejects(readUniversalOperator(), { code: 'universal_operator_response_invalid' });
+    assert.equal(performance.now() - started < 500, true); await peer.close();
   }
 });
 
@@ -86,7 +148,7 @@ test('active listener cannot be replaced; shutdown never unlinks a substituted r
   const handle = await fixture(t); await assert.rejects(startUniversalOperator({ capture: baseline }), error => error.code === 'universal_operator_socket_busy');
   await unlink(universalOperatorPath); await writeFile(universalOperatorPath, 'FOREIGN_SYNTHETIC_FILE', { mode: 0o600 });
   t.after(async () => { if ((await exists(universalOperatorPath))?.isFile()) await unlink(universalOperatorPath); await cleanupDirectory(); });
-  await assert.rejects(readUniversalOperator()); await handle.close(); assert.equal(await readFile(universalOperatorPath, 'utf8'), 'FOREIGN_SYNTHETIC_FILE');
+  await assert.rejects(readUniversalOperator(), { code: 'universal_operator_path_invalid' }); await handle.close(); assert.equal(await readFile(universalOperatorPath, 'utf8'), 'FOREIGN_SYNTHETIC_FILE');
 });
 
 test('actual stale socket from a terminated process is replaced only after owned inode checks', options, async t => {
@@ -96,6 +158,7 @@ test('actual stale socket from a terminated process is replaced only after owned
   await new Promise((resolve, reject) => { child.once('message', resolve); child.once('error', reject); child.once('exit', () => reject(new Error('fixture_child_early_exit'))); });
   const death = new Promise(resolve => child.once('exit', resolve)); child.kill('SIGKILL'); await death;
   assert.equal((await lstat(universalOperatorPath)).isSocket(), true);
+  await assert.rejects(readUniversalOperator(), { code: 'universal_operator_socket_error' });
   const handle = await startUniversalOperator({ capture: baseline }); t.after(async () => { await handle.close(); await cleanupDirectory(); });
   assert.deepEqual(await readUniversalOperator(), baseline());
 });

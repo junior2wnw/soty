@@ -1,13 +1,17 @@
 import { createServer, createConnection } from 'node:net';
 import { mkdir, lstat, realpath, chmod, unlink, link } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { parseContractJson } from '../modules/app-contract/json.mjs';
 import { UNIVERSAL_RUNTIME_SCHEMA, UNIVERSAL_RUNTIME_MAX_BYTES, validateUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
 
 export const universalOperatorPath = '/tmp/soty-operator/universal.sock';
 export const UNIVERSAL_OPERATOR_LIMITS = Object.freeze({ connections: 8, requestBytes: 128, responseBytes: UNIVERSAL_RUNTIME_MAX_BYTES,
-  timeoutMs: 1000, staleProbeMs: 250 });
+  timeoutMs: 1000, responseTimeoutMs: 3000, staleProbeMs: 250 });
 const directory = '/tmp/soty-operator', requestBytes = Buffer.from(UNIVERSAL_RUNTIME_SCHEMA + '\n');
+const errorSchema = 'soty.universal-operator-error.v1';
+const responseErrors = Object.freeze({ request_invalid: 'universal_operator_unavailable', path: 'universal_operator_path_changed',
+  capture: 'universal_operator_capture_failed', response_parse: 'universal_operator_response_invalid', response_deadline: 'universal_operator_response_deadline' });
 export class UniversalOperatorError extends Error {
   constructor(code = 'universal_operator_unavailable') { super(code); this.name = 'UniversalOperatorError'; this.code = code; }
 }
@@ -15,7 +19,7 @@ const require = (ok, code) => { if (!ok) throw new UniversalOperatorError(code);
 const supported = () => process.platform !== 'win32' && typeof process.getuid === 'function';
 const owner = () => process.getuid();
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode && a.ctimeNs === b.ctimeNs;
-async function named(path) { try { return await lstat(path, { bigint: true }); } catch (error) { if (error.code === 'ENOENT') return null; throw new UniversalOperatorError(); } }
+async function named(path) { try { return await lstat(path, { bigint: true }); } catch (error) { if (error.code === 'ENOENT') return null; throw new UniversalOperatorError('universal_operator_path_invalid'); } }
 async function ownedDirectory() {
   const temporary = await named('/tmp');
   require(temporary?.isDirectory() && !temporary.isSymbolicLink() && await realpath('/tmp') === '/tmp'
@@ -71,8 +75,12 @@ export async function startUniversalOperator(options) {
   const server = createServer({ allowHalfOpen: true }, socket => {
     if (!active || sockets.size >= UNIVERSAL_OPERATOR_LIMITS.connections) { socket.destroy(); return; }
     sockets.add(socket); let length = 0, chunks = [], responded = false;
-    const timer = setTimeout(() => socket.destroy(), UNIVERSAL_OPERATOR_LIMITS.timeoutMs); timer.unref();
-    const replyError = () => { if (!responded && !socket.destroyed) { responded = true; socket.end('{"error":"universal_operator_unavailable"}\n'); } };
+    let timer = setTimeout(() => socket.destroy(), UNIVERSAL_OPERATOR_LIMITS.timeoutMs); timer.unref();
+    let responseDeadline = 0, failureReason = 'request_invalid';
+    const replyError = () => { if (!responded && !socket.destroyed) { responded = true; socket.end(JSON.stringify({ schema: errorSchema, reason: failureReason }) + '\n'); } };
+    const withinResponseBudget = () => {
+      if (performance.now() >= responseDeadline) { failureReason = 'response_deadline'; throw new UniversalOperatorError('universal_operator_response_deadline'); }
+    };
     socket.on('error', () => {}); socket.once('close', () => { clearTimeout(timer); sockets.delete(socket); chunks = []; });
     socket.on('data', chunk => {
       length += chunk.length;
@@ -82,10 +90,17 @@ export async function startUniversalOperator(options) {
     socket.once('end', async () => {
       try {
         require(active && !responded && length === requestBytes.length && Buffer.concat(chunks, length).equals(requestBytes)); chunks = [];
+        // Only an admitted exact request gets a response budget; idle/incomplete clients still have 1s.
+        clearTimeout(timer); responseDeadline = performance.now() + UNIVERSAL_OPERATOR_LIMITS.responseTimeoutMs;
+        timer = setTimeout(() => socket.destroy(), UNIVERSAL_OPERATOR_LIMITS.responseTimeoutMs); timer.unref();
+        failureReason = 'path';
         await checkNames(directoryIdentity, socketIdentity); require(active && !socket.destroyed);
+        withinResponseBudget(); failureReason = 'capture';
         const value = capture();
         if (value instanceof Promise) { Promise.prototype.catch.call(value, () => {}); throw new UniversalOperatorError(); }
+        withinResponseBudget(); failureReason = 'response_parse';
         const measurement = validateUniversalPreparedness(value), output = Buffer.from(JSON.stringify(measurement) + '\n');
+        withinResponseBudget();
         require(active && !socket.destroyed && output.length <= UNIVERSAL_OPERATOR_LIMITS.responseBytes);
         responded = true; socket.end(output);
       } catch { replyError(); }
@@ -135,19 +150,31 @@ export async function readUniversalOperator() {
   require(ownedSocket(socketIdentity), 'universal_operator_path_invalid');
   return new Promise((resolve, reject) => {
     const socket = createConnection({ path: universalOperatorPath }), chunks = []; let length = 0, done = false, ended = false;
-    const timer = setTimeout(() => finish(new UniversalOperatorError()), UNIVERSAL_OPERATOR_LIMITS.timeoutMs);
+    let timer = setTimeout(() => finish(new UniversalOperatorError('universal_operator_client_deadline')), UNIVERSAL_OPERATOR_LIMITS.timeoutMs), responseDeadline = 0;
     const finish = (error, value) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); error ? reject(error) : resolve(value); };
-    socket.once('connect', () => { socket.end(requestBytes); });
+    socket.once('connect', () => {
+      // The bounded 1s connection + 3s response phases fit within the fixed Docker reader's outer 10s deadline.
+      clearTimeout(timer); responseDeadline = performance.now() + UNIVERSAL_OPERATOR_LIMITS.responseTimeoutMs;
+      timer = setTimeout(() => finish(new UniversalOperatorError('universal_operator_client_deadline')), UNIVERSAL_OPERATOR_LIMITS.responseTimeoutMs);
+      socket.end(requestBytes);
+    });
     socket.on('data', chunk => { length += chunk.length;
-      if (length > UNIVERSAL_OPERATOR_LIMITS.responseBytes) finish(new UniversalOperatorError()); else chunks.push(chunk); });
-    socket.once('error', () => finish(new UniversalOperatorError()));
+      if (length > UNIVERSAL_OPERATOR_LIMITS.responseBytes) finish(new UniversalOperatorError('universal_operator_response_invalid')); else chunks.push(chunk); });
+    socket.once('error', () => finish(new UniversalOperatorError('universal_operator_socket_error')));
     socket.once('end', async () => {
       ended = true;
       try {
-        require(!done && length > 0); await checkNames(directoryIdentity, socketIdentity); require(!done);
-        const value = validateUniversalPreparedness(parseContractJson(Buffer.concat(chunks, length))); finish(null, value);
-      } catch { finish(new UniversalOperatorError()); }
+        require(!done && length > 0, 'universal_operator_response_invalid'); await checkNames(directoryIdentity, socketIdentity);
+        require(!done && performance.now() < responseDeadline, 'universal_operator_client_deadline');
+        const parsed = parseContractJson(Buffer.concat(chunks, length));
+        if (parsed?.schema === errorSchema) {
+          require(Object.keys(parsed).length === 2 && typeof parsed.reason === 'string' && Object.hasOwn(responseErrors, parsed.reason), 'universal_operator_response_invalid');
+          throw new UniversalOperatorError(responseErrors[parsed.reason]);
+        }
+        const value = validateUniversalPreparedness(parsed);
+        require(performance.now() < responseDeadline, 'universal_operator_client_deadline'); finish(null, value);
+      } catch (error) { finish(error instanceof UniversalOperatorError ? error : new UniversalOperatorError('universal_operator_response_invalid')); }
     });
-    socket.once('close', () => { if (!done && !ended) finish(new UniversalOperatorError()); });
+    socket.once('close', () => { if (!done && !ended) finish(new UniversalOperatorError('universal_operator_socket_error')); });
   });
 }

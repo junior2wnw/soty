@@ -3,7 +3,8 @@ import { parseContractJson } from '../../modules/app-contract/json.mjs';
 import { validateUniversalPreparedness } from '../../modules/app-contract/universal-preparedness.mjs';
 
 const UNIVERSAL_EXEC = Object.freeze(['node','--input-type=module','-e',
-  "try { const {readUniversalOperator}=await import('./server/universal-operator.js'); const value=await readUniversalOperator(); process.stdout.write(JSON.stringify(value)+'\\n'); } catch { process.exitCode=1; }"]);
+  "try { const {readUniversalOperator}=await import('./server/universal-operator.js'); const value=await readUniversalOperator(); process.stdout.write(JSON.stringify(value)+'\\n'); } catch(error) { const reasons={universal_operator_client_deadline:'client_deadline',universal_operator_socket_error:'socket',universal_operator_path_invalid:'path',universal_operator_path_changed:'path',universal_operator_response_invalid:'response_parse',universal_operator_capture_failed:'capture',universal_operator_response_deadline:'response_deadline'}; const reason=Object.hasOwn(reasons,error?.code)?reasons[error.code]:'unavailable'; process.stdout.write(JSON.stringify({schema:'soty.universal-operator-error.v1',reason})+'\\n'); process.exitCode=1; }"]);
+const readerReasons = new Set(['client_deadline','socket','path','response_parse','capture','response_deadline','unavailable']);
 
 export class SafeError extends Error { constructor(code) { super(code); this.code=code; } }
 const measurementDiagnostics=new WeakMap();
@@ -39,7 +40,7 @@ export class DockerApi {
   async universalPreparedness(id) {
     if(!/^[a-f0-9]{64}$/u.test(id||''))throw new SafeError('universal_measurement_identity');
     const started=Date.now(),timeoutMs=this.timeoutMs??10000,deadline=started+timeoutMs;
-    const diagnostic={schema:'soty.universal-measurement-diagnostic.v1',containerId:id,execId:null,stage:'container-before',httpStatus:null,errorCategory:null,exec:null,inspectPolls:0};
+    const diagnostic={schema:'soty.universal-measurement-diagnostic.v1',containerId:id,execId:null,stage:'container-before',httpStatus:null,errorCategory:null,readerReason:null,exec:null,inspectPolls:0};
     const fail=(code,category)=>{diagnostic.errorCategory=category;throw new SafeError(code);};
     const options=stage=>{
       diagnostic.stage=stage;diagnostic.httpStatus=null;
@@ -68,16 +69,26 @@ export class DockerApi {
       const output=await this.request('POST',`/exec/${diagnostic.execId}/start`,{Detach:false,Tty:false},true,66560,options('exec-start'));
       const outputStatus=diagnostic.httpStatus;
       let execution=await inspectExec();
-      if(!execution.Running&&execution.ExitCode!==0)fail('universal_measurement_unresolved','exec_nonzero_exit');
+      const terminalFailure=!execution.Running&&execution.ExitCode!==0;
+      const invalidOutput=()=>{if(terminalFailure){diagnostic.stage='exec-inspect';fail('universal_measurement_unresolved','exec_nonzero_exit');}
+        fail('universal_measurement_invalid','runtime_output_invalid');};
       diagnostic.stage='exec-output';diagnostic.httpStatus=outputStatus;
       const pieces=[];let cursor=0,size=0;
       while(cursor<output.length){
-        if(cursor+8>output.length||output[cursor]!==1||output[cursor+1]!==0||output[cursor+2]!==0||output[cursor+3]!==0)fail('universal_measurement_invalid','runtime_output_invalid');
-        const length=output.readUInt32BE(cursor+4);if(length>output.length-cursor-8||(size+=length)>65536)fail('universal_measurement_invalid','runtime_output_invalid');
+        if(cursor+8>output.length||output[cursor]!==1||output[cursor+1]!==0||output[cursor+2]!==0||output[cursor+3]!==0)invalidOutput();
+        const length=output.readUInt32BE(cursor+4);if(length>output.length-cursor-8||(size+=length)>65536)invalidOutput();
         pieces.push(output.subarray(cursor+8,cursor+8+length));cursor+=8+length;
       }
-      let value;try{value=validateUniversalPreparedness(parseContractJson(Buffer.concat(pieces,size)));}catch(error){diagnostic.errorCategory='runtime_output_invalid';throw error;}
-      // Attached stdout can close before Docker publishes terminal exec metadata. Only GET this SAME exec, with the full DTO already held.
+      const stdout=Buffer.concat(pieces,size);
+      let value,readerReason=null;try{
+        const parsed=parseContractJson(stdout);
+        if(parsed?.schema==='soty.universal-operator-error.v1'){
+          if(Object.keys(parsed).length!==2||typeof parsed.reason!=='string'||!readerReasons.has(parsed.reason))fail('universal_measurement_invalid','runtime_output_invalid');
+          readerReason=parsed.reason;
+        }else value=validateUniversalPreparedness(parsed);
+      }catch(error){if(terminalFailure){diagnostic.stage='exec-inspect';fail('universal_measurement_unresolved','exec_nonzero_exit');}
+        diagnostic.errorCategory='runtime_output_invalid';throw error;}
+      // Attached stdout can close before terminal metadata. Only GET this SAME exec, with a full validated DTO or closed failure held.
       while(execution.Running){
         diagnostic.stage='exec-inspect';
         const remaining=deadline-Date.now();if(remaining<=0)fail('universal_measurement_unresolved','exec_running_deadline');
@@ -85,7 +96,11 @@ export class DockerApi {
         if(Date.now()>=deadline)fail('universal_measurement_unresolved','exec_running_deadline');
         execution=await inspectExec();
       }
-      if(execution.ExitCode!==0)fail('universal_measurement_unresolved','exec_nonzero_exit');
+      if(execution.ExitCode!==0){
+        // Only the exact completed fixed command can supply this closed reason, never stderr or arbitrary error properties.
+        diagnostic.readerReason=readerReason;diagnostic.stage='exec-inspect';fail('universal_measurement_unresolved','exec_nonzero_exit');
+      }
+      if(readerReason!==null)fail('universal_measurement_invalid','runtime_output_invalid');
       const after=await this.inspect(id,options('container-after'));
       if(after.Id!==before.Id||after.Image!==before.Image||after.State?.Running!==true||after.State.StartedAt!==before.State.StartedAt)fail('universal_measurement_identity','container_changed');
       return value;
