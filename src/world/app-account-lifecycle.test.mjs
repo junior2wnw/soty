@@ -1292,18 +1292,21 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has 
   const runtime = appSurface(f).querySelector('.sa-runtime'), message = appSurface(f).querySelector('.sa-message');
   const retry = appSurface(f).querySelector('.sa-recovery-retry'), deadline = [...f.timers.values()].find(value => value.delay === 12000);
   const separate = appSurface(f).querySelector('.sa-external-recovery');
+  let popups = 0; f.view.open = () => { popups++; return null; };
   assert.ok(deadline); assert.match(message.textContent, /Открываем окно/u); assert.equal(runtime.getAttribute('aria-busy'), 'true');
-  assert.equal(separate.hidden, true, 'the separate-window fallback waits for an actual loading failure');
+  assert.equal(separate.hidden, true, 'opening a window does not suggest a separate login');
   assert.equal(retry.hidden, false); assert.equal(retry.disabled, false);
   deadline.fn(); await turn();
   assert.match(message.textContent, /не подтверждена/u); assert.equal(runtime.getAttribute('aria-busy'), 'false');
   assert.equal(retry.hidden, false); assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
-  assert.equal(separate.hidden, false, 'an unconfirmed frame exposes the existing explicit external-launch action');
+  assert.equal(separate.hidden, true, 'an unconfirmed window offers its own retry, not a separate-tab login fallback');
+  assert.equal(retry.disabled, false); assert.equal(popups, 0);
   appSurface(f).querySelector('iframe').emit('load'); await turn();
-  assert.equal(separate.hidden, false, 'a late load cannot attest Native paint or clear an unconfirmed notice');
+  assert.equal(separate.hidden, profile !== 'legacy', 'only a neutral legacy document may offer a separate entry; scoped unconfirmed stays in this window');
   if (profile === 'legacy') assert.equal(message.hidden, true, 'late Native document load stays neutral, without an authenticated-paint assertion');
   else assert.match(message.textContent, /Окно загружено, но запуск приложения не подтверждён/u);
   assert.equal(calls, 1); assert.deepEqual(f.requests.map(value => value.op), profile === 'scoped' ? ['apps.scoped.context'] : []); assert.equal(f.timers.size, 0);
+  assert.equal(popups, 0, 'neither timeout nor late load opens or relaunches a separate window');
 });
 
 for (const profile of ['legacy', 'scoped']) test(`${profile} widget load settles transport only and keeps manual recovery after load-to-blank`, async t => {
@@ -1771,27 +1774,35 @@ function currentReviewFind(node, predicate) {
   return null;
 }
 
-test('temporary external-recovery button performs the existing gesture popup launch for the exact widget entry without replacing its frame', async t => {
+test('explicit overflow entry preserves the gesture popup for the exact neutral widget without becoming an unconfirmed-login fallback', async t => {
   const admissions = [], f = await widgetStage(async args => { admissions.push(structuredClone(args)); return stageResponse('/'); });
   t.after(() => f.app.cleanScreen()); ElementPort.prototype.click = function() { this.emit('click'); };
   const frame = appSurface(f).querySelector('iframe'), fallback = currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external-recovery');
+  const separate = currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external');
   let opens = 0, navigated = null;
   const popup = { closed: false, opener: {}, location: { replace(url) { navigated = url; } }, close() { this.closed = true; } };
   f.view.open = () => { opens++; return popup; };
-  const deadline = [...f.timers.values()].find(timer => timer.delay === 12000); deadline.fn(); assert.equal(fallback.hidden, false);
-  fallback.emit('click'); assert.equal(opens, 1, 'the popup is created synchronously in the original click');
+  const deadline = [...f.timers.values()].find(timer => timer.delay === 12000); deadline.fn();
+  assert.equal(fallback.hidden, true, 'unconfirmed login keeps recovery in the current Soty window');
+  assert.equal(opens, 0); assert.equal(admissions.length, 1); assert.equal(navigated, null);
+  const retry = appSurface(f).querySelector('.sa-recovery-retry');
+  assert.equal(retry.hidden, false); assert.equal(retry.disabled, false);
+  frame.emit('load'); await turn();
+  assert.equal(separate.hidden, false, 'the explicit overflow entry remains available for a neutral loaded document');
+  separate.emit('click'); assert.equal(opens, 1, 'the popup is created synchronously in the original explicit click');
   await turn(); await turn();
   assert.equal(admissions.length, 2);const {hostSession,...sameTarget}=admissions[0];assert.equal(hostSession,true);assert.equal(Object.hasOwn(admissions[1],'hostSession'),false);assert.deepEqual(admissions[1],sameTarget);assert.ok(navigated?.startsWith('https://runtime.example/_soty/boot?'));
   assert.equal(popup.opener, null); assert.equal(popup.closed, false); assert.equal(appSurface(f).querySelector('iframe'), frame); assert.equal(f.location.hash, '#world');
 });
 
-test('temporary external recovery closes its unfinished popup on account change without navigating it with a late private URL', async t => {
+test('explicit overflow opening closes its unfinished popup on account change without navigating it with a late private URL', async t => {
   const gate = deferred(); let launches = 0;
   const f = await widgetStage(async () => ++launches === 1 ? stageResponse('/') : gate.promise); t.after(() => f.app.cleanScreen());
   ElementPort.prototype.click = function() { this.emit('click'); }; let navigated = null;
   const popup = { closed: false, opener: {}, location: { replace(url) { navigated = url; } }, close() { this.closed = true; } }; f.view.open = () => popup;
-  [...f.timers.values()].find(timer => timer.delay === 12000).fn();
-  currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external-recovery').emit('click'); await turn();
+  appSurface(f).querySelector('iframe').emit('load'); await turn();
+  const separate = currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external');
+  assert.equal(separate.hidden, false); separate.emit('click'); await turn();
   f.app.transitionAccount('account-B'); gate.resolve(stageResponse('/')); await turn();
   assert.equal(popup.closed, true); assert.equal(navigated, null); assert.equal(launches, 2);
 });

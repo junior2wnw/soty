@@ -154,7 +154,10 @@ for(const missedFirstProbe of [false,true])test(`actual stage exposes ready-to-f
  assert.equal(f.state.reads.length,1);assert.equal(f.state.reads[0].op,'apps.scoped.context');
  boot.phase('boot_failed');
  assert.match(f.host.message.textContent,/Не удалось подтвердить запуск/u);assert.equal(f.host.message.hidden,false);
- for(const control of Object.values(f.h.controls()))assert.equal(control.hidden,false);
+ const controls=f.h.controls();
+ assert.equal(controls.recoveryRetry.hidden,false); assert.equal(controls.recoveryRetry.disabled,false);
+ assert.equal(controls.externalRecovery.hidden,true,'a failed Boot keeps login recovery in the current Soty window');
+ assert.equal(controls.dismissRuntimeNotice.hidden,false);
  assert.equal(f.h.frame(),frame);assert.equal(f.state.calls.launch,1);assert.equal(f.state.reads.length,1);
  assert.equal(f.state.draft,'retained discussion draft');
 });
