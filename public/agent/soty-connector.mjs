@@ -2903,8 +2903,14 @@ function createLocalAppsRuntime(deps, options = {}) {
       const bytes = deps.decodeBase64(frame.data); stream.received += bytes.length;
       localAppsCheck(bytes.length <= localAppsChunkBytes && (stream.kind !== 'http' || stream.received <= 8 * 1024 * 1024), 'app_request_too_large');
       localAppsCheck(context.asyncWrites < 64, 'apps_busy');
+      const httpBody = stream.kind === 'http' && !localAppsSelected(stream.binding.target?.profile);
+      if (httpBody && bytes.length && !stream.bodyFramed) {
+        // Node does not frame streamed DELETE/GET bodies by default. Own the
+        // framing at the first byte; caller hop-by-hop headers stay filtered.
+        stream.request.setHeader('transfer-encoding', 'chunked'); stream.bodyFramed = true;
+      }
       stream.receiving = true; stream.recvSeq = frame.seq; stream.timer.refresh(); context.asyncWrites++;
-      void write(stream.socket || stream.request, bytes).then(() => {
+      void (httpBody && !bytes.length ? Promise.resolve() : write(stream.socket || stream.request, bytes)).then(() => {
         localAppsCheck(streamCurrent(stream), 'app_stream_closed'); stream.receiving = false;
         sendStream(stream, { type: 'ack', id: stream.id, seq: frame.seq });
       }).catch(error => closeStream(stream, error.code || 'app_upstream_failed')).finally(() => { context.asyncWrites--; });
@@ -3524,7 +3530,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.22";
+const connectorVersion = "1.4.23";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

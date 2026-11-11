@@ -64,13 +64,15 @@ async function fixture(t, { mode = 2, runtimeDeps = {}, runtimeOptions = {}, blo
     const reply = await until(() => frames.slice(from).find(frame => ['binding-ack', 'binding-rejected'].includes(frame.type) && frame.syncId === syncId));
     return { target: value, syncId, reply };
   };
-  async function exchange(binding, { path = '/', method = 'GET', body } = {}) {
+  async function exchange(binding, { path = '/', method = 'GET', body, headers = {}, chunks = body ? [Buffer.from(body)] : [] } = {}) {
     const id = randomBytes(16).toString('hex');
     send({ type: mode === 2 ? 'bound-open' : 'open', ...(mode === 2 ? { channelId, syncId: binding.syncId, ...pins(binding.target) }
-      : { appId: binding.target.appId }), id, kind: 'http', path, method, headers: {} });
-    if (body) {
-      send({ type: 'data', id, seq: 1, data: Buffer.from(body).toString('base64') });
-      await until(() => frames.find(frame => frame.id === id && (frame.type === 'ack' || frame.type === 'cancel')));
+      : { appId: binding.target.appId }), id, kind: 'http', path, method, headers });
+    let seq = 0;
+    for (const bytes of chunks) {
+      send({ type: 'data', id, seq: ++seq, data: Buffer.from(bytes).toString('base64') });
+      const reply = await until(() => frames.find(frame => frame.id === id && (frame.type === 'ack' && frame.seq === seq || ['cancel', 'end'].includes(frame.type))));
+      if (reply.type !== 'ack') break;
     }
     send({ type: 'end', id });
     await until(() => frames.find(frame => frame.id === id && ['end', 'cancel'].includes(frame.type)));
@@ -93,9 +95,11 @@ function injected(t, { holdWrite = false, clock = Date.now, maxBufferedAmount } 
   const runtime = createLocalAppsRuntime({ ...deps, now: clock,
     createWebSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
     httpRequest: options => {
-      const req = new EventEmitter(); req.options = options; req.destroyed = false; req.ended = false;
-      req.end = () => { req.ended = true; }; req.destroy = () => { req.destroyed = true; };
-      req.write = (_bytes, callback) => { if (holdWrite) req.finishWrite = callback; else callback(); };
+      const req = new EventEmitter(); req.options = options; req.destroyed = false; req.ended = false; req.headersSent = false;
+      req.setHeader = (name, value) => { assert.equal(req.headersSent, false); (req.options.headers ??= {})[name.toLowerCase()] = value; return req; };
+      req.getHeader = name => req.options.headers?.[name.toLowerCase()];
+      req.end = () => { req.headersSent = true; req.ended = true; }; req.destroy = () => { req.destroyed = true; };
+      req.write = (_bytes, callback) => { req.headersSent = true; if (holdWrite) req.finishWrite = callback; else callback(); };
       requests.push(req); return req;
     },
   }, { serverUrl: 'http://127.0.0.1:5301', identity, token: 'synthetic' });
@@ -111,6 +115,67 @@ function injected(t, { holdWrite = false, clock = Date.now, maxBufferedAmount } 
   return { runtime, sockets, requests, start };
 }
 const respond = (req, status = 200) => req.emit('response', { statusCode: status, headers: {}, destroy() {} });
+
+test('ordinary DELETE streams the same JSON bytes and idempotency key to an actual Node handler', async t => {
+  const body = Buffer.from(JSON.stringify({ text: 'Удалить только эту запись', operation: 'delete-one' })), key = 'delete-streaming-fixture';
+  const app = await upstream(t, (req, res, entry) => {
+    if (req.method === 'HEAD') { res.writeHead(200).end(); return; }
+    const parts = []; req.on('data', bytes => parts.push(bytes)); req.on('error', () => {});
+    req.on('end', () => {
+      entry.body = Buffer.concat(parts);
+      let value; try { value = JSON.parse(entry.body.toString('utf8')); } catch { value = null; }
+      res.writeHead(value ? 200 : 422, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ received: value, idempotencyKey: req.headers['idempotency-key'], byteLength: entry.body.length }));
+    });
+  });
+  const f = await fixture(t), bound = await f.bind(target(1, app.port));
+  const result = await f.exchange(bound, { method: 'DELETE', path: '/api/items/one',
+    headers: { 'content-type': 'application/json', 'idempotency-key': key }, chunks: [body.subarray(0, 13), body.subarray(13)] });
+  const received = app.seen.find(entry => entry.method === 'DELETE'); assert.ok(received);
+  assert.equal(received.headers['idempotency-key'], key, 'the same call preserves the key independently of request framing');
+  assert.deepEqual(received.body, body, 'the Node HTTP handler receives every streamed JSON byte');
+  assert.equal(result.frames.find(frame => frame.type === 'head')?.status, 200);
+  assert.deepEqual(JSON.parse(result.body), { received: JSON.parse(body.toString()), idempotencyKey: key, byteLength: body.length });
+});
+
+test('connector owns streamed framing for mutating JSON, multipart and binary while empty methods keep no-body semantics', async t => {
+  const app = await upstream(t, (req, res, entry) => {
+    if (req.url === '/probe') { res.writeHead(200).end(); return; }
+    const parts = []; req.on('data', bytes => parts.push(bytes)); req.on('error', () => {});
+    req.on('end', () => {
+      entry.body = Buffer.concat(parts);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ method: req.method, bytes: entry.body.length, base64: entry.body.toString('base64') }));
+    });
+  });
+  const f = await fixture(t), bound = await f.bind(target(1, app.port, '/probe'));
+  const binary = Buffer.from(Array.from({ length: 70000 }, (_, i) => i % 256));
+  const multipart = Buffer.concat([Buffer.from('--fixture\r\nContent-Disposition: form-data; name="file"; filename="data.bin"\r\nContent-Type: application/octet-stream\r\n\r\n'), binary, Buffer.from('\r\n--fixture--\r\n')]);
+  const cases = [
+    ...['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map(method => ({ method, type: 'application/json', body: Buffer.from(JSON.stringify({ message: 'байты', method })) })),
+    { method: 'POST', type: 'multipart/form-data; boundary=fixture', body: multipart },
+    { method: 'DELETE', type: 'application/octet-stream', body: binary },
+    ...['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map(method => ({ method, type: 'application/json', body: Buffer.alloc(0) })),
+  ];
+  for (const [index, item] of cases.entries()) {
+    const path = '/framing/' + index, key = 'framing-' + index;
+    const headers = Object.freeze({ 'content-type': item.type, 'idempotency-key': key,
+      'Content-Length': '1', 'transfer-encoding': 'gzip', authorization: 'Bearer untrusted', cookie: 'untrusted=1' });
+    const chunks = [Buffer.alloc(0), ...Array.from({ length: Math.ceil(item.body.length / 32000) }, (_, i) => item.body.subarray(i * 32000, (i + 1) * 32000))];
+    const result = await f.exchange(bound, { path, method: item.method, headers, chunks });
+    const seen = app.seen.find(entry => entry.url === path); assert.ok(seen, `${item.method} reached the HTTP handler`);
+    assert.deepEqual(seen.body, item.body, `${item.method} ${item.type} preserves streamed bytes`);
+    assert.equal(seen.headers['idempotency-key'], key); assert.equal(seen.headers['content-type'], item.type);
+    assert.equal(seen.headers.authorization, undefined); assert.equal(seen.headers.cookie, undefined);
+    assert.equal(seen.headers['transfer-encoding'], item.body.length ? 'chunked' : undefined, 'the connector creates framing only for actual body data');
+    if (item.body.length) assert.equal(seen.headers['content-length'], undefined);
+    else assert.ok(seen.headers['content-length'] === undefined || seen.headers['content-length'] === '0');
+    assert.equal(headers['Content-Length'], '1'); assert.equal(headers['transfer-encoding'], 'gzip');
+    assert.equal(result.frames.find(frame => frame.type === 'head')?.status, 200);
+    if (item.method === 'HEAD') assert.equal(result.body, '', 'HEAD response semantics remain body-free');
+    else assert.deepEqual(JSON.parse(result.body), { method: item.method, bytes: item.body.length, base64: item.body.toString('base64') });
+  }
+});
 
 test('a saturated prepared-project browse refuses only the fifth read while a real neighbour stream completes', async t => {
   let finishResponse;

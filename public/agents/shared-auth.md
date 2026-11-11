@@ -14,6 +14,9 @@
    В `authentication` ожидается schema `soty.app-authentication-capability.v1`,
    default `soty-window` и contract `soty.relay-window-identity.v1`.
    Проверьте действующие Root, оболочку, коннектор выбранного устройства и browser/server SDK.
+   Для relay-запросов с телом используйте коннектор 1.4.23 или новее: он сам задаёт
+   корректное HTTP-обрамление, в том числе для DELETE. Успешный GET не проверяет
+   передачу изменений и отзыв доступа. Текущий выпуск указан в `/agent/manifest.json`.
    Наличие карточки, ingress-cookie, `humanIdentityConfigured:true` или SDK-архива
    само по себе не доказывает совместимость оконного входа.
 2. Установите portable `@soty/source-app` по URL из SDK index, проверив точные
