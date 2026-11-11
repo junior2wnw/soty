@@ -56,7 +56,7 @@ const copy = Object.freeze({
   denied: ['Доступ закрыт', 'Откройте приложение через Соты, чтобы проверить доступ.'],
   changed: ['Доступ изменился', 'Откройте приложение заново.'],
   expired: ['Нужно открыть заново', 'Ссылка для входа больше не действует.'],
-  cookie: ['Вход не подтвердился', 'Откройте приложение отдельно и попробуйте снова.'],
+  cookie: ['Вход не подтвердился', 'Проверка входа не прошла. Проверьте профиль Сот и обновите приложение в этом окне.'],
   offline: ['Устройство не в сети', 'Приложение появится, когда устройство подключится.'],
   stopped: ['Приложение остановлено', 'Владелец сможет запустить его снова.'],
   busy: ['Сейчас много подключений', 'Попробуйте открыть приложение чуть позже.'],
@@ -65,7 +65,7 @@ const copy = Object.freeze({
   network: ['Не удалось подключиться', 'Проверьте соединение и откройте приложение снова.'],
   connectorUpdate: ['Обновите коннектор', 'Устройство приложения пока не поддерживает ключ операции. Проверьте результат перед повторной отправкой.'],
   idempotencyUnsupported: ['Ключ операции недоступен', 'Этот режим приложения не поддерживает передачу ключа операции.'],
-  identityWindowUnavailable: ['Не удалось подтвердить вход', 'Откройте приложение заново или проверьте вход в Соты.'],
+  identityWindowUnavailable: ['Не удалось подтвердить вход', 'Проверьте профиль Сот и обновите приложение в этом окне.'],
   resetting: ['Открываем без входа', 'Переходим к публичному приложению.'],
   unavailable: ['Приложение недоступно', 'Попробуйте открыть его немного позже.'],
 });
@@ -202,12 +202,13 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
     recoveryParentOrigin = event.origin; recoveryNonce = data.nonce; recoveryApp = data.appId;
     notifyRecovery();
   });
-  function show(state, pending = false) {
+  function show(state, pending = false, errorCode = '') {
     clearNativeContinue();
     const text = config.copy[state] || config.copy.unavailable;
     title.textContent = text[0]; detail.textContent = text[1];
     document.title = `${text[0]} · Соты`;
     entry.dataset.state = pending ? 'loading' : 'error'; entry.setAttribute('aria-busy', String(pending));
+    entry.dataset.errorCode = typeof errorCode === 'string' && Object.hasOwn(config.errorStates, errorCode) ? errorCode : '';
     shell.hidden = pending || !topLevel || !config.shellUrl;
     if (!shell.hidden) shell.href = config.shellUrl;
     else shell.removeAttribute('href');
@@ -219,7 +220,8 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
     const state = typeof error?.code === 'string' && Object.hasOwn(config.errorStates, error.code) ? config.errorStates[error.code] : null;
     const responseState = error?.responseFailed && fallback === 'network'
       ? (Object.hasOwn(config.errorStates, error.status) ? config.errorStates[error.status] : 'unavailable') : fallback;
-    show(state || (error?.code === 'cookie_check' ? 'cookie' : responseState));
+    const code = state ? error.code : error?.code === 'cookie_check' || responseState === 'cookie' ? 'app_session_check_failed' : '';
+    show(state || (error?.code === 'cookie_check' ? 'cookie' : responseState), false, code);
   }
   async function requestJson(method, body, sessionCheck, frame) {
     const controller = new AbortController(); controllers.add(controller);
@@ -313,9 +315,9 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
     if (!event.persisted) return;
     clearNativeContinue(); cancelNavigationLoad?.();
     offPage = false; busy = false; navigated = false;
-    show(config.mode === 'boot' ? 'expired' : config.initialState);
+    show(config.mode === 'boot' ? 'expired' : config.initialState, false, config.mode === 'boot' ? 'app_ticket_invalid' : config.errorCode);
   });
-  show(config.initialState, config.mode === 'boot');
+  show(config.initialState, config.mode === 'boot', config.errorCode);
   if (config.mode === 'boot') void boot();
 }
 
@@ -328,15 +330,15 @@ function initializeMaterialTheme() {
   window.addEventListener('pageshow', event => { if(event.persisted){update();preference.addEventListener?.('change', update);} });
 }
 
-function render({ mode, state, shellUrl, publicResetPath, nonce,parentOrigins=[],scoped=false,renewal=false,hostRenewal=false,parentOrigin }) {
-  const config = { mode, initialState: state, shellUrl, publicResetPath,parentOrigins, copy, errorStates: statesFor(publicResetPath),
+function render({ mode, state, shellUrl, publicResetPath, nonce,parentOrigins=[],scoped=false,renewal=false,hostRenewal=false,parentOrigin,errorCode='' }) {
+  const config = { mode, initialState: state, shellUrl, publicResetPath,parentOrigins, copy, errorCode, errorStates: statesFor(publicResetPath),
     ...(scoped?{scoped:true,renewal,parentOrigin}:{}),...(hostRenewal?{hostRenewal:true}:{}) };
   const text = copy[state];
   const nativeAction = mode === 'boot' && scoped && !renewal ? '<a class="action action-primary" data-glass-role="accent" id="native-action" hidden>Продолжить открытие</a>' : '';
   const brand = roundedHexPath(10, undefined, { x: 11, y: 10 });
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="light dark"><title>${html(text[0])} · Соты</title><style>${styles}</style></head>
 <body class="glass-ui" data-glass-material="working" data-glass-render-mode="static" data-glass-tone="light" data-glass-role="panel"><header class="brand"><svg viewBox="0 0 22 20" aria-hidden="true" focusable="false"><path d="${brand}"/></svg><span>Соты</span></header>
-<main class="entry" id="entry" data-state="${mode === 'boot' ? 'loading' : 'error'}" aria-labelledby="status-title" aria-busy="${mode === 'boot'}"><div class="visual">${emblem}</div><div class="content"><div role="status" aria-live="polite" aria-atomic="true"><h1 id="status-title">${html(text[0])}</h1><p class="detail" id="status-detail">${html(text[1])}</p></div><div class="actions" id="actions" hidden><a class="action action-primary" data-glass-role="accent" id="shell-action" hidden>Открыть через Соты <span aria-hidden="true">↗</span></a><button class="action" data-glass-role="control" id="reset-action" type="button" hidden>Продолжить без входа</button>${nativeAction}</div><p class="frame-hint" id="frame-hint" hidden>В меню ⋯ над окном выберите „Открыть отдельно“.</p><noscript><p class="noscript">Для входа нужен JavaScript. Откройте приложение из Сот.</p></noscript></div></main>
+<main class="entry" id="entry" data-state="${mode === 'boot' ? 'loading' : 'error'}" aria-labelledby="status-title" aria-busy="${mode === 'boot'}"><div class="visual">${emblem}</div><div class="content"><div role="status" aria-live="polite" aria-atomic="true"><h1 id="status-title">${html(text[0])}</h1><p class="detail" id="status-detail">${html(text[1])}</p></div><div class="actions" id="actions" hidden><a class="action action-primary" data-glass-role="accent" id="shell-action" hidden>Открыть через Соты <span aria-hidden="true">↗</span></a><button class="action" data-glass-role="control" id="reset-action" type="button" hidden>Продолжить без входа</button>${nativeAction}</div><p class="frame-hint" id="frame-hint" hidden>В меню ⋯ над окном выберите «Обновить приложение».</p><noscript><p class="noscript">Для входа нужен JavaScript. Откройте приложение из Сот.</p></noscript></div></main>
 <script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()},${createBootDisplayClient.toString()},${checkedScopedEntryPath.toString()});(${initializeMaterialTheme.toString()})();</script></body></html>`;
 }
 
@@ -351,5 +353,6 @@ export function renderBootPage({ shellUrl, publicResetPath, nonce, parentOrigins
 export function renderStatusPage({ error, shellUrl, publicResetPath, nonce } = {}) {
   const path = resetPath(publicResetPath), states = statesFor(path);
   const state = (typeof error === 'string' || typeof error === 'number') && Object.hasOwn(states, error) ? states[error] : 'unavailable';
-  return render({ mode: 'status', state, shellUrl: shellAddress(shellUrl), publicResetPath: path, nonce });
+  const errorCode = typeof error === 'string' && Object.hasOwn(states, error) ? error : '';
+  return render({ mode: 'status', state, shellUrl: shellAddress(shellUrl), publicResetPath: path, nonce, errorCode });
 }

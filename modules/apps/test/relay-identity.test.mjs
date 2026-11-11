@@ -17,7 +17,7 @@ const serverModule = installed ? pathToFileURL(join(installed, 'dist', 'server.m
 const { createRelayIdentityVerifier } = await import(serverModule ?? '../../source-app/server/relay-identity.mjs');
 const { createSqliteRelayNonceStore } = await import(serverModule ?? '../../source-app/server/sqlite-relay-nonces.mjs');
 const { createSqliteRelayIdentity } = await import(serverModule ?? '../../source-app/server/sqlite-relay-identity.mjs');
-const { createRelayIdentityFetch } = await import(installed ? pathToFileURL(join(installed, 'dist', 'browser.mjs')).href : '../../source-app/browser/relay-identity-fetch.mjs');
+const { createRelayIdentityFetch } = await import(process.env.SOTY_RELAY_IDENTITY_FETCH_TEST_MODULE ?? (installed ? pathToFileURL(join(installed, 'dist', 'browser.mjs')).href : '../../source-app/browser/relay-identity-fetch.mjs'));
 // Exercise the exact module shipped in the generated single-file connector,
 // as well as source. The full bundle's process/update path has separate tests.
 const bundle = await readFile(new URL('../../../public/agent/soty-connector.mjs', import.meta.url), 'utf8');
@@ -274,11 +274,32 @@ test(`window-bound Root identity and idempotency stay isolated through ${mode}`,
   assert.equal(managedBoot.status,200);
   const managedCookie=managedBoot.headers['set-cookie'].map(value=>value.split(';')[0]).join('; ');
   const managedCheck=await http(port,'/_soty/session',{origin:managed.runtimeOrigin,cookie:managedCookie,headers:{'x-soty-boot-check':JSON.parse(managedBoot.text).sessionCheck}});assert.equal(managedCheck.status,200);
+  const beforeManagedConfiguration=apps[0].seen.length;
+  const noIngressConfiguration=await http(port,'/_soty/relay-identity-config',{origin:managed.runtimeOrigin});
+  assert.equal(noIngressConfiguration.status,401,'direct managed Root requires its admitted ingress cookie (the ingress edge may report 403)');
+  const managedConfiguration=await http(port,'/_soty/relay-identity-config',{origin:managed.runtimeOrigin,cookie:managedCookie});
+  assert.equal(managedConfiguration.status,200);
+  assert.deepEqual(JSON.parse(managedConfiguration.text),{schema:'soty.relay-identity-config.v1',shellOrigins:[rootOrigin]});
+  assert.equal(managedConfiguration.headers['cache-control'],'no-store');assert.equal(managedConfiguration.headers['set-cookie'],undefined);
+  assert.equal(apps[0].seen.length,beforeManagedConfiguration,'configuration and denied probes never reach the app or reveal its identity');
   const mainArgs={appId:apps[0].app.id,domainId:managed.entry.domainId,launchBinding:managed.launchBinding,instanceId:'main',runtimeOrigin:managed.runtimeOrigin,hostSession:memberProof(managed.hostSession)};
   const{hostSession:_mainMember,...withoutMember}=mainArgs;
   assert.throws(()=>call('apps.relay.identity',withoutMember),/app_identity_window_unavailable/u,'managed main cannot select an arbitrary physical member');
   assert.throws(()=>call('apps.relay.identity',{...mainArgs,hostSession:{...mainArgs.hostSession,unexpected:true}}),/app_identity_window_unavailable/u);
   const mainGrant=call('apps.relay.identity',mainArgs).grant,mainHeaders={'x-soty-identity-request':'1','x-soty-window-grant':mainGrant};
+  let configurationReads=0,receiveManaged;
+  const managedParent={postMessage(data,origin){assert.equal(origin,rootOrigin);queueMicrotask(()=>receiveManaged({source:managedParent,origin,
+    data:{schema:data.schema,type:'grant',requestId:data.requestId,grant:mainGrant}}));}};
+  const managedView={parent:managedParent,crypto:{randomUUID},addEventListener(_type,receive){receiveManaged=receive;},removeEventListener(){},setTimeout,clearTimeout};
+  const managedFetch=createRelayIdentityFetch({origin:managed.runtimeOrigin,view:managedView,fetch:async(path,options={})=>{
+    if(path==='/_soty/relay-identity-config')configurationReads++;
+    const response=await http(port,path,{origin:managed.runtimeOrigin,cookie:options.credentials==='same-origin'?managedCookie:undefined,
+      headers:Object.fromEntries(new Headers(options.headers))});
+    return new Response(response.text,{status:response.status,headers:response.headers});
+  }});
+  const managedSdkPerson=await managedFetch('/items?x=1');
+  assert.equal(managedSdkPerson.status,200);assert.equal(JSON.parse(await managedSdkPerson.text()).subject,owner.accountId);
+  assert.equal(configurationReads,1,'SDK discovers trusted origins through the actual managed Root HTTP route');
   const whoami=await http(port,'/items?x=1',{origin:managed.runtimeOrigin,headers:mainHeaders});assert.equal(whoami.status,200);assert.equal(JSON.parse(whoami.text).subject,owner.accountId);
   const mainEvents=await eventStream(port,managed.runtimeOrigin,mainGrant),beforeEvents=mainEvents.data.length;
   assert.equal((await http(port,'/items?x=1',{origin:managed.entry.origin,headers:mainHeaders})).status,503,'a main-runtime grant never authorizes canonical legacy origin');

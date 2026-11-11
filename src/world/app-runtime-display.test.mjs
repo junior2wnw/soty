@@ -12,13 +12,25 @@ function displayFixture(answer='pending',managedHost=false){
  return{api,frame,view,tasks,states,sent,tick,phase,calls:()=>calls,stale:()=>current=false};
 }
 
+test('failed runtime recovery offers the current window retry without a separate-tab login fallback',async()=>{
+ for(const failure of ['unconfirmed','denied','error']){
+  const f=displayFixture(failure==='denied'?'denied':'pending');
+  if(failure==='unconfirmed')f.tick(12000);
+  else if(failure==='error')f.frame.emit('error');
+  else{f.frame.emit('load');await tickFlush();}
+  assert.equal(f.api.snapshot().phase,failure);
+  assert.equal(f.api.snapshot().canRetry,true);
+  assert.equal(f.api.snapshot().canExternal,false,'a failed embedded login must not be redirected to a standalone identity');
+ }
+});
+
 test('legacy/native document load has a neutral loaded state without claiming authenticated readiness',async()=>{
  const f=displayFixture('unsupported');f.frame.emit('load');await tickFlush();f.tick(12001);
  assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.api.snapshot().message,'');
  assert.equal(f.api.snapshot().busy,false);assert.equal(f.api.snapshot().canDismiss,false);
  assert.equal(f.api.snapshot().canRetry,false);assert.equal(f.api.snapshot().canExternal,true);
  assert.equal(f.api.dismiss(),false);assert.equal(f.calls(),1);
- f.frame.emit('error');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.calls(),1);
+ f.frame.emit('error');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canExternal,false);assert.equal(f.calls(),1);
 });
 
 test('neutral legacy load still reports an exact current Boot failure, while unrelated messages cannot change it',async()=>{
@@ -26,12 +38,12 @@ test('neutral legacy load still reports an exact current Boot failure, while unr
  assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.api.snapshot().canRetry,false);
  f.phase('boot_failed',{origin:'https://wrong.example'});assert.equal(f.api.snapshot().phase,'loaded');
  f.phase('boot_navigation');assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.calls(),1);
- f.phase('boot_failed');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.calls(),1);
+ f.phase('boot_failed');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.api.snapshot().canExternal,false);assert.equal(f.calls(),1);
 });
 test('load-only empty-document counterexample: visible deadline survives load without authenticated readiness',async()=>{
  const f=displayFixture();f.tick(0);f.frame.emit('load');await tickFlush();assert.equal(f.api.snapshot().busy,true);f.tick(12000);
  assert.equal(f.api.snapshot().phase,'unconfirmed');assert.match(f.api.snapshot().message,/Окно загружено/u);
- assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.api.snapshot().busy,false);
+ assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.api.snapshot().canExternal,false);assert.equal(f.api.snapshot().busy,false);
  assert.equal(f.calls(),1);assert.equal(f.api.dismiss(),true);assert.equal(f.api.snapshot().message,'');
 });
 test('no-load baseline retains its existing meaningful visible fallback and never replays admission',()=>{
@@ -159,7 +171,7 @@ test('Source-session ready preserves subsequent current-frame transport error wi
  const f=displayFixture('ready');f.tick(0);f.frame.emit('load');await tickFlush();
  assert.equal(f.api.snapshot().phase,'ready');const calls=f.calls();f.frame.emit('error');
  assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canRetry,true);
- assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.api.snapshot().canDismiss,true);assert.equal(f.api.snapshot().busy,false);
+ assert.equal(f.api.snapshot().canExternal,false);assert.equal(f.api.snapshot().canDismiss,true);assert.equal(f.api.snapshot().busy,false);
  f.phase('boot_navigation');f.tick(12001);assert.equal(f.calls(),calls);assert.equal(f.api.snapshot().phase,'error');
 });
 test('Source-session ready cannot hide a later correlated managed Boot failure',async()=>{
@@ -173,7 +185,7 @@ test('Source-session ready cannot hide a later correlated managed Boot failure',
  f.phase('boot_navigation');assert.equal(f.api.snapshot().phase,'ready');
  f.phase('boot_failed');assert.equal(f.api.snapshot().phase,'error');
  assert.match(f.api.snapshot().message,/Не удалось подтвердить запуск/u);
- assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.api.snapshot().canExternal,true);
+ assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.api.snapshot().canExternal,false);
  assert.equal(f.api.snapshot().canDismiss,true);assert.equal(f.api.snapshot().busy,false);
  f.phase('boot_cookie_pending');f.tick(12001);assert.equal(f.api.snapshot().phase,'error');assert.equal(f.calls(),1);
 });

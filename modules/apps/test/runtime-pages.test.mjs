@@ -453,6 +453,28 @@ test('successful POST alone, bare GET and a different session check never count 
   held.resolve(response({ ok: true, sessionCheck })); await flush(); assert.deepEqual(env.navigations, ['/']);
 });
 
+test('failed embedded cookie checks recover the same Soty window instead of promising a separate login', async () => {
+  const page = renderBootPage({ shellUrl });
+  const env = browser(page, { framed: true, responses: [
+    response({ ok: true, entryPath: '/', sessionCheck }), response({ ok: true }),
+  ] });
+  await flush();
+  assert.equal(env.element('status-title').textContent, 'Вход не подтвердился');
+  assert.match(env.element('status-detail').textContent, /Проверьте профиль Сот.*в этом окне/u);
+  assert.equal(env.element('entry').dataset.errorCode, 'app_session_check_failed');
+  assert.ok(page.includes('В меню ⋯ над окном выберите «Обновить приложение».'));
+  assert.doesNotMatch(page, /Откройте приложение отдельно|выберите „Открыть отдельно“/u);
+  assert.equal(env.element('shell-action').hidden, true);
+  assert.deepEqual(env.navigations, []); assert.equal(env.calls.length, 2);
+  for (const code of ['app_cookie_required', 'app_identity_window_unavailable']) {
+    const status = browser(renderStatusPage({ error: code, shellUrl }), { framed: true });
+    assert.equal(status.element('entry').dataset.errorCode, code);
+    assert.match(status.element('status-detail').textContent, /Проверьте профиль Сот.*в этом окне/u);
+  }
+  const unknown = browser(renderStatusPage({ error: 'PRIVATE_UNKNOWN_ERROR', shellUrl }), { framed: true });
+  assert.equal(unknown.element('entry').dataset.errorCode, '', 'only closed platform error codes enter diagnostics');
+});
+
 test('untrusted successful response cannot navigate to another origin or the reserved control namespace', async () => {
   for (const entryPath of ['https://evil.example/', '//evil.example/', '/%2f%2fevil.example/', '/x/../_soty/session', '/%5fsoty/session', '/\\evil', '/%00',
     '/x/..//double', '/%2F_soty/session', '/x%2f..%2f_soty/session', '/x%2f..%2f%2fdouble', '/x%23/../_soty/session', '/bad%00/../safe']) {
@@ -477,7 +499,7 @@ test('iframe errors never load shell, navigate top, open a popup or retry a cons
   assert.equal(env.element('frame-hint').hidden, false); assert.equal(env.element('actions').hidden, true);
   assert.deepEqual(env.navigations, []); assert.equal(env.calls.length, 1);
   const page = renderStatusPage({ error: 'app_offline', shellUrl });
-  assert.ok(page.includes('В меню ⋯ над окном выберите „Открыть отдельно“.'));
+  assert.ok(page.includes('В меню ⋯ над окном выберите «Обновить приложение».'));
   assert.doesNotMatch(page, /target="_top"|target="_blank"|window\.open|top\.location|location\.reload/u);
 });
 

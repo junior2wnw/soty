@@ -3,6 +3,27 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createRelayIdentityFetch } from '../browser/relay-identity-fetch.mjs';
 
+test('Root configuration uses the same-origin ingress cookie without treating it as human identity',async()=>{
+  const f=fixture();let configCredentials, sent=false;
+  const request=createRelayIdentityFetch({view:f.view,origin:'https://app.example',timeoutMs:200,
+    fetch:async(path,options)=>{
+      if(path==='/_soty/relay-identity-config'){
+        configCredentials=options.credentials;
+        return options.credentials==='same-origin'
+          ?Response.json({schema:'soty.relay-identity-config.v1',shellOrigins:['https://shell.example']})
+          :new Response('',{status:403});
+      }
+      sent=true;assert.equal(options.headers.get('x-soty-window-grant'),'A'.repeat(43));return new Response('verified later by server');
+    }});
+  const pending=request('/api/me');
+  // Consume the rejection immediately; the RED control fails the assertion, not an unhandled rejection.
+  const outcome=pending.then(value=>({value}),error=>({error}));
+  await new Promise(done=>setImmediate(done));
+  assert.equal(configCredentials,'same-origin');
+  assert.equal(sent,false,'a permitted config/cookie still does not identify the app actor');
+  f.emit(0);assert.ok((await outcome).value.ok);assert.equal(sent,true);
+});
+
 function fixture() {
   const listeners = new Set(), posted = [], calls = [], parent = { postMessage(value, origin) { posted.push({ value, origin }); } };
   const view = { parent, crypto: { randomUUID }, setTimeout, clearTimeout,

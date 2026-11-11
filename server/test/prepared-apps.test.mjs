@@ -79,7 +79,10 @@ async function fixture(t) {
     loseNext: () => { loseAck = true; }, hold: () => { pause = gate(); return pause; }, release: () => { pause?.release(); pause = null; },
     async oldConnector() { runtime.stop(); startRuntime(false); await until(() => runtime.status().connected); },
     async newConnector() { runtime.stop(); startRuntime(true); await until(() => runtime.status().connected); },
-    async restart() { await app.locals.closeServices(); app = createHttpApp(dist, options); await until(() => runtime.status().connected); } };
+    async restart() { await app.locals.closeServices(); app = createHttpApp(dist, options);
+      // The old runtime can still report connected before it observes the old
+      // socket closing. Wait for the new Root to accept the replacement channel.
+      await until(() => runtime.status().connected && app.locals.appsService.hostRuntimeStats().online === 1); } };
 }
 
 test('signed create connects one private running project, replays and respects its tombstone', { timeout: 30000 }, async t => {

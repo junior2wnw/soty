@@ -25,7 +25,7 @@ export function createRelayIdentityFetch({ fetch: fetcher = globalThis.fetch, or
       const controller = new AbortController(); let timer;
       try {
         const timeout = new Promise((_, reject) => { timer = view.setTimeout(() => { controller.abort(); reject(unavailable()); }, timeoutMs); });
-        const response = await Promise.race([fetcher('/_soty/relay-identity-config', { credentials: 'omit', cache: 'no-store', redirect: 'error', signal: controller.signal }), timeout]);
+        const response = await Promise.race([fetcher('/_soty/relay-identity-config', { credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal }), timeout]);
         if (!response?.ok) throw unavailable();
         const raw = await Promise.race([response.text(), timeout]);
         if (raw.length > 8192) throw unavailable();
