@@ -20,7 +20,7 @@ const { createSqliteRelayIdentity } = await import(serverModule ?? '../../source
 const { createRelayIdentityFetch } = await import(process.env.SOTY_RELAY_IDENTITY_FETCH_TEST_MODULE ?? (installed ? pathToFileURL(join(installed, 'dist', 'browser.mjs')).href : '../../source-app/browser/relay-identity-fetch.mjs'));
 // Exercise the exact module shipped in the generated single-file connector,
 // as well as source. The full bundle's process/update path has separate tests.
-const bundle = await readFile(new URL('../../../public/agent/soty-connector.mjs', import.meta.url), 'utf8');
+const bundle = await readFile(process.env.SOTY_RELAY_CONNECTOR_TEST_BUNDLE ?? new URL('../../../public/agent/soty-connector.mjs', import.meta.url), 'utf8');
 const moduleStart = bundle.indexOf('// bundled connector module: ./agent-modules/local-apps.mjs\n');
 const moduleEnd = bundle.indexOf('// bundled connector module:', moduleStart + 1);
 assert.ok(moduleStart >= 0 && moduleEnd > moduleStart, 'connector release module is missing');
@@ -96,7 +96,8 @@ test(`window-bound Root identity and idempotency stay isolated through ${mode}`,
   const claim = await runtime.claim();
   const call = (op, args, actor = owner) => service.execute({ op, actor, args: { ...args, expectedAccountId: actor.accountId } });
   call('apps.claim', { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId, claimCode: claim.claimCode });
-  const apps = [];
+  const apps = [], deletions = [];
+  const deleteKey = 'delete-json-full-path', deleteBytes = Buffer.from(JSON.stringify({ id: 'test-record', title: 'Удалить запись целиком', nested: { enabled: true } }));
   for (let index = 0; index < 2; index++) {
     let verifier; const seen = [], businessPath = join(directory, `business-${index}.sqlite`);
     let business = new DatabaseSync(businessPath);
@@ -113,6 +114,15 @@ test(`window-bound Root identity and idempotency stay isolated through ${mode}`,
             const timer=setInterval(()=>res.write('data: next\n\n'),40);res.on('close',()=>clearInterval(timer));return;
           }
           if (req.url === '/upstream-503') { res.writeHead(503, { 'x-soty-identity-window': 'not-dispatched' }).end('app failure'); return; }
+          if (req.method === 'DELETE' && req.url === '/delete-json') {
+            const chunks = []; for await (const chunk of req) chunks.push(chunk);
+            const bytes = Buffer.concat(chunks), key = req.headers['idempotency-key'];
+            deletions.push({ bytes, key, issuer: person.issuer, subject: person.subject });
+            assert.deepEqual(bytes, deleteBytes, 'the verified application must receive the complete DELETE JSON bytes');
+            assert.equal(key, deleteKey, 'the verified application must receive the original operation key');
+            const input = JSON.parse(bytes.toString('utf8'));
+            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ deleted: input.id, subject: person.subject, key })); return;
+          }
           if (req.method === 'GET' && req.url.startsWith('/receipt?')) {
             const key = new URL(req.url, 'http://fixture.invalid').searchParams.get('key');
             const receipt = business.prepare('SELECT count FROM receipts WHERE issuer=? AND subject=? AND request_id=?').get(person.issuer, person.subject, key);
@@ -174,6 +184,12 @@ test(`window-bound Root identity and idempotency stay isolated through ${mode}`,
   const issue = session => call('apps.relay.identity', { appId: session.appId, domainId: session.domainId, launchBinding: session.binding }, session.actor).grant;
   const fetchApp = (session, method = 'GET', headers = {}, path = '/items?x=1', body) => http(port, path, { ...session, method,
     headers: { ...headers, 'x-soty-identity-request': '1', ...(session.actor ? { 'x-soty-window-grant': issue(session) } : {}) }, body });
+  const deleted = await fetchApp(aliceSession, 'DELETE', { 'idempotency-key': deleteKey, 'content-type': 'application/json', 'content-length': deleteBytes.length }, '/delete-json', deleteBytes);
+  assert.equal(deletions.length, 1, 'DELETE traverses Root and the connector exactly once into the verified handler');
+  assert.deepEqual(deletions[0], { bytes: deleteBytes, key: deleteKey, issuer, subject: 'alice' }, 'signed DELETE preserves its exact bytes, operation key and window-selected person');
+  assert.equal(deleted.status, 200, deleted.text);
+  assert.match(deleted.headers['content-type'], /^application\/json/u);
+  assert.deepEqual(JSON.parse(deleted.text), { deleted: 'test-record', subject: 'alice', key: deleteKey }, 'the complete JSON response traverses the same real relay');
   assert.equal((await http(port, '/items?x=1', aliceSession)).status, 401);
   assert.equal(apps[0].seen.at(-1).token, undefined, 'identity is never sent on an ordinary request');
   const alice = await fetchApp(aliceSession, 'POST', { 'x-soty-identity': 'browser-forgery' });
