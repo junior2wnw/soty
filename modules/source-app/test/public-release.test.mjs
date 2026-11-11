@@ -1,12 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,writeFile,mkdir,readFile,symlink} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile,mkdir,readFile,symlink,readdir} from 'node:fs/promises';
 import {join,resolve,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {gzipSync,gunzipSync} from 'node:zlib';
 import {SOURCE_SDK_FILES,SOURCE_SDK_LIMITS} from '../package-contract.mjs';
 import {readSourceSdkArchive,sourceSdkReleaseIndex,verifySourceSdkIndex,verifySourceSdkContext,verifyPublicSourceSdk,sourceSdkRuntimeLock,verifySourceSdkRetention} from '../public-release.mjs';
 import {sdkFormatFixture} from './support/public-release.mjs';
+
+test('retained immutable SDK archives retain their exact versioned file inventories',async()=>{
+  const directory=new URL('../../../public/sdk/source-app/',import.meta.url);
+  const names=(await readdir(directory)).filter(name=>/^[a-f0-9]{64}\.tgz$/u.test(name));
+  assert.ok(names.includes('694ac64eb39af4c9431aa2295a043cb2f5aae362f8df70f9c4f33ee83d74d749.tgz'));
+  for(const name of names){const release=readSourceSdkArchive(await readFile(new URL(name,directory)));
+    assert.equal(release.sha256+'.tgz',name);
+    const starterFiles=[...release.files.keys()].filter(path=>path.startsWith('dist/templates/relay/'));
+    assert.equal(starterFiles.length,Number(release.package.version.split('.').at(-1))<=21?0:3);
+  }
+});
 
 async function fixture(t){const directory=await mkdtemp(join(tmpdir(),'sdk-public-unit-'));
   t.after(async()=>{assert.equal(dirname(resolve(directory)),resolve(tmpdir()));await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:30});});

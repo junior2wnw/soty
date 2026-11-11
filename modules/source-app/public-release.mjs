@@ -65,6 +65,7 @@ export function sourceSdkSourceName(name){
   return typeof name==='string'&&!name.split('/').some(part=>!part||part==='.'||part==='..')&&!name.includes('\\')
     &&(auxiliary.has(name)||name==='modules/source-app/package.json'||name==='modules/source-app/package-contract.mjs'
       ||name==='modules/source-app/public-release.mjs'||name==='modules/source-app/scripts/build.mjs'
+      ||Object.values(SOURCE_APP_COPY_FILES).some(file=>name==='modules/source-app/'+file)
       ||/^modules\/source-app\/(?:server|browser|shared)\/[a-z0-9-]+\.mjs$/u.test(name)
       ||/^modules\/source-app\/install\/[a-z0-9-]+\.mjs$/u.test(name)
       ||/^modules\/source-app\/examples\/(?:ordinary-app|reading-list)\/(?:assets\/)?[a-z0-9-]+\.(?:mjs|js|css|html)$/u.test(name)
@@ -108,11 +109,18 @@ export function readSourceSdkArchive(archive){
       files.set(name.slice(8),plain.subarray(at+512,at+512+size));}
     at+=512+Math.ceil(size/512)*512;
   }
-  need([...files.keys()].sort().join('\n')===SOURCE_SDK_FILES.join('\n'),'source_sdk_archive_incomplete');
+  const archivedPackage=parse(files.get('package.json'));
+  need(sourceSdkVersion(archivedPackage?.version));
+  // preview.22 adds the starter files. Retained immutable older archives keep
+  // their exact smaller inventory; neither layout admits arbitrary files.
+  const legacy=Number(archivedPackage.version.split('.').at(-1))<=21;
+  const outputs=legacy?SOURCE_APP_OUTPUTS.filter(name=>!name.startsWith('templates/relay/')):SOURCE_APP_OUTPUTS;
+  const packageFiles=legacy?SOURCE_SDK_FILES.filter(name=>!name.startsWith('dist/templates/relay/')):SOURCE_SDK_FILES;
+  need([...files.keys()].sort().join('\n')===packageFiles.join('\n'),'source_sdk_archive_incomplete');
   const capsule=parse(files.get('SDK-CAPSULE.json'));
   need(exact(capsule,['schema','sourceCommit','packageVersion','files','sourceFiles','dependencyLockDigest'])
     &&capsule.schema==='soty.source-sdk.capsule.v1'&&commit(capsule.sourceCommit)&&sourceSdkVersion(capsule.packageVersion)
-    &&hex(capsule.dependencyLockDigest)&&Array.isArray(capsule.files)&&capsule.files.length===SOURCE_SDK_FILES.length-1
+    &&hex(capsule.dependencyLockDigest)&&Array.isArray(capsule.files)&&capsule.files.length===packageFiles.length-1
     &&Array.isArray(capsule.sourceFiles)&&capsule.sourceFiles.length>0&&capsule.sourceFiles.length<=128);
   const seen=new Set();
   for(const item of capsule.files){need(exact(item,['path','sha256','bytes'])&&typeof item.path==='string'&&item.path!=='SDK-CAPSULE.json'
@@ -127,7 +135,7 @@ export function readSourceSdkArchive(archive){
     &&exact(pkg.engines,['node'])&&pkg.engines.node==='>=24.15.0'&&exact(pkg.bin,['soty-source'])&&pkg.bin['soty-source']==='./dist/install.mjs'
     &&exact(pkg.exports,['./server','./browser','./example'])&&['server','browser','example'].every(name=>exact(pkg.exports['./'+name],['types','import'])
       &&pkg.exports['./'+name].types==='./types/'+name+'.d.mts'&&pkg.exports['./'+name].import==='./dist/'+name+'.mjs')
-    &&JSON.stringify(pkg.files)===JSON.stringify(SOURCE_SDK_FILES)
+    &&JSON.stringify(pkg.files)===JSON.stringify(packageFiles)
     &&exact(pkg.dependencies,['openid-client'])&&pkg.dependencies['openid-client']==='6.8.4'&&pkg.scripts===undefined&&pkg.devDependencies===undefined);
   need(exact(lock,['name','version','lockfileVersion','requires','packages'])&&lock.name===pkg.name&&lock.version===pkg.version&&lock.lockfileVersion===3&&lock.requires===true
     &&exact(lock.packages,['','node_modules/openid-client','node_modules/jose','node_modules/oauth4webapi'])
@@ -142,12 +150,12 @@ export function readSourceSdkArchive(archive){
   need(exact(provenance,['schema','packageVersion','esbuild','protocolDependency','sourceCommit','sourceFiles','outputs'])
     &&provenance.schema==='soty.source-app.build.v1'&&provenance.sourceCommit===capsule.sourceCommit&&provenance.packageVersion===pkg.version
     &&provenance.esbuild==='0.27.7'&&exact(provenance.protocolDependency,['name','version'])&&provenance.protocolDependency.name==='openid-client'&&provenance.protocolDependency.version==='6.8.4'
-    &&Array.isArray(provenance.outputs)&&provenance.outputs.length===SOURCE_APP_OUTPUTS.length&&Array.isArray(provenance.sourceFiles));
+    &&Array.isArray(provenance.outputs)&&provenance.outputs.length===outputs.length&&Array.isArray(provenance.sourceFiles));
   const sourceMap=new Map(capsule.sourceFiles.map(item=>[item.path,item.sha256]));
   for(const item of provenance.sourceFiles)need(exact(item,['path','sha256'])&&sourceSdkSourceName(item.path)&&sourceMap.get(item.path)===item.sha256);
   for(const name of SOURCE_SDK_TEXT_FILES)need(sourceMap.get('modules/source-app/'+name)===sourceSdkHash(files.get(name)));
-  for(const [name,path]of Object.entries(SOURCE_APP_COPY_FILES))need(sourceMap.get('modules/source-app/'+path)===sourceSdkHash(files.get('dist/'+name)));
-  seen.clear();for(const item of provenance.outputs){need(SOURCE_APP_OUTPUTS.includes(item.path)&&!seen.has(item.path)&&hex(item.sha256)
+  for(const [name,path]of Object.entries(SOURCE_APP_COPY_FILES))if(outputs.includes(name))need(sourceMap.get('modules/source-app/'+path)===sourceSdkHash(files.get('dist/'+name)));
+  seen.clear();for(const item of provenance.outputs){need(outputs.includes(item.path)&&!seen.has(item.path)&&hex(item.sha256)
     &&sourceSdkHash(files.get('dist/'+item.path))===item.sha256);seen.add(item.path);}
   return{capsule,package:pkg,lock,provenance,files,sha256:sourceSdkHash(archive),bytes:archive.length};
 }
