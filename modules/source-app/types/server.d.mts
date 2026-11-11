@@ -171,6 +171,7 @@ export interface SqlitePersonalDocumentsDomain {
 /** Experimental new relay app; caller supplies trusted app/issuer and runs a
  * trusted domain. No sandbox, launcher or Source commit-time recheck. */
 export function createRelayPersonalServer(options:{appId:string;issuer:string;databasePath:string;nonceDatabasePath:string;
+  browserSdk?:string;
   domain:SqlitePersonalDocumentsDomain;ui:string;listen:{host:'127.0.0.1';port:number};initialize?:boolean;fetch?:typeof globalThis.fetch;clock?:()=>number}):{
   server:import('node:http').Server;listen():Promise<number>;close():Promise<void>};
 export interface SqliteRootWorkspaceHost {readonly native:SourceNativeAuthorityPort;readonly storage:SourceStoragePort;
@@ -198,3 +199,26 @@ export function createSourceReadinessObserver(options:{directory:string;profile:
 
 /** Public error UI only; call from the existing HTTP error handler. No auth retry or authority. */
 export function sendNativeEntryHttpError(request:IncomingMessage,response:ServerResponse,error:unknown):boolean;
+import type {DatabaseSync} from 'node:sqlite';
+/** Server-side verified tuple from createSqliteRelayIdentity/another maintained verifier. JSON from a browser is not identity. */
+export interface AppAccessIdentity {readonly issuer:string;readonly subject:string}
+export type AppAccessRole='owner'|'editor'|'viewer';
+declare const appAccessProofBrand:unique symbol;
+/** Request-local authority; serialized or copied metadata is not a proof. */
+export interface AppAccessProof {readonly [appAccessProofBrand]:true;readonly appId:string;readonly resourceId:string;
+  readonly principalId:string;readonly role:AppAccessRole;readonly revision:number}
+export interface AppAccessContext {readonly database:DatabaseSync;readonly appId:string;readonly resourceId:string;
+  readonly principalId:string;readonly identity:Readonly<AppAccessIdentity>;readonly role:AppAccessRole;readonly revision:number}
+export interface AppAccessMembership {readonly appId:string;readonly resourceId:string;readonly principalId:string;
+  readonly role:AppAccessRole|null;readonly revision:number;readonly active:boolean}
+export interface AppAccess {
+  /** Creates a NEW resource only; it never adopts an existing team or links old app accounts. */
+  createResource(identity:AppAccessIdentity,resourceId:string):AppAccessProof;
+  capture(identity:AppAccessIdentity,resourceId:string):AppAccessProof;
+  /** Own BEGIN IMMEDIATE on the supplied effect DB; trusted synchronous callback, no enclosing transaction. */
+  withAccess<T>(proof:AppAccessProof,options:{roles:AppAccessRole[]},action:(context:AppAccessContext)=>T&(T extends PromiseLike<unknown>?never:unknown)):T;
+  setRole(ownerProof:AppAccessProof,target:AppAccessIdentity,role:AppAccessRole):Readonly<AppAccessMembership>;
+  revoke(ownerProof:AppAccessProof,target:AppAccessIdentity):Readonly<AppAccessMembership>;
+}
+/** Optional additive schema in the actual application's DB. Initialization is explicit; caller retains DB ownership. */
+export function createAppAccess(options:{database:DatabaseSync;appId:string;initialize?:boolean}):Readonly<AppAccess>;

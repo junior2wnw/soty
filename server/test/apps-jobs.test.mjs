@@ -61,6 +61,11 @@ test('a signed creation job has a deterministic app ID before execution but requ
   assert.equal(leased.jobs[0].input.output,'local-app');
   assert.match(leased.jobs[0].input.context,/soty\.local-app\.v1/u);
   assert.doesNotMatch(leased.jobs[0].input.context,/root-workspace|personalDocuments|relay.identity/iu);
+  for (const rule of ['/agents/shared-auth.md', 'createRelayIdentityFetch', 'createSqliteRelayIdentity', 'issuer/subject'])
+    assert.ok(leased.jobs[0].input.context.includes(rule), `a new agent receives ${rule}`);
+  assert.match(leased.jobs[0].input.context,/Не создавай отдельные пароли/u);
+  assert.match(leased.jobs[0].input.context,/не отправляй.*отдельную вкладку/u);
+  assert.match(leased.jobs[0].input.context,/останови подключение/u);
 });
 
 test('opt-in leased account task stops on current owner loss and a late native result resolves unknown without claiming success', async t => {

@@ -3,6 +3,7 @@
 export const SOURCE_APP_COPY_FILES=Object.freeze(Object.fromEntries([
   ...['app.js','app.css','processing.js','feedback-inbox.js'].map(name=>['assets/'+name,'examples/ordinary-app/assets/'+name]),
   ...['domain.mjs','assets/embed.html','assets/ui.js','assets/ui.css'].map(name=>['templates/reading-list/'+name,'examples/reading-list/'+name]),
+  ...['server.mjs','ui.html','README.md'].map(name=>['templates/relay/'+name,'examples/relay-starter/'+name]),
   ...['soty_native_entry.py','requirements.txt'].map(name=>['python/'+name,'python/'+name]),
 ]));
 export const SOURCE_APP_OUTPUTS=Object.freeze(['server.mjs','browser.mjs','example.mjs','install.mjs',...Object.keys(SOURCE_APP_COPY_FILES)].sort());

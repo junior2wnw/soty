@@ -5,8 +5,10 @@ import {loadSourceOperatorConfiguration,sourceOperatorStatus,disposeSourceOperat
 import {initializeInstalledSource,startInstalledSource,inspectInstalledSource,diagnoseInstalledSource} from './runtime.mjs';
 import {renderSourceNativePortal} from './native-portal.mjs';
 import {createSourceAuthorDraft} from './author.mjs';
+import {createRelayStarter} from './relay-starter.mjs';
 const safeError=error=>typeof error?.code==='string'&&/^[a-z][a-z0-9_]{0,79}$/u.test(error.code)?error.code:'source_install_failed';
 export const SOURCE_INSTALL_HELP=Object.freeze({schema:'soty.source-cli-help.v1',commands:[
+  'starter --title TITLE [--port PORT]',
   'author --title TITLE [--template reading-list]','check --config PRIVATE_FILE','init --config PRIVATE_FILE',
   'serve --config PRIVATE_FILE','reader --config PRIVATE_FILE','doctor --config PRIVATE_FILE','native-portal --config PRIVATE_FILE'],
   modes:{'soty.ordinary-source.operator.v1':'Native/OIDC Basic300','soty.root-workspace.operator.v1':'Root signed workspace Basic300'},
@@ -16,6 +18,9 @@ export async function sourceInstallMain(argv=process.argv.slice(2)){
   let handle,app;
   try{
     if(argv.length===0||argv.length===1&&['--help','help'].includes(argv[0])){console.log(JSON.stringify(SOURCE_INSTALL_HELP));return;}
+    if(argv[0]==='starter'&&[3,5].includes(argv.length)&&argv[1]==='--title'&&(argv.length===3||argv[3]==='--port')){
+      console.log(JSON.stringify(await createRelayStarter({directory:process.cwd(),title:argv[2],...(argv.length===5?{port:Number(argv[4])}:{})})));return;
+    }
     if(argv[0]==='author'&&[3,5].includes(argv.length)&&argv[1]==='--title'&&(argv.length===3||argv[3]==='--template'&&argv[4]==='reading-list')){
       console.log(JSON.stringify(await createSourceAuthorDraft({directory:process.cwd(),title:argv[2],...(argv.length===5?{template:argv[4]}:{})})));return;
     }

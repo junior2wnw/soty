@@ -17,7 +17,7 @@
 | Native | Fixed loopback, per-request access/pin; query и app cookies/CSP сохранены, Soty cookie не уходит в app |
 | Source/Native пара | Разные approved origins/targets; карточка ведёт в Source, отдельный вход — Native; exact Root policy GET не заменяет Native Human/ACL/короткую lease |
 | WebSocket/изменения | Настоящие 101 + message exchange; wrong/missing Origin, invalid session и changed pin отвергнуты |
-| Вход человека | Human OIDC/BFF, issuer/sub/current userinfo/native ACL; private owner mode явно ограничен одним владельцем |
+| Вход человека | Внутри окна Сот — только общий оконный вход, проверенные issuer/subject и актуальный серверный ACL приложения. Публичный capability и подписанный apps.authentication.get дают совместимость компонентов, а не PASS; недоступность останавливает подключение без отдельного пароля или Native-вкладки. Внешний OIDC/BFF — только отдельный явно выбранный сценарий |
 | Разные люди | Два разных пользователя; чужие записи/роли и неверные identity claims отвергнуты |
 | Отзыв/срок | Deny, expired/revoked device/grant/client/session не становятся анонимным успехом; поведение после TTL реально проверено |
 | Браузер | Card → named iframe → настоящее UI → permitted write → полный Root reload → прежняя запись |

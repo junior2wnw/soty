@@ -18,14 +18,15 @@ CREATE TABLE soty_relay_receipts(principal_id TEXT NOT NULL REFERENCES soty_work
 /** Experimental trusted-code host for a NEW relay app. The Root signature is
  * checked per request. It is not a sandbox, runner or Source commit fence. */
 export function createRelayPersonalServer(options){
-  const value=fields(options,['appId','issuer','databasePath','nonceDatabasePath','domain','ui','listen'],['initialize','fetch','clock']);
+  const value=fields(options,['appId','issuer','databasePath','nonceDatabasePath','domain','ui','listen'],['initialize','fetch','clock','browserSdk']);
   const listener=fields(value.listen,['host','port']),domain=fields(value.domain,['personalDocuments','read'],['execute']);
   check(listener.host==='127.0.0.1'&&Number.isSafeInteger(listener.port)&&listener.port>=1024&&listener.port<=65535
     &&typeof value.databasePath==='string'&&isAbsolute(value.databasePath)&&typeof value.nonceDatabasePath==='string'&&isAbsolute(value.nonceDatabasePath)
     &&value.databasePath!==value.nonceDatabasePath&&domain.personalDocuments===true&&typeof domain.read==='function'
     &&(domain.execute===undefined||typeof domain.execute==='function')&&typeof value.ui==='string'&&value.ui.trim()&&Buffer.byteLength(value.ui)<=4194304
     &&(value.initialize===undefined||typeof value.initialize==='boolean')&&(value.fetch===undefined||typeof value.fetch==='function')
-    &&(value.clock===undefined||typeof value.clock==='function'),
+    &&(value.clock===undefined||typeof value.clock==='function')
+    &&(value.browserSdk===undefined||typeof value.browserSdk==='string'&&Buffer.byteLength(value.browserSdk)<=4194304),
     'relay_personal_configuration_invalid',503);
   for(const fn of [domain.read,domain.execute].filter(Boolean))check(!['AsyncFunction','AsyncGeneratorFunction'].includes(fn.constructor?.name),'relay_personal_configuration_invalid',503);
   let identity,database,closed=false,inTransaction=false;
@@ -59,6 +60,10 @@ export function createRelayPersonalServer(options){
   async function body(req){const parts=[];let bytes=0;for await(const part of req){bytes+=part.length;check(bytes<=65536,'source_app_payload_limit',413);parts.push(part);}
     return parseSourceJson(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(parts)),{bytes:65536});}
   const server=createServer(async(req,res)=>{try{
+    if(req.url==='/soty-sdk.mjs'&&value.browserSdk!==undefined&&['HEAD','GET'].includes(req.method)){
+      res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});
+      res.end(req.method==='HEAD'?undefined:value.browserSdk);return;
+    }
     if((req.url==='/'||req.url==='/embed')&&['HEAD','GET'].includes(req.method)){
       res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'});res.end(req.method==='HEAD'?undefined:value.ui);return;
     }

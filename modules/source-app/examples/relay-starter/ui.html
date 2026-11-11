@@ -1,0 +1,27 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Моё приложение в Сотах</title>
+<style>html{font:16px system-ui;color-scheme:light dark}body{max-width:38rem;margin:2rem auto;padding:1rem}form{display:flex;gap:.5rem}input{flex:1;min-width:0}input,button{font:inherit;padding:.7rem}li{padding:.5rem}p[role=status]{min-height:1.5em}</style>
+<h1>Мои записи</h1><p role="status" aria-live="polite">Проверяем вход Сот…</p>
+<form><input name="title" aria-label="Запись" maxlength="240" required><button disabled>Добавить</button></form><ul></ul>
+<script type="module">
+import {createRelayIdentityFetch} from './soty-sdk.mjs';
+const request=createRelayIdentityFetch(),status=document.querySelector('[role=status]'),form=document.querySelector('form'),list=document.querySelector('ul');
+let scope=null;
+const unavailable=error=>{status.textContent=error?.code==='soty_identity_window_unavailable'?'Откройте это приложение внутри Сот. Общий вход этого окна пока недоступен.':'Не удалось проверить вход или сохранить запись. Повторите после восстановления соединения.';form.querySelector('button').disabled=true;};
+async function call(path,input){
+  const response=await request(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)});
+  const value=await response.json();if(!response.ok||value.ok!==true)throw Object.assign(Error('soty_request_failed'),{code:value.error?.code});return value.data;
+}
+async function show(){
+  const data=await call('/api/query',{requestId:crypto.randomUUID(),input:{operation:'reading.list'}});
+  if(scope!==null&&scope!==data.storageScope){list.replaceChildren();scope=null;throw Error('soty_window_changed');}
+  scope=data.storageScope;list.replaceChildren(...data.items.map(item=>{const node=document.createElement('li');node.textContent=item.title;return node;}));
+  status.textContent='';form.querySelector('button').disabled=false;
+}
+form.addEventListener('submit',async event=>{event.preventDefault();const title=form.elements.title.value.trim();if(!title)return;
+  form.querySelector('button').disabled=true;const requestId=crypto.randomUUID(),input={operation:'reading.add',title};
+  try{await call('/api/invoke',{requestId,input});form.reset();await show();}
+  catch(error){unavailable(error);status.textContent+=' Исход записи может быть неизвестен; перед повтором проверьте список и квитанцию с исходным requestId.';}
+});
+try{await show();}catch(error){unavailable(error);}
+</script></html>

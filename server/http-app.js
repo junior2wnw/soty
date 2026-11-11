@@ -349,6 +349,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return request.rootProfileDigest === undefined ? human.withSubjectAuthority(request,callback) : rootWorkspaceSubject(request,callback);}:undefined,
     signSourceAuthority: humanProfile?.enabled ? createSourceAuthoritySigner({ profile: humanProfile, scopedProfiles: scopedEmbedProfiles }) : undefined,
     signRelayIdentity: humanProfile?.enabled ? createRelayIdentitySigner({ profile: humanProfile }) : undefined,
+    relayIdentityIssuer:humanProfile?.enabled?humanProfile.issuer:undefined,
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
     validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }),
     actorActive: actor => connect?.isActorActive(actor) === true,
@@ -428,9 +429,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.locals.platformLive = platformLive;
   app.locals.universalApps = universal;
   app.locals.humanIdentityService = human;
-  app.get('/api/apps/runtime-capabilities',(_req,res)=>{
+  app.get('/api/apps/runtime-capabilities',(req,res)=>{
     res.setHeader('Cache-Control','no-store');
-    try{const value=JSON.stringify(apps.runtimeCapabilities());if(Buffer.byteLength(value,'utf8')>4096)throw new Error('apps_runtime_capabilities_too_large');res.type('json').send(value);}
+    try{const value=JSON.stringify(apps.runtimeCapabilities({authentication:req.query.authentication==='1'}));if(Buffer.byteLength(value,'utf8')>4096)throw new Error('apps_runtime_capabilities_too_large');res.type('json').send(value);}
     catch{res.status(503).json({ok:false,code:'apps_runtime_capabilities_unavailable'});}
   });
   app.get('/api/apps/catalog', (_req, res) => {
@@ -599,7 +600,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ configured: apps.configured, sourceEntryActivation: apps.configured === true, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human),
+    res.json({ configured: apps.configured, sourceEntryActivation: apps.configured === true, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human),authentication:apps.runtimeCapabilities({authentication:true}).authentication,
       automaticAppRegistration: { schema: 'soty.automatic-app-registration-capability.v1', available: Boolean(automaticApps && universal && apps.configured), archive: Boolean(automaticApps), archiveCapacity: Boolean(automaticApps), archiveIncomplete: Boolean(automaticApps && universal) },
       humanSignins: human?.signinCapabilities ?? { schema: 'soty.human-signins-capability.v1', available: false, sessions: false,
         rememberedConsents: false, checkRevoke: false, scopes: [], sourceRootSessions: false, maximumPageSize: 0 },

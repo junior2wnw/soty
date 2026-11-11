@@ -55,6 +55,26 @@ test('clean external agent follows root link to SDK/modules then a current publi
   assert.equal((await f.get('/api/app-agent-directory/modules')).status, 200);
 });
 
+test('a context-free author discovers mandatory window login before any app or role is registered', async t => {
+  const f = await fixture(t), discovery = await (await f.get('/.well-known/soty-app-platform')).json();
+  assert.equal(discovery.authentication?.default, 'soty-window');
+  assert.equal(discovery.authentication?.documentation, '/agents/shared-auth.md');
+  assert.equal(discovery.authentication?.capabilities, '/api/apps/capabilities');
+  assert.equal(discovery.authentication?.sourceSdk, discovery.sourceSdk);
+  const guide = await f.get(discovery.authentication.documentation);
+  assert.equal(guide.status, 200); assert.match(guide.headers.get('content-type'), /^text\/markdown/u);
+  assert.equal(guide.headers.get('cache-control'), 'no-store');
+  const instructions = await guide.text();
+  for (const name of ['createRelayIdentityFetch', 'createSqliteRelayIdentity', 'issuer', 'subject']) assert.ok(instructions.includes(name), name);
+  assert.match(instructions, /Не создавайте отдельные пароли/u);
+  assert.match(instructions, /не переносите вход в отдельную вкладку/u);
+  assert.match(instructions, /Остановите подключение/u);
+  assert.equal((await f.get(discovery.authentication.documentation, { method: 'HEAD' })).status, 200);
+  assert.equal((await f.get(discovery.authentication.documentation, { method: 'POST' })).status, 405);
+  assert.equal((await f.get(discovery.authentication.documentation + '?accountId=foreign')).status, 400);
+  assert.equal(f.queries(), 0, 'public login guidance grants no app execution or private data');
+});
+
 test('HTTP authenticates private metadata by the explicit current credential; cookies and accountId do not authorize', async t => {
   const f = await fixture(t);
   assert.equal((await f.get('/api/app-agent-directory/apps/private-app')).status, 404);

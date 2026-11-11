@@ -50,6 +50,12 @@ test('the default Soty login and explicit alternatives reference maintained inte
   assert.match(appAuthenticationGuide({}).boundaries.join(' '), /Standalone relay identity/u);
   assert.match(appAuthenticationGuide({}).steps.join(' '), /403.*receipt.*Do not blindly repeat/u);
   assert.match(appAuthenticationGuide({}).boundaries.join(' '), /Idempotency-Key/u);
+  const common = appAuthenticationGuide({});
+  for (const text of ['/agents/shared-auth.md', 'apps.authentication.get', 'createRelayIdentityFetch', 'createSqliteRelayIdentity'])
+    assert.ok(common.steps.join(' ').includes(text), `no-context instructions name ${text}`);
+  assert.match(common.boundaries.join(' '), /Do not add app passwords/u);
+  assert.match(common.boundaries.join(' '), /stop integration.*missing component/u);
+  assert.match(common.acceptance.join(' '), /demotion.*revocation.*old request/u);
   for (const mode of ['soty', 'human-oidc', 'private-owner', 'agent']) {
     const value = appAuthenticationGuide({ mode });
     assert.equal(value.applied, false); assert.equal(value.productionEnabled, 'not_checked');

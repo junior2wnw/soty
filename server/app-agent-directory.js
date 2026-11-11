@@ -6,6 +6,7 @@ import { createAppModuleCatalog } from './app-agent-directory-modules.js';
 const source = path => fileURLToPath(new URL(path, import.meta.url));
 const files = new Map([
   ['/agents/app-platform.md', ['../public/agents/app-platform.md', 'text/markdown; charset=utf-8']],
+  ['/agents/shared-auth.md', ['../public/agents/shared-auth.md', 'text/markdown; charset=utf-8']],
   ['/agents/glass-ui.md', ['../public/agents/glass-ui.md', 'text/markdown; charset=utf-8']],
   ['/agents/monitoring.md', ['../modules/monitoring/README.md', 'text/markdown; charset=utf-8']],
   ['/agents/sdk/monitoring/sdk.mjs', ['../modules/monitoring/sdk.mjs', 'text/javascript; charset=utf-8']],
@@ -32,6 +33,8 @@ export function attachAppAgentDirectory(app, { directory, origin = '', moduleCat
   const links = { schema: 'soty.app-platform-discovery.v1', documentation: '/agents/app-platform.md', apps: '/api/app-agent-directory/apps',
     modules: '/api/app-agent-directory/modules', ui: '/agents/apps', rootMcp: '/mcp',
     oauth: '/.well-known/oauth-protected-resource/mcp', sourceSdk: '/sdk/source-app/index.json',
+    authentication: { default: 'soty-window', contract: 'soty.relay-window-identity.v1', documentation: '/agents/shared-auth.md', capabilities: '/api/apps/capabilities',
+      sourceSdk: '/sdk/source-app/index.json' },
     descriptorSdk: { entry: '/agents/sdk/app-contract/sdk.mjs', files: [...files.keys()].filter(path => path.startsWith('/agents/sdk/app-contract/') || path === '/agents/sdk/capabilities/server/validation.mjs') },
     glassUi:{documentation:'/agents/glass-ui.md',entry:'/agents/sdk/glass-ui/src/ui-kit.js',styles:'/agents/sdk/glass-ui/src/ui-kit.css',widgetContext:'/agents/sdk/glass-ui/src/widget-context.js',
       files:[...files.keys()].filter(path=>path.startsWith('/agents/sdk/glass-ui/'))},
@@ -83,7 +86,7 @@ export function attachAppAgentDirectory(app, { directory, origin = '', moduleCat
       const catalog = directory.list({ ...args, actor });
       const items = catalog.items.map(item => `<li><a href="/api/app-agent-directory/apps/${escape(item.appId)}">${escape(item.title)}</a><ul>${item.capabilities.map(capability =>
         `<li>${escape(capability.title || capability.id)} · ${capability.executionReady ? 'отдельное разрешение проверено' : 'описание; запуск отдельно'}</li>`).join('')}</ul></li>`).join('');
-      send(`<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Соты · приложения для агентов</title><main><h1>Приложения Сот</h1><p><a href="/agents/app-platform.md">SDK и подключение</a> · <a href="/api/app-agent-directory/modules">Модули</a> · <a href="/api/app-agent-directory/apps">JSON каталог</a> · <a href="/agents">Root capabilities</a></p><p>Описание возможностей не выдаёт права на выполнение. Источник и доступ проверяются при каждом обращении.</p><ul>${items || '<li>Пока нет опубликованных владельцами описаний приложений.</li>'}</ul></main></html>`, 'text/html; charset=utf-8');
+      send(`<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Соты · приложения для агентов</title><main><h1>Приложения Сот</h1><p><a href="/agents/shared-auth.md">Обязательный общий вход</a> · <a href="/agents/app-platform.md">SDK и подключение</a> · <a href="/api/app-agent-directory/modules">Модули</a> · <a href="/api/app-agent-directory/apps">JSON каталог</a> · <a href="/agents">Root capabilities</a></p><p>Внутри Сот используется личность текущего окна без отдельного пароля и регистрации. Описание возможностей не выдаёт права на выполнение. Источник и доступ проверяются при каждом обращении.</p><ul>${items || '<li>Пока нет опубликованных владельцами описаний приложений.</li>'}</ul></main></html>`, 'text/html; charset=utf-8');
     } catch (error) {
       const status = [401, 403, 404, 409, 429, 503].includes(error?.status) ? error.status : 400;
       const code = typeof error?.code === 'string' && /^[a-z_]{1,96}$/u.test(error.code) ? error.code : 'directory_unavailable';

@@ -45,8 +45,9 @@ import { createAppCoverAdapter, appCoverOperations } from './cover.mjs';
 import { createPreparedBrowse } from './prepared-browse.mjs';
 import { SELF_IP_PROFILE, ENDPOINT_SCHEMA, SELF_ADDRESSES_SCHEMA, targetFromRow, readRuntimeEndpoint, normalizeSelfInventory } from './endpoint-targets.mjs';
 import { createEndpointRegistration } from './endpoint-registration.mjs';
+import {appAuthenticationCapability,appAuthenticationStatus} from './authentication.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.session.renew', 'apps.session.confirm', 'apps.session.context', 'apps.session.close', 'apps.relay.identity', 'apps.relay.identity.close', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.session.renew', 'apps.session.confirm', 'apps.session.context', 'apps.session.close', 'apps.relay.identity', 'apps.relay.identity.close', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.authentication.get', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 export function appIdForCreationJob(jobId) {
   assertApps(typeof jobId === 'string' && /^job_[a-f0-9]{32}$/u.test(jobId), 'invalid_identifier');
   return `app-${jobId.slice(4)}`;
@@ -61,7 +62,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, connectorCurrent = () => false, onHeartbeat = () => {}, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false, allowSelfIpTargets = false, allowFrameContinuityMigration = false,
-  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity,
+  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity, relayIdentityIssuer,
   identitySignTimeoutMs = 8000, readAppGuide, onChange = () => {}, onRuntimeRequest = () => {}, invitationAccess,checkWidgetLaunch,checkWidgetRuntime,resolveWidgetRuntime } = {}) {
   assertApps(typeof onChange === 'function', 'apps_change_listener_invalid', 503);
   assertApps(typeof onRuntimeRequest === 'function'&&!['AsyncFunction','AsyncGeneratorFunction'].includes(onRuntimeRequest.constructor?.name), 'apps_observer_configuration_invalid', 503);
@@ -118,6 +119,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);});
   assertApps(signSourceAuthority===undefined || typeof signSourceAuthority==='function','app_scoped_configuration_invalid',503);
   assertApps(signRelayIdentity===undefined || typeof signRelayIdentity==='function','app_identity_configuration_invalid',503);
+  const authenticationCapability=appAuthenticationCapability({signer:signRelayIdentity,issuer:relayIdentityIssuer});
   assertApps(Number.isSafeInteger(identitySignTimeoutMs) && identitySignTimeoutMs >= 1 && identitySignTimeoutMs <= 8000,
     'app_identity_configuration_invalid', 503);
   assertApps(!scopedEmbedProfiles.some(profile=>isRootSignedWorkspaceSource(profile.sourceProfile)) || typeof signSourceAuthority==='function',
@@ -940,7 +942,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       insertRegisteredApp(actor, { id, connectorKey: device.connector_key, name, port, entryPath, grants });
       return id;
     });
-    notifyChange(actor,id); sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor) };
+    notifyChange(actor,id); sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor), authentication:authenticationStatus(id) };
+  }
+  function authenticationStatus(id,surface='embedded'){
+    const target=activeTarget(id);
+    assertApps(target,'app_unavailable',404);
+    return appAuthenticationStatus({capability:authenticationCapability,appId:id,target,channel:channels.get(target.connector_key),surface});
   }
   function insertRegisteredApp(actor, { id, connectorKey: key, name, port, entryPath, grants }, initialTarget) {
     assertApps(db.isTransaction, 'apps_transaction_required', 500);
@@ -977,7 +984,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     }, readApp: (id, actor) => publicApp(row(id), actor),
     afterCommit(actor, id) { notifyChange(actor, id); sync(channels.get(activeTarget(id)?.connector_key)); } });
   const endpointRegistrationExtension = Object.freeze({ operations: endpointRegistry.operations,
-    executeAsync({ op, actor, args = {} }) { return endpointRegistry.executeAsync({ op, actor, args: authenticatedArgs(actor, args) }); } });
+    async executeAsync({ op, actor, args = {} }) {
+      const result=await endpointRegistry.executeAsync({ op, actor, args: authenticatedArgs(actor, args) });
+      return {...result,authentication:appAuthority({actor,appId:result.app.id,mode:'participant'},()=>authenticationStatus(result.app.id))};
+    } });
   function registerCreationJob(actor, job) {
     return withContactAuthority(actor, () => {
       assertActor(actor);
@@ -1202,6 +1212,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function executeCurrent({ op, args = {}, actor }) {
     if (directoryOperations.includes(op)) assertApps(Object.hasOwn(args, 'expectedAccountId'), 'apps_directory_account_required');
+    if(op==='apps.authentication.get')assertApps(Object.hasOwn(args,'expectedAccountId'),'apps_authentication_account_required');
     args = authenticatedArgs(actor, args); assertApps(operations.has(op), 'unsupported_operation');
     if (directoryOperations.includes(op)) return directory.execute({ op, actor, args });
     if (savedOperations.has(op)) return saved.execute({ op, actor, args });
@@ -1211,6 +1222,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (publicationOperations.has(op)) return publications.execute({ actor, op, args });
     if (op === 'apps.inspect') return inspection.read(actor, args);
     if (op === 'apps.entry.get') return entryRead(actor, args);
+    if(op==='apps.authentication.get'){
+      exact(args,['appId','surface']);
+      assertApps(args.surface===undefined||['embedded','native'].includes(args.surface),'invalid_arguments');
+      return appAuthority({actor,appId:args.appId,mode:'participant'},()=>authenticationStatus(args.appId,args.surface));
+    }
     if (op === 'apps.devices') {
       exact(args, []);
       return { devices: db.prepare('SELECT * FROM app_devices WHERE owner_account_id=? ORDER BY created_at').all(actor.accountId).map(deviceProjection) };
@@ -2487,8 +2503,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   return { operations, execute, registerCreationJob, registerPreparedApp, creationJobApp, inspectPrepared: preparedBrowse.inspect, readPreparedManifest: preparedBrowse.readManifest, publicCatalog, sourcePreparationExtension, endpointRegistrationExtension,
     hostRuntimeStats(){assertApps(!closed,'apps_closed',503);return{online:[...channels.values()].filter(channel=>channel.ws.readyState===1).length};},
-    runtimeCapabilities() { return { schema: 'soty.apps-runtime-capabilities.v1', channelSchema: CHANNEL_SCHEMA, targetBindingVersions: [1, 2],
-      runtimeProfiles: ['soty.relay-restricted.v1', 'soty.selected-human-embed.v1', 'soty.selected-human-embed.v2', ...(allowSelfIpTargets ? [SELF_IP_PROFILE] : [])],
+    runtimeCapabilities({authentication=false}={}) { return { schema: 'soty.apps-runtime-capabilities.v1', channelSchema: CHANNEL_SCHEMA, targetBindingVersions: [1, 2],
+      runtimeProfiles: ['soty.relay-restricted.v1', 'soty.selected-human-embed.v1', 'soty.selected-human-embed.v2', ...(allowSelfIpTargets ? [SELF_IP_PROFILE] : [])],...(authentication?{authentication:authenticationCapability}:{}),
       ...(allowSelfIpTargets ? { selfIpTargetSchema: ENDPOINT_SCHEMA } : {}) }; },
     coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateWidget, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
     withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,

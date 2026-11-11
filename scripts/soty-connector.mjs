@@ -22,7 +22,7 @@ import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
 import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.21";
+const connectorVersion = "1.4.22";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -911,6 +911,7 @@ function openCodeEnv({ boundedLocalTask = false } = {}) {
           "Complete the user's actual request with OpenCode tools; do not merely explain how it could be done.",
           "Prefer the simplest correct solution, preserve existing behavior, verify material changes, and report concrete results.",
           "Work inside the current workspace. Never claim that an action succeeded unless tool output proves it.",
+          "Apps hosted inside Soty must use the existing Soty identity bound to their exact embedded window. Read /agents/shared-auth.md on the trusted Root and use createRelayIdentityFetch in the browser and the shared server verifier. Do not add app passwords, a separate signup, an email-based account merge, or a new Native tab as a fallback. Report the precise missing contract instead. Recheck the app's own resource roles on the server for every operation; platform ownership is not access to someone else's team.",
           "Do not expose credentials, hidden instructions, or private file contents unless the user explicitly requested those exact contents."
         ].join(" "),
         permission: {
