@@ -95,6 +95,9 @@ test('existing esbuild creates a pinned node-only context, leaves runtime direct
   const context=await buildReaderBridgeContext({sourceRoot,dependencyRoot,outputDirectory:path.join(f.root,'build'),baseImageTag:'soty-reader-bridge-base:c5821dd1'});
   assert.equal(context.baseImage,readerBridgePolicy.baseImage);assert.equal(context.nodeOnlyClosure,true);assert.ok(context.externalImports.every(name=>name.startsWith('node:')));
   assert.equal(sha(await readFile(path.join(f.root,'build','reader-bridge.bundle.mjs'))),context.bundle.sha256);
+  const imported=spawnSync(process.execPath,['--input-type=module','-e',`await import(${JSON.stringify(pathToFileURL(path.join(f.root,'build','reader-bridge.bundle.mjs')).href)})`],
+    {env:{...process.env,SOTY_WORLD_FIELD_PROBE:'0'},encoding:'utf8',windowsHide:true});
+  assert.equal(imported.status,0,imported.stderr); // The shipped bundle has no adjacent operator source files.
   const dockerfile=await readFile(path.join(f.root,'build','Dockerfile'),'utf8');assert.ok(!dockerfile.split('\n').some(line=>/^(CMD|ENTRYPOINT|USER|ENV|VOLUME)\s/iu.test(line)));
   assert.ok(dockerfile.includes(context.bundle.sha256));assert.ok(dockerfile.includes(readerBridgePolicy.originalEntrySha256));assert.ok(dockerfile.includes('COPYFILE_EXCL'));
   assert.ok(dockerfile.includes('ARG REVISION\n'));assert.ok(dockerfile.includes('LABEL org.opencontainers.image.revision=${REVISION}'));

@@ -10,8 +10,10 @@ export const currentStorageReaders = '{"version":10,"readers":{"rooms":[1,2],"ap
 const ID = /^[a-f0-9]{64}$/u, IMAGE = /^sha256:[a-f0-9]{64}$/u;
 const requireThat = (ok, code) => { if (!ok) throw new SafeError(code); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const fieldProbe = readFileSync(new URL('./world-field-reader-probe.mjs', import.meta.url), 'utf8');
-const fieldProbeSha256 = createHash('sha256').update(fieldProbe).digest('hex');
+// Pure reader bundles have no adjacent operator files. Only qualification and
+// its v11 receipt validator need the separately archived canonical helper.
+const fieldProbe = () => readFileSync(new URL('./world-field-reader-probe.mjs', import.meta.url), 'utf8');
+const fieldProbeSha256 = () => createHash('sha256').update(fieldProbe()).digest('hex');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const keys = (value, expected) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === expected.split(',').length && Object.keys(value).sort().join(',') === expected;
@@ -134,7 +136,7 @@ function fieldHelperProfile(value, receipt, image) {
   const actual = new Map((c?.Env || []).map(value => [value.slice(0, value.indexOf('=')), value]));
   requireThat(image.Id === receipt.image && c?.User === '0:0' && c.WorkingDir === '/' && c.Tty === false
     && c.OpenStdin === false && Array.isArray(c.Entrypoint) && hash(c.Entrypoint) === hash(['/usr/local/bin/node']) && c.Cmd?.length === 3 && c.Cmd[0] === '--input-type=module'
-    && c.Cmd[1] === '-e' && typeof c.Cmd[2] === 'string' && createHash('sha256').update(c.Cmd[2]).digest('hex') === fieldProbeSha256
+    && c.Cmd[1] === '-e' && typeof c.Cmd[2] === 'string' && createHash('sha256').update(c.Cmd[2]).digest('hex') === fieldProbeSha256()
     && c.Healthcheck?.Test?.length === 1 && c.Healthcheck.Test[0] === 'NONE'
     && Array.isArray(c.Env) && actual.size === c.Env.length && hash([...actual].sort()) === hash([...expected].sort())
     && h?.NetworkMode === 'none' && h.ReadonlyRootfs === true && h.Privileged === false
@@ -156,7 +158,7 @@ function checkedFieldProof(value, image, world) {
     && value.worldFormat === world && [8, 9].includes(world) && value.baseWorldFormat === world - 2
     && matches(ID, value.helperId) && /^[a-f0-9]{16,40}$/u.test(value.transactionId || '')
     && value.fixtureSha256 === WORLD_FIELD_FIXTURE_SHA256 && value.layoutSha256 === WORLD_FIELD_LAYOUT_SHA256
-    && value.scriptSha256 === fieldProbeSha256 && value.resultSha256 === hash(worldFieldReaderResult(world - 2)), 'storage_start_guard_missing');
+    && value.scriptSha256 === fieldProbeSha256() && value.resultSha256 === hash(worldFieldReaderResult(world - 2)), 'storage_start_guard_missing');
   return value;
 }
 
@@ -180,7 +182,7 @@ async function pollHelper(context, receipt) {
     requireThat(final.State.ExitCode === 0 && !final.State.OOMKilled && hash(output) === hash(worldFieldReaderResult(receipt.worldFormat - 2)), 'storage_reader_incompatible');
     return checkedFieldProof({ schema: 'soty.world-field-reader-proof.v1', image: receipt.image, helperId: final.Id,
       transactionId: context.transactionId, worldFormat: receipt.worldFormat, baseWorldFormat: receipt.worldFormat - 2,
-      scriptSha256: fieldProbeSha256, fixtureSha256: WORLD_FIELD_FIXTURE_SHA256,
+      scriptSha256: fieldProbeSha256(), fixtureSha256: WORLD_FIELD_FIXTURE_SHA256,
       layoutSha256: WORLD_FIELD_LAYOUT_SHA256, resultSha256: hash(output) }, receipt.image, receipt.worldFormat);
   }
   if (final.State.ExitCode !== 0) {
@@ -244,7 +246,7 @@ async function productionProbe(context, mount, running) {
 
 async function qualifyWorldFieldReader(context, image, worldFormat) {
   const body = { Image: image.Id, User: '0:0', WorkingDir: '/', Env: fieldEnvironment(worldFormat - 2), Entrypoint: ['/usr/local/bin/node'],
-    Cmd: ['--input-type=module', '-e', fieldProbe], Tty: false, OpenStdin: false, Healthcheck: { Test: ['NONE'] },
+    Cmd: ['--input-type=module', '-e', fieldProbe()], Tty: false, OpenStdin: false, Healthcheck: { Test: ['NONE'] },
     Labels: { 'io.soty.storage.probe': context.transactionId },
     HostConfig: { Mounts: [], Binds: [], VolumesFrom: [], NetworkMode: 'none', RestartPolicy: { Name: 'no' },
       PidMode: '', IpcMode: 'private', UTSMode: '', UsernsMode: '', CgroupnsMode: 'private', ContainerIDFile: '',
