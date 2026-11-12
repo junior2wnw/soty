@@ -30,6 +30,11 @@ export function wireHttp(port,path,{host,cookie,origin,method,body,fields,header
 /** Temp installed connector HTTP/WS + actual Root Apps/Human dispatcher. No
  * controlled Source authority oracle; all Source root reads traverse channel. */
 export async function createOrdinaryInstalledFixture(t, options = {}) {
+  const usedNativePorts = new Set(options.nativePorts ?? []);
+  async function nextNativePort() {
+    for (let attempt = 0; attempt < 32; attempt++) { const port = await freePort(); if (!usedNativePorts.has(port)) { usedNativePorts.add(port); return port; } }
+    throw new Error('ordinary_fixture_native_ports_exhausted');
+  }
   const directory=await mkdtemp(join(tmpdir(),'soty-ordinary-installed-')),runtimeDir=join(directory,'runtime'),dataDir=join(directory,'root'),dist=options.distDir??join(directory,'dist');
   await mkdir(runtimeDir);if(!options.distDir){await mkdir(dist);await writeFile(join(dist,'index.html'),'<!doctype html><title>Synthetic signed Root consent</title>');}
   const connectorPort=await freePort(),appTlsPort=options.appPort??await freePort(),realms=[],clients=[],sockets=new Set(),jars=new Map(),oauthCounts={};let root,child,outputBytes=0;
@@ -60,7 +65,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   startChild(false);const claim=await until(async()=>{assert.equal(child.exitCode,null,'connector safe output bytes='+outputBytes);try{const r=await wireHttp(connectorPort,'/apps/claim',{origin,body:{}});return r.status===200?r.value:null;}catch{return null;}},60000);
   await owner.client.extension('apps.claim',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,claimCode:claim.claimCode});
   for(const [index,realmId]of(options.realmIds??['board','library']).entries()){
-    const port=options.nativePorts?.[index]??await freePort(),created=await owner.client.extension('apps.register',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,name:'Synthetic '+realmId,port:options.registrationPorts?.[index]??port,entryPath:'/embed',grants:{accountIds:[reader.account.accountId],communityIds:[]}});
+    const port=options.nativePorts?.[index]??await nextNativePort(),created=await owner.client.extension('apps.register',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,name:'Synthetic '+realmId,port:options.registrationPorts?.[index]??port,entryPath:'/embed',grants:{accountIds:[reader.account.accountId],communityIds:[]}});
     const appId=created.app.id,origins=options.realmOrigins?.({appId,realmId,index,port,appTlsPort}),
       embedded=origins?.embed??'https://'+appId+'.localhost:'+appTlsPort,native=origins?.native??(options.sourceOnly?embedded:'http://localhost:'+port);
     const target={appId,revision:2,ownerAccountId:owner.account.accountId,connectorKey:['ordinary_installed_link_123456789012',claim.hostDeviceId,claim.connectorId].join('|'),port,entryPath:'/embed',profile:'soty.selected-human-embed.v2'};target.digest=runtimeTargetDigest(target);
