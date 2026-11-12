@@ -4,8 +4,9 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { canonicalContractJson, contractDigest } from '../../app-contract/json.mjs';
 import { initializeFeedbackSchema } from './schema.mjs';
-import { DEFAULT_FEEDBACK_PROFILE, FEEDBACK_LIMITS } from './profile.mjs';
+import { DEFAULT_FEEDBACK_PROFILE, FEEDBACK_LIMITS, ROOT_VIDEO_CAPTURE_PROFILE } from './profile.mjs';
 import { validateFeedbackAttachments } from './media.mjs';
+import { validateRootFeedbackAttachments } from './root-media.mjs';
 
 export class FeedbackError extends Error {
   constructor(code, status = 400) { super(code); this.name = 'FeedbackError'; this.code = code; this.status = status; }
@@ -31,9 +32,10 @@ export const feedbackOperations = Object.freeze(['apps.feedback.context', 'apps.
 /** Verified Connect actor + Apps participant/source fence are supplied by the
  * host. Neither installation IDs nor actor fields from a body grant access. */
 export function createFeedbackService({ databasePath, registryId = 'soty', environmentId = 'production',
-  actorActive, withAppAuthority, withTransaction, now = Date.now, limits = {} } = {}) {
+  actorActive, withAppAuthority, withTransaction, now = Date.now, limits = {}, videoEnabled = false } = {}) {
   requireThat(typeof databasePath === 'string' && typeof actorActive === 'function' && typeof withAppAuthority === 'function', 'feedback_host_required', 500);
   requireThat(withTransaction === undefined || typeof withTransaction === 'function', 'feedback_host_required', 500);
+  requireThat(typeof videoEnabled === 'boolean', 'feedback_host_required', 500);
   id(registryId); id(environmentId);
   exact(limits, ['maxDatabaseBytes'], []);
   const maxDatabaseBytes = limits.maxDatabaseBytes ?? 64 * 1024 * 1024;
@@ -210,7 +212,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
   function writeInput(op, args) {
     if (op === 'apps.feedback.submit') {
       exact(args, ['appId', 'installationId', 'requestId', 'body', 'attachments']); body(args.body); id(args.installationId);
-      const media = validateFeedbackAttachments(args.attachments, { limits: { maxAttachments: FEEDBACK_LIMITS.maxAttachments,
+      const media = (videoEnabled ? validateRootFeedbackAttachments : validateFeedbackAttachments)(args.attachments, { limits: { maxAttachments: FEEDBACK_LIMITS.maxAttachments,
         totalAttachmentBytes: FEEDBACK_LIMITS.totalAttachmentBytes, maxAudioSeconds: FEEDBACK_LIMITS.maxAudioSeconds } });
       return { media, intent: hash(JSON.stringify(['feedback.submit.v1', args.appId, args.installationId, args.body,
         media.map(item => [item.kind, item.name, item.mimeType, hash(item.bytes)])])) };
@@ -245,7 +247,8 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
         exact(args, ['appId', 'domainId', 'path'], ['appId']);
         return scoped(actor, args, (context, inbox) => ({ readiness: 'ready', context: { installationId: inbox.id, appId: context.appId,
           entry: context.entry, title: context.title, recipientLabel: 'Владелец приложения', ticketVisibility: 'reporter-and-support',
-          canSubmit: true, canManage: context.canManage, capabilities: { text: true, voice: true, screenshot: true, asr: false },
+          canSubmit: true, canManage: context.canManage, capabilities: { text: true, voice: true, screenshot: true, asr: false, ...(videoEnabled ? { video: true } : {}) },
+          ...(videoEnabled ? { captureProfile: ROOT_VIDEO_CAPTURE_PROFILE } : {}),
           limits: { bodyChars: FEEDBACK_LIMITS.bodyChars, totalAttachmentBytes: FEEDBACK_LIMITS.totalAttachmentBytes,
             maxAttachments: FEEDBACK_LIMITS.maxAttachments, maxAudioSeconds: FEEDBACK_LIMITS.maxAudioSeconds } } }), true, requireOwner);
       }
@@ -337,6 +340,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
           const input = { ...args, limit };
           if (input.cursor === '') delete input.cursor;
           const value = api.execute({ op, actor, args: input }, { requireOwner: true });
+          requireThat(!value.tickets.some(ticket => ticket.attachments.some(item => item.kind === 'video')), 'unsupported_media_projection', 422);
           return { ...value, nextCursor: value.nextCursor ?? '' };
         }
         if (op === 'apps.feedback.get') {
@@ -346,6 +350,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
             && Number.isSafeInteger(limit) && limit >= 1 && limit <= 20, 'feedback_invalid_limit');
           return scoped(actor, input, (context, inbox) => {
             const value = project(ticket(actor, context, inbox, input.ticketId), actor, context, false, false, { offset, limit });
+            requireThat(!value.attachments.some(item => item.kind === 'video'), 'unsupported_media_projection', 422);
             const total = db.prepare('SELECT count(*) AS n FROM feedback_messages WHERE ticket_id=?').get(input.ticketId).n;
             const result = { ticket: value, messagesPage: { offset, total, nextOffset: -1 } };
             while (value.messages.length && Buffer.byteLength(JSON.stringify(result)) > 59000) value.messages.pop();

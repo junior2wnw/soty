@@ -158,8 +158,16 @@ function webm(bytes, limits, kind='audio') {
   return {width:video?.width??null,height:video?.height??null,durationMs:null};
 }
 
-/** Images are really decoded. Audio is bounded container admission, not a claim of codec playback. */
+/** Synchronous container admission also works inside downstream authority transactions. */
+export function inspectMaterialVideo(bytes, mediaType, limits=MATERIAL_LIMITS) {
+  materialMediaType('video',mediaType); check(Buffer.isBuffer(bytes)&&bytes.length>0&&bytes.length<=limits.fileBytes,'materials_file_size');
+  try { return webm(bytes,limits,'video'); }
+  catch(error) { if(error instanceof MaterialsError)throw error;invalid(); }
+}
+
+/** Images are really decoded. Audio/video are bounded container admission, not a claim of codec playback. */
 export async function inspectMaterialMedia(bytes, kind, mediaType, limits=MATERIAL_LIMITS) {
+  if(kind==='video')return inspectMaterialVideo(bytes,mediaType,limits);
   materialMediaType(kind,mediaType); check(Buffer.isBuffer(bytes)&&bytes.length>0&&bytes.length<=limits.fileBytes,'materials_file_size');
   if(kind==='image') {
     try {

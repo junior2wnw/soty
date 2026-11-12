@@ -14,3 +14,10 @@ const retention = ref('soty.feedback:retention/private', { visibility: 'reporter
 const feedback = Object.freeze({ mode: 'required', provider: FEEDBACK_PROVIDER, captureProfile: capture,
   retentionProfile: retention, submitAudience: 'members', ticketVisibility: 'reporter-and-support' });
 export const DEFAULT_FEEDBACK_PROFILE = Object.freeze({ ...ref('soty.feedback:author/private', feedback), feedback });
+
+export const FEEDBACK_VIDEO_LIMITS = Object.freeze({ maxVideoSeconds: 120, maxVideoSide: 4096, maxVideoPixels: 4096 * 2160 });
+// Root opt-in capability; historical registration/Source capture pins stay immutable.
+export const ROOT_VIDEO_CAPTURE_PROFILE = ref('soty.feedback:capture/root-inline-video', {
+  formats: ['png', 'jpeg', 'webp', 'webm-opus', 'ogg-opus', 'webm-vp8', 'webm-vp8-opus'],
+  bytes: FEEDBACK_LIMITS.totalAttachmentBytes, count: FEEDBACK_LIMITS.maxAttachments,
+  audioSeconds: FEEDBACK_LIMITS.maxAudioSeconds, ...FEEDBACK_VIDEO_LIMITS });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {inspectMaterialMedia} from '../server/media.mjs';
+import {inspectMaterialMedia,inspectMaterialVideo} from '../server/media.mjs';
 const read=extension=>readFileSync(new URL(`./fixtures/tone.${extension}`,import.meta.url));
 test('synthetic FFmpeg Opus WebM/Ogg containers are admitted; headers alone are not audio',async()=>{
   const webm=await inspectMaterialMedia(read('webm'),'audio','audio/webm');assert.equal(webm.width,null);assert.equal(webm.durationMs,null);
@@ -24,6 +24,8 @@ test('PCM WAV enforces frame alignment, declared length, channel bounds and dura
 });
 test('scoped VP8/Opus video verifies tracks, dimensions and actual keyframe header; magic-only and mislabeled audio fail',async()=>{
   const bytes=readFileSync(new URL('./fixtures/video.webm',import.meta.url)),result=await inspectMaterialMedia(bytes,'video','video/webm');
+  assert.deepEqual(inspectMaterialVideo(bytes,'video/webm'),result);
+  assert.equal(typeof inspectMaterialVideo(bytes,'video/webm')?.then,'undefined');
   assert.equal(result.width,96);assert.equal(result.height,64);assert.equal(result.durationMs,null);
   await assert.rejects(inspectMaterialMedia(bytes,'audio','audio/webm'));
   await assert.rejects(inspectMaterialMedia(read('webm'),'video','video/webm'));

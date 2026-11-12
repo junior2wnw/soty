@@ -10,7 +10,7 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
   const base = dataDir || path.resolve('data');
   const reviews = reviewedReviews ?? createReviewsService({ registryId, environmentId, actorActive, withAppAuthority: apps.withAppAuthority });
   const feedback = createFeedbackService({ databasePath: path.join(base, 'feedback', 'feedback.sqlite'),
-    registryId, environmentId, actorActive, withAppAuthority: apps.withAppAuthority });
+    registryId, environmentId, actorActive, withAppAuthority: apps.withAppAuthority, videoEnabled: true });
   let registration,publication;
   try {
     registration = createUniversalRegistrationService({ databasePath: path.join(base, 'app-registration', 'registry.sqlite'),

@@ -24,7 +24,7 @@ export function createExternalCapabilityOperations({ service, origin, appFeedbac
       external_adapter_not_registered:404, external_resource_denied:403, external_payload_limit:413,
       external_guidance_not_found:404, external_guidance_invalid:400,
       external_query_not_admitted:404,readonly_query_api_required:400,external_query_invalid:400,external_query_unconfirmed:503,
-      external_query_output_invalid:502,
+      external_query_output_invalid:502, unsupported_media_projection:422,
       prepared_connector_unsupported:503, prepared_device_unavailable:503, prepared_browse_failed:422,
       prepared_bad_response:502, prepared_browse_busy:429, prepared_busy:429,
       planner_readonly_credential_required:403, planner_access_denied:403, planner_source_scope_changed:403,
