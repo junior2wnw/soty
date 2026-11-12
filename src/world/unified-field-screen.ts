@@ -1301,7 +1301,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         element.dataset.startupAppsAt ??= String(Date.now());
         if (!liveAppsFramed) {
           liveAppsFramed = true;
-          if (document.shortcuts.every(shortcut => shortcut.entity.kind === 'builtin') && options.viewState?.mineFit !== 'manual' && !selected && !summary?.arranging && !queries.mine.trim() && ['all', 'app'].includes(filter)) field.focusContext(liveContext.contextId);
+          if (document.shortcuts.every(shortcut => shortcut.entity.kind === 'builtin') && options.viewState?.mineFit !== 'manual' && !selected && !summary?.arranging && !queries.mine.trim() && ['all', 'app'].includes(filter)) field.focusContext(liveContext.contextId, 'overview');
         }
       }
     }).catch(error => { if (current() && engine === field) report(error); });

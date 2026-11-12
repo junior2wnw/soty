@@ -158,11 +158,12 @@ test('the first available apps frame an empty canvas once and never replace a ma
  for(const starterOnly of [false,true])for(const manual of [false,true]){
   const held=defer(),f=harness({hasObject:false,onRequest:({op})=>op==='apps.list'?held.promise:undefined}),focused=[];
   const starters=starterOnly?['notes','chess','assistant'].map((id,index)=>({shortcutId:'starter-'+id,entity:{kind:'builtin',id},contextId:'personal',placement:{kind:'hex',slot:[index*21,0]}})):[];
-  f.setDocument({...f.document,shortcuts:starters});f.environment.engine.focusContext=id=>focused.push(id);
+  f.setDocument({...f.document,shortcuts:starters});f.environment.engine.focusContext=(id,fit)=>focused.push({id,fit});
   const pending=f.api.refreshLiveApps();await settle();
   if(manual)f.environment.options.viewState={mineFit:'manual'};
   held.resolve({apps:[{id:appA,name:'Counter',ownerAccountId:accountId,state:'ready'}]});await pending;
   assert.equal(focused.length,manual?0:1);
+  if(!manual)assert.equal(focused[0].fit,'overview','automatic framing must fit every available app, without the explicit readable-focus floor');
   await f.api.refreshLiveApps();assert.equal(focused.length,manual?0:1,'later catalogue updates leave the camera alone');
   assert.equal(f.document.shortcuts.length,starters.length);
  }
