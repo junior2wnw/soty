@@ -27,6 +27,7 @@ const reviewSubjects = [
   { kind: 'project', id: 'subject_'+'2'.repeat(20), type: 'project', title: 'Тестовый проект', count: 4, average: 4.75 },
   { kind: 'person', id: 'subject_'+'3'.repeat(20), type: 'profile', title: 'Тестовый профиль', count: 1, average: 3 },
 ];
+const ownerFeedbackMethods = new Set(['apps.feedback.context', 'apps.feedback.list', 'apps.feedback.get', 'apps.feedback.reply', 'apps.feedback.status']);
 // Independent public API 1.1 network stub. All authors and UGC are synthetic.
 const reviewsProvider = createServer((req, res) => void (async () => {
   reviewRequests++; if (req.headers.cookie || req.headers.authorization) reviewCredentialRequests++;
@@ -101,10 +102,19 @@ async function helper(req, res) {
   try {
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) || req.headers.origin !== frontendOrigin) { send(res, 403, { code: 'fixture_origin_denied' }); return; }
     const pathname = new URL(req.url, backendOrigin).pathname;
-    if (pathname === '/__fixture/info' && req.method === 'GET') { send(res, 200, { synthetic: true, appId: fixtureAppId, projectId: 'soty', namespace: basename(folder), generation,
+    if (pathname === '/__fixture/info' && req.method === 'GET') { send(res, 200, { synthetic: true, appId: fixtureAppId, ownerAccountId: owner.account.accountId, projectId: 'soty', namespace: basename(folder), generation,
       humanRps: humanRps.map(rp => ({ label: rp.clientId, loginUrl: rp.origin+'/login' })) }); return; }
     if (req.method !== 'POST') { send(res, 405, { code: 'fixture_method_denied' }); return; }
     const args = await body(req);
+    if (pathname === '/__fixture/owner-feedback') {
+      if (vite?.config.command !== 'serve' || vite.config.isProduction !== false) { send(res, 403, { code: 'fixture_dev_only' }); return; }
+      if (!args || Array.isArray(args) || Object.keys(args).sort().join(',') !== 'args,method'
+        || !args.args || typeof args.args !== 'object' || Array.isArray(args.args)) { send(res, 400, { code: 'fixture_owner_request_invalid' }); return; }
+      if (!ownerFeedbackMethods.has(args.method)) { send(res, 403, { code: 'fixture_owner_operation_denied' }); return; }
+      if (args.args.appId !== fixtureAppId) { send(res, 403, { code: 'fixture_owner_app_denied' }); return; }
+      const value = await owner.client.extension(args.method, args.args, { expectedAccountId: owner.account.accountId });
+      send(res, 200, value); return;
+    }
     if (pathname === '/__fixture/shutdown') { send(res, 200, { synthetic: true, stopping: true }); setTimeout(() => void cleanup().then(() => process.exit(0)), 50); return; }
     if (pathname === '/__fixture/lose-next-human-ack') { humanLossArmed = true; send(res, 200, { synthetic: true, armed: true }); return; }
     if (pathname === '/__fixture/hold-next-human-ack') { humanHoldArmed = true; send(res, 200, { synthetic: true, armed: true }); return; }

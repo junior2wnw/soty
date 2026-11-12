@@ -3,7 +3,7 @@
 <title>Обращения · настоящая локальная очередь</title>
 <style>body{margin:0;font:14px/1.5 system-ui}.qa{padding:10px;background:#f5f6f2}.qa button{min-height:44px;padding:8px;margin:3px}#result{white-space:pre-wrap;overflow-wrap:anywhere}#host.sw-app{position:relative;inset:auto;z-index:auto;height:calc(100dvh - 230px);min-height:400px;display:flex}#host>.sa-stage{flex:1}</style>
 <section class="qa"><p>Только localhost и вымышленные данные. Настоящие IndexedDB, signed Connect, HTTP runtime и временная SQLite. Вспомогательные grant/support/restart routes существуют только на этом стенде и не являются production авторизацией.</p>
-<button id="start">Начать локальную проверку</button><button id="arm" disabled>Потерять следующий ответ отправки</button><button id="restart" disabled>Перезапустить сервер</button><button id="support" disabled>Ответ тестовой поддержки</button><button id="verify" disabled>Проверить сохранность и доступ</button>
+<button id="start">Начать локальную проверку</button><button id="owner-ui">Открыть очередь владельца</button><button id="arm" disabled>Потерять следующий ответ отправки</button><button id="restart" disabled>Перезапустить сервер</button><button id="support" disabled>Ответ тестовой поддержки</button><button id="verify" disabled>Проверить сохранность и доступ</button>
 <label>Синтетический источник отзывов <select id="review-scenario"><option value="public">Опубликованные</option><option value="empty">Подтверждённая пустота</option><option value="unavailable">Источник недоступен</option><option value="partial">Только данные объекта</option><option value="mismatch">Чужой subjectId</option><option value="redirect">Redirect</option><option value="large">Превышен лимит</option><option value="slow">Медленный ответ</option></select></label><button id="reviews-proof">Проверить анонимность чтения</button>
 <p id="result" role="status" data-status="idle">Запустите стенд scripts/fixtures/feedback-browser.mjs.</p></section>
 <section class="qa"><p>Root-вход: только синтетические приложения и профили этого localhost. Открытие страницы входа не создаёт аккаунт автоматически.</p>
@@ -15,13 +15,15 @@
 import './world.css';
 import {createConnectClient} from '../../modules/connect/browser/index.mjs';
 import {mountAppStage} from './app-stage.ts';
+import {mountAppFeedback} from './app-feedback.ts';
 import {mountShellGlass} from './shell-glass.ts';
 import {formatAppLaunchRoute,parseAppLaunchRoute} from './app-launch.mjs';
 import {accountClient} from '../core/connect-client.ts';
 if(!import.meta.env.DEV||!['127.0.0.1','localhost'].includes(location.hostname))throw new Error('fixture_dev_only');
 const host=document.querySelector('#host'),output=document.querySelector('#result'),actions=[...document.querySelectorAll('.qa button:not(#start)')];
 mountShellGlass(host,{renderPolicy:'auto'});
-let stage,client,other,info,accountId,foreignId,lastTicketId=null,lastSubmitted=null,stageGeneration=0,submissions=[],lastProof=null;
+let stage,ownerFeedback,client,other,info,accountId,foreignId,lastTicketId=null,lastSubmitted=null,stageGeneration=0,submissions=[],lastProof=null;
+const ownerCalls=[];
 const humanOutput=document.querySelector('#human-result');let rootAccountId=null,otherRootId=null;
 const showHuman=value=>{humanOutput.textContent=typeof value==='string'?value:JSON.stringify(value,null,2);};
 const endpoint=location.origin+'/api/connect/rpc';
@@ -31,6 +33,8 @@ function show(value,status='ready'){output.dataset.status=status;output.textCont
 async function digest(value){const bytes=new TextEncoder().encode(JSON.stringify(value));return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(value=>value.toString(16).padStart(2,'0')).join('');}
 async function start(){
  try{
+  ownerFeedback?.dispose();ownerFeedback=null;
+  const reporterUrl=new URL(location.href);reporterUrl.searchParams.delete('fixtureMode');history.replaceState(null,'',reporterUrl.pathname+reporterUrl.search+reporterUrl.hash);
   stage?.dispose();client?.dispose();other?.dispose();info=await helper('info');
   client=createConnectClient({projectId:info.projectId,endpoint,dbName:'feedback-signed:'+info.namespace+':reporter'});
   let local=await client.getLocalState();if(!local.accountId)await client.bootstrap('Тестовый отправитель');accountId=(await client.getLocalState()).accountId;
@@ -51,6 +55,19 @@ async function start(){
   await stage.ready;actions.forEach(value=>{value.disabled=false;});show('Готово. Введите значение внутри настоящего приложения. Откройте «Обратная связь», добавьте синтетические вложения и текст. Для lost ACK сначала нажмите кнопку стенда.');
  }catch(error){show(code(error),'fail');}
 }
+async function openOwner(){
+ try{
+  stage?.dispose();stage=null;ownerFeedback?.dispose();ownerFeedback=null;const token=++stageGeneration;
+  const details=await helper('info');if(token!==stageGeneration)return;
+  if(details.synthetic!==true||typeof details.ownerAccountId!=='string'||!details.ownerAccountId||typeof details.appId!=='string')throw new Error('fixture_owner_info_invalid');
+  const ownerUrl=new URL(location.href);ownerUrl.searchParams.set('fixtureMode','owner');ownerUrl.hash='';history.replaceState(null,'',ownerUrl.pathname+ownerUrl.search);
+  ownerFeedback=mountAppFeedback(host,{accountId:details.ownerAccountId,appId:details.appId,title:'Синтетическое приложение проверки',isCurrent:()=>token===stageGeneration,
+   api:{async request(method,args){const value=await helper('owner-feedback',{method,args});ownerCalls.push(method);return value;}}});
+  document.querySelector('#restart').disabled=false;
+  show('UI владельца → настоящий signed synthetic owner RPC → SQLite. Это не вход владельца в браузере. Откройте «История», выберите обращение и ответьте через поле «Ответ поддержки» и кнопку «Ответить».');
+  ownerFeedback.open();
+ }catch(error){show(code(error),'fail');}
+}
 async function verify(){
  try{
   const context=(await client.extension('apps.feedback.context',{appId:info.appId},{expectedAccountId:accountId})).context;
@@ -67,6 +84,7 @@ async function verify(){
  }catch(error){show(code(error),'fail');}
 }
 document.querySelector('#start').addEventListener('click',()=>void start());
+document.querySelector('#owner-ui').addEventListener('click',()=>void openOwner());
 document.querySelector('#arm').addEventListener('click',()=>void helper('lose-next-submit-ack',{}).then(()=>show('Следующий успешный submit завершится потерей HTTP ответа после commit.')).catch(error=>show(code(error),'fail')));
 document.querySelector('#restart').addEventListener('click',()=>void helper('restart',{}).then(()=>show('Настоящий сервер перезапущен с прежней временной БД.')).catch(error=>show(code(error),'fail')));
 document.querySelector('#support').addEventListener('click',()=>void (async()=>{const ctx=(await client.extension('apps.feedback.context',{appId:info.appId},{expectedAccountId:accountId})).context;
@@ -85,4 +103,6 @@ for(const [buttonId,path] of [['human-lose','lose-next-human-ack'],['human-hold'
 document.querySelector('#human-proof').addEventListener('click',()=>void helper('human-proof',{...(rootAccountId??localStorage.getItem('fixture-root-first')?{expectedAccountId:rootAccountId??localStorage.getItem('fixture-root-first')}: {})}).then(showHuman).catch(error=>showHuman(code(error))));
 // Only content-free evidence is exposed. No keys, launch fragments or message bodies.
 window.__feedbackSignedEvidence=()=>lastProof;
+window.__feedbackOwnerFixtureEvidence=()=>({ownerUi:!!ownerFeedback,syntheticServerOwnerSigner:true,browserOwnerLogin:false,completedMethods:[...ownerCalls]});
+if(new URLSearchParams(location.search).get('fixtureMode')==='owner')void openOwner();
 </script></html>
