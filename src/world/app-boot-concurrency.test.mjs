@@ -160,7 +160,7 @@ function screen(f, jar, { legacy = false, beforeRetry = () => {} } = {}) {
     state.frame = frame; state.frames.push(frame);
     recovery.bind(frame, { origin, binding: launcher.binding() });
     vm.runInNewContext(scripts[0][1], { window, location, document: { title: '', body: element('body'), getElementById: element },
-      history: { replaceState() { location.hash = ''; } }, URL, AbortController,
+      history: { replaceState() { location.hash = ''; } }, URL, AbortController, performance,
       setTimeout: view.setTimeout, clearTimeout: view.clearTimeout, fetch: f.fetchFor(jar) }, { timeout: 1000 });
     for (const fn of [...frameListeners]) fn();
     return frame;
