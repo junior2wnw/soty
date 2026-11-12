@@ -2629,7 +2629,7 @@ function createLocalAppsRuntime(deps, options = {}) {
     ws.addEventListener('open', () => {
       if (!current(context)) return;
       send(context, { type: 'auth', schema: localAppsSchema, ...identity, token: authToken,
-        capabilities: { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true,
+        capabilities: { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true, relayResponseCsp: true,
           ...(typeof options.preparedBrowse === 'function' ? { preparedBrowse: true } : {}),
           ...(typeof options.preparedInspect === 'function' ? { preparedInspect: true } : {}),
           ...(typeof options.preparedManifest === 'function' ? { preparedManifest: true } : {}),
@@ -3014,7 +3014,8 @@ function createLocalAppsRuntime(deps, options = {}) {
           }
           stream.head = true; idle(stream);
           observation(context, binding, { state: response.statusCode < 500 ? 'responding' : 'unreachable', httpStatus: response.statusCode });
-          sendStream(stream, { type: 'head', id: stream.id, status: response.statusCode, headers: responseHeaders, ...(location ? { location } : {}) });
+          sendStream(stream, { type: 'head', id: stream.id, status: response.statusCode, headers: responseHeaders,
+            sourceCsp: localAppsSourceCsp(response.headers), ...(location ? { location } : {}) });
           void (async () => {
             try {
               for await (const bytes of response) {
@@ -3259,6 +3260,13 @@ function localAppsHeaders(value, direction) {
     bytes += key.length + raw.length; if (bytes > 16 * 1024) throw new Error('app_headers_too_large'); result[key.toLowerCase()] = raw;
   }
   return result;
+}
+function localAppsSourceCsp(headers) {
+  const policy = headers?.['content-security-policy'];
+  if (policy === undefined) return { schema: 'soty.relay-source-csp.v1', status: 'absent' };
+  if (typeof policy !== 'string' || policy.length > 16 * 1024 || /[\r\n\u0000]/u.test(policy) || localAppsEncoder.encode(policy).byteLength > 16 * 1024)
+    return { schema: 'soty.relay-source-csp.v1', status: 'invalid' };
+  return { schema: 'soty.relay-source-csp.v1', status: 'present', policy };
 }
 function write(stream, chunk) { return new Promise((resolve, reject) => { if (!stream || stream.destroyed) return reject(new Error('app_stream_closed')); stream.write(chunk, error => error ? reject(error) : resolve()); }); }
 
@@ -3530,7 +3538,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.23";
+const connectorVersion = "1.4.24";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

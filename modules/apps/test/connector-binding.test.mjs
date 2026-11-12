@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import { EventEmitter, once } from 'node:events';
+import { Readable } from 'node:stream';
 import { createHash, randomBytes } from 'node:crypto';
 import { setTimeout as delay, setImmediate as nextTurn } from 'node:timers/promises';
 import { WebSocketServer } from 'ws';
@@ -116,6 +117,86 @@ function injected(t, { holdWrite = false, clock = Date.now, maxBufferedAmount } 
 }
 const respond = (req, status = 200) => req.emit('response', { statusCode: status, headers: {}, destroy() {} });
 
+for (const mode of [1, 2]) test(`ordinary HTTP carries original Source CSP separately while binding v${mode} response headers stay unchanged`, async t => {
+  const policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'";
+  const app = await upstream(t, (req, res) => {
+    res.setHeader('content-type', 'text/plain'); res.setHeader('etag', 'unchanged-etag');
+    res.setHeader('set-cookie', 'synthetic-upstream-private-cookie');
+    if (req.url === '/present') res.setHeader('content-security-policy', policy);
+    if (req.url === '/empty') res.setHeader('content-security-policy', '');
+    if (req.url === '/absent') res.setHeader('content-security-policy-report-only', "default-src 'none'");
+    res.end(`body:${req.url}`);
+  });
+  const f = await fixture(t, { mode }), value = target(1, app.port); let bound;
+  if (mode === 2) bound = await f.bind(value);
+  else { f.send({ type: 'sync', apps: [{ id: value.appId, port: value.port, entryPath: value.entryPath }] }); await until(() => f.runtime.status().apps === 1); bound = { target: value }; }
+  assert.equal(f.frames.find(frame => frame.type === 'auth').capabilities.relayResponseCsp, true);
+  for (const path of ['/present', '/empty', '/absent']) {
+    const result = await f.exchange(bound, { path, headers: { 'content-security-policy': 'forged-caller-policy' } });
+    const head = result.frames.find(frame => frame.type === 'head'); assert.equal(head.status, 200);
+    assert.deepEqual(head.headers, { 'content-type': 'text/plain', etag: 'unchanged-etag' });
+    assert.equal(result.body, `body:${path}`);
+    assert.equal(app.seen.find(entry => entry.url === path && entry.method === 'GET').headers['content-security-policy'], undefined);
+    assert.deepEqual(head.sourceCsp, path === '/absent' ? { schema: 'soty.relay-source-csp.v1', status: 'absent' }
+      : { schema: 'soty.relay-source-csp.v1', status: 'present', policy: path === '/empty' ? '' : policy });
+    // A legacy receiver that reads only status/headers/body keeps exactly its old response.
+    assert.equal(head.headers['content-security-policy'], undefined);
+  }
+  assert.equal(f.runtime.status().connected, true);
+});
+
+test('actual HTTP Source CSP metadata has its own exact 16KiB bound while filtered default headers and body stay unchanged', async t => {
+  const exact = 'x'.repeat(16384), oversized = exact + 'x';
+  assert.equal(Buffer.byteLength(exact), 16384); assert.equal(Buffer.byteLength(oversized), 16385);
+  const app = await upstream(t, (req, res) => {
+    res.setHeader('content-type', 'text/plain'); res.setHeader('content-security-policy', req.url === '/exact' ? exact : oversized);
+    res.end('unchanged-default-body');
+  });
+  // The test-only HTTP parser admits both responses to isolate the dedicated
+  // metadata bound. Production request options and the 16KiB header filter are
+  // unchanged; an earlier default-parser rejection remains its old behavior.
+  const f = await fixture(t, { runtimeDeps: { httpRequest: options => request({ ...options, maxHeaderSize: 32768 }) } }),
+    bound = await f.bind(target(2, app.port));
+  for (const path of ['/exact', '/oversized']) {
+    const result = await f.exchange(bound, { path }), head = result.frames.find(frame => frame.type === 'head');
+    assert.equal(head.status, 200); assert.deepEqual(head.headers, { 'content-type': 'text/plain' });
+    assert.equal(result.body, 'unchanged-default-body');
+    assert.deepEqual(head.sourceCsp, path === '/exact' ? { schema: 'soty.relay-source-csp.v1', status: 'present', policy: exact }
+      : { schema: 'soty.relay-source-csp.v1', status: 'invalid' });
+  }
+  assert.equal(f.runtime.status().connected, true);
+});
+
+test('invalid Source CSP never reflects raw values and the existing response-header 16KiB boundary stays exact', async t => {
+  const f = injected(t), connection = f.start(), value = target(3, 31234), bound = connection.set(value);
+  async function response(headers) {
+    const id = randomBytes(16).toString('hex');
+    connection.socket.frame({ type: 'bound-open', channelId: connection.channelId, syncId: bound.syncId, ...pins(value), id, kind: 'http', path: '/', method: 'GET', headers: {} });
+    connection.socket.frame({ type: 'end', id });
+    const req = f.requests.findLast(item => item.options.method === 'GET'), stream = Readable.from([]);
+    stream.statusCode = 200; stream.headers = headers; req.emit('response', stream);
+    await until(() => connection.socket.sent.some(frame => frame.id === id && ['end', 'cancel'].includes(frame.type)));
+    return connection.socket.sent.filter(frame => frame.id === id);
+  }
+  for (const policy of [null, 12, ['PRIVATE-SENTINEL'], 'PRIVATE-SENTINEL\r\nscript-src *', 'PRIVATE-SENTINEL\0', '\u00e9'.repeat(8193)]) {
+    const frames = await response({ 'content-type': 'text/plain', 'content-security-policy': policy });
+    const head = frames.find(frame => frame.type === 'head');
+    assert.deepEqual(head.sourceCsp, { schema: 'soty.relay-source-csp.v1', status: 'invalid' });
+    assert.deepEqual(head.headers, { 'content-type': 'text/plain' });
+    assert.equal(JSON.stringify(head).includes('PRIVATE-SENTINEL'), false);
+  }
+  const unicode = '\u00e9'.repeat(8192), unicodeFrames = await response({ 'content-security-policy': unicode });
+  assert.equal(Buffer.byteLength(unicode), 16384);
+  assert.deepEqual(unicodeFrames.find(frame => frame.type === 'head').sourceCsp,
+    { schema: 'soty.relay-source-csp.v1', status: 'present', policy: unicode });
+  const exact = await response({ etag: 'x'.repeat(16384 - 'etag'.length), 'content-security-policy': "default-src 'self'" });
+  assert.equal(exact.find(frame => frame.type === 'head').headers.etag.length, 16380);
+  const beyond = await response({ etag: 'x'.repeat(16385 - 'etag'.length), 'content-security-policy': "default-src 'self'" });
+  assert.equal(beyond.some(frame => frame.type === 'head'), false);
+  assert.equal(beyond.find(frame => frame.type === 'cancel').error, 'app_upstream_failed');
+  assert.equal(f.runtime.status().connected, true);
+});
+
 test('ordinary DELETE streams the same JSON bytes and idempotency key to an actual Node handler', async t => {
   const body = Buffer.from(JSON.stringify({ text: 'Удалить только эту запись', operation: 'delete-one' })), key = 'delete-streaming-fixture';
   const app = await upstream(t, (req, res, entry) => {
@@ -206,7 +287,7 @@ test('a saturated prepared-project browse refuses only the fifth read while a re
 
 test('legacy negotiation remains functional, and new auth advertises both binding versions', async t => {
   const app = await upstream(t), f = await fixture(t, { mode: 1 });
-  assert.deepEqual(f.frames.find(frame => frame.type === 'auth').capabilities, { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true });
+  assert.deepEqual(f.frames.find(frame => frame.type === 'auth').capabilities, { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true, relayResponseCsp: true });
   f.send({ type: 'sync', apps: [{ id: appId(1), port: app.port, entryPath: '/' }] });
   await until(() => f.frames.some(frame => frame.type === 'observation'));
   const result = await f.exchange({ target: target(1, app.port) }, { path: '/old', method: 'POST', body: 'kept' });

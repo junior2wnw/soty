@@ -4,6 +4,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { validateHeaderValue } from 'node:http';
 import { Writable } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
@@ -46,6 +47,7 @@ import { createPreparedBrowse } from './prepared-browse.mjs';
 import { SELF_IP_PROFILE, ENDPOINT_SCHEMA, SELF_ADDRESSES_SCHEMA, targetFromRow, readRuntimeEndpoint, normalizeSelfInventory } from './endpoint-targets.mjs';
 import { createEndpointRegistration } from './endpoint-registration.mjs';
 import {appAuthenticationCapability,appAuthenticationStatus} from './authentication.mjs';
+import { captureRuntimeExecutionPolicy, findRuntimeExecutionCapabilities } from './runtime-execution-policy.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.session.renew', 'apps.session.confirm', 'apps.session.context', 'apps.session.close', 'apps.relay.identity', 'apps.relay.identity.close', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.authentication.get', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 export function appIdForCreationJob(jobId) {
@@ -63,7 +65,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, connectorCurrent = () => false, onHeartbeat = () => {}, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false, allowSelfIpTargets = false, allowFrameContinuityMigration = false,
   coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity, relayIdentityIssuer,
-  identitySignTimeoutMs = 8000, readAppGuide, onChange = () => {}, onRuntimeRequest = () => {}, invitationAccess,checkWidgetLaunch,checkWidgetRuntime,resolveWidgetRuntime } = {}) {
+  identitySignTimeoutMs = 8000, readAppGuide, onChange = () => {}, onRuntimeRequest = () => {}, invitationAccess,checkWidgetLaunch,checkWidgetRuntime,resolveWidgetRuntime,runtimeExecutionPolicy } = {}) {
+  const executionPolicy = captureRuntimeExecutionPolicy(runtimeExecutionPolicy);
+  const executionFor = decision => findRuntimeExecutionCapabilities(executionPolicy, {
+    appId: decision.appId, policyEpoch: decision.policyEpoch,
+    target: { revision: decision.targetRevision, digest: decision.targetDigest, profile: decision.profile },
+  });
   assertApps(typeof onChange === 'function', 'apps_change_listener_invalid', 503);
   assertApps(typeof onRuntimeRequest === 'function'&&!['AsyncFunction','AsyncGeneratorFunction'].includes(onRuntimeRequest.constructor?.name), 'apps_observer_configuration_invalid', 503);
   assertApps(checkWidgetLaunch===undefined||typeof checkWidgetLaunch==='function'&&checkWidgetLaunch.constructor?.name!=='AsyncFunction','apps_widget_configuration_invalid',503);
@@ -664,7 +671,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (stream.kind === 'ws') { if (error === 'app_stream_complete') stream.socket.end(); else stream.socket.destroy(); }
     else if (!stream.res.writableEnded) {
       if (!stream.res.headersSent) respondAppFailure(stream.req, stream.res, error === 'app_access_revoked' ? 403
-        : ['app_offline', 'app_identity_unavailable'].includes(error) ? 503 : 502, error, false);
+        : ['app_offline', 'app_identity_unavailable', 'app_execution_policy_unavailable'].includes(error) ? 503 : 502, error, false);
       else stream.res.destroy();
     }
   }
@@ -1593,24 +1600,38 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       if(session?.family.frameId===frame&&current(session))return session;}
     assertApps(false,'app_scoped_context_closed',403);
   }
-  function setPolicy(res, origin, scoped, rootWorkspace = false, nativeOrigin = null) {
+  function setPolicy(res, origin, scoped, rootWorkspace = false, nativeOrigin = null, execution = null) {
     const frameOrigins = [...origins].join(' ');
     // An admitted Root-signed workspace runs its existing bundled compiler and
     // opaque, credential-free code preview. The exact reviewed pin selects this
     // policy; neither an app request nor its response can enable it. Native CSP
     // still intersects below. Only this admitted workspace's exact Native API
     // may receive browser requests; response headers cannot add destinations.
-    const scripts = rootWorkspace ? "'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'" : "'self' 'unsafe-inline'";
-    const workers = rootWorkspace ? "'self'" : "'none'";
+    const scripts = rootWorkspace ? "'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'" : "'self' 'unsafe-inline'" + (execution?.wasm ? " 'wasm-unsafe-eval'" : '');
+    const workers = rootWorkspace || execution?.workers === 'self' ? "'self'" : "'none'";
     if (rootWorkspace && nativeOrigin) assertApps(typeof nativeOrigin === 'string'
       && !/[\s\u0000-\u001f\u007f;,*'"\\<>]/u.test(nativeOrigin)
       && new URL(nativeOrigin).origin === nativeOrigin, 'app_native_origin_invalid', 403);
-    const connect = rootWorkspace && nativeOrigin && nativeOrigin !== origin ? `'self' ${nativeOrigin}` : "'self'";
-    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src ${scripts}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:${scoped?' data:':''}; connect-src ${connect}; worker-src ${workers}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads${scoped?' allow-popups allow-popups-to-escape-sandbox':''}`);
+    const connect = [...new Set(["'self'", ...(rootWorkspace && nativeOrigin && nativeOrigin !== origin ? [nativeOrigin] : []), ...(execution?.connectSrc ?? [])])].join(' ');
+    const images = ["'self'", 'data:', 'blob:', ...(execution?.imgSrc ?? [])].join(' ');
+    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src ${scripts}; style-src 'self' 'unsafe-inline'; img-src ${images}; media-src 'self' blob:${scoped?' data:':''}; connect-src ${connect}; worker-src ${workers}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads${scoped?' allow-popups allow-popups-to-escape-sandbox':''}`);
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=()');
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Origin-Agent-Cluster', '?1');
     if (new URL(origin).protocol === 'https:') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  }
+  function relaySourcePolicy(frame) {
+    const value = frame.sourceCsp, present = value?.status === 'present';
+    assertApps(value && typeof value === 'object' && !Array.isArray(value)
+      && Object.keys(value).sort().join(',') === (present ? 'policy,schema,status' : 'schema,status')
+      && value.schema === 'soty.relay-source-csp.v1' && ['absent', 'present'].includes(value.status)
+      && (!present || typeof value.policy === 'string' && Buffer.byteLength(value.policy) <= 16384 && !/[\r\n\0]/u.test(value.policy)),
+    'app_execution_source_csp_invalid', 502);
+    if (present) {
+      try { validateHeaderValue('Content-Security-Policy', value.policy); }
+      catch { assertApps(false, 'app_execution_source_csp_invalid', 502); }
+    }
+    return present ? value.policy : null;
   }
   function sendGuide(req, res, app, session) {
     const decision = checkAccess(session);
@@ -1838,12 +1859,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(channel.bindingVersion === 2 && channel.relayIdempotencyKey === true, 'app_idempotency_key_unavailable', 503);
     }
     const stream = openStream(app, session, { kind: 'http', req, res });
+    // This context is captured only on the real checked browser gateway path.
+    // Internal Source calls do not acquire a browser policy from an app ID.
+    stream.browserExecutionContext = { origin: app.appHost.origin, selected, rootWorkspace,
+      nativeOrigin: rootWorkspace && scopedProfile.schema === 'soty.selected-human-embed.v2' ? scopedProfile.nativeOrigin : null };
     stream.requestPath=path;
     if (!selected && path === '/guide' && ['GET','HEAD'].includes(req.method)) stream.guideApp = app;
     stream.bootCandidate=candidate;
     if(candidate){stream.candidateApp=app;stream.bootCandidateSession=session;}
     res.once('close', () => closeStream(stream, 'app_client_closed'));
     try {
+      assertApps(selected || !executionFor(stream.session.decision) || stream.channel.relayResponseCsp === true,
+        'app_execution_policy_unavailable', 503);
       const headers = cleanHeaders(req.headers, selected ? 'request' : 'ordinary-request');
       if (selected && req.headers.origin) headers.origin = req.headers.origin;
       let identityWitness;
@@ -2276,7 +2303,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const identity = { linkId: textId(frame.linkId), hostDeviceId: textId(frame.hostDeviceId), connectorId: textId(frame.connectorId) };
           assertApps(await authenticateConnector({ linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }), 'app_connector_auth_failed');
           if (closed || admissionClosed || ws.readyState !== 1) return;
-          let bindingVersion = 1, relayIdentity = false, relayIdempotencyKey = false, browsePrepared = false, inspectPrepared = false, manifestPrepared = false;
+          let bindingVersion = 1, relayIdentity = false, relayIdempotencyKey = false, relayResponseCsp = false, browsePrepared = false, inspectPrepared = false, manifestPrepared = false;
           let runtimeProfiles = ['soty.relay-restricted.v1'];
           if (frame.capabilities !== undefined) {
             const versions = frame.capabilities?.targetBindingVersions;
@@ -2292,6 +2319,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             if (frame.capabilities.relayIdempotencyKey !== undefined) {
               assertApps(typeof frame.capabilities.relayIdempotencyKey === 'boolean', 'app_source_protocol_required');
               relayIdempotencyKey = frame.capabilities.relayIdempotencyKey;
+            }
+            if (frame.capabilities.relayResponseCsp !== undefined) {
+              assertApps(typeof frame.capabilities.relayResponseCsp === 'boolean', 'app_source_protocol_required');
+              relayResponseCsp = frame.capabilities.relayResponseCsp;
             }
             if (frame.capabilities.preparedBrowse !== undefined) {
               assertApps(typeof frame.capabilities.preparedBrowse === 'boolean', 'app_source_protocol_required');
@@ -2319,7 +2350,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             for (const oldStream of previous.streams.values()) closeStream(oldStream, 'app_offline', false);
             previous.ws.terminate();
           }
-          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, relayIdempotencyKey, preparedBrowse: browsePrepared, preparedInspect: inspectPrepared, preparedManifest: manifestPrepared, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
+          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, relayIdempotencyKey, relayResponseCsp, preparedBrowse: browsePrepared, preparedInspect: inspectPrepared, preparedManifest: manifestPrepared, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
             authorityWitnesses:0, auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
             claimDigest: '', claimExpiresAt: 0, streams: new Map(), observations: new Map(), lastSeenAt: now() };
           channels.set(key, channel); clearTimeout(timer);
@@ -2430,6 +2461,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           } else {
             clearTimeout(stream.timer); stream.timer = setTimeout(() => closeStream(stream, 'app_idle_timeout'), LIMITS.idleMs); stream.timer.unref();
             for (const [key, value] of Object.entries(cleanHeaders(frame.headers, 'response'))) stream.res.setHeader(key, value);
+            const executionContext = stream.browserExecutionContext;
+            const execution = executionContext ? executionFor(checkStream(stream)) : null;
+            // The connector advertises preservation; the response's fixed
+            // metadata distinguishes no policy from an invalid/dropped policy.
+            const ordinarySourcePolicy = execution && !stream.scopedRecord ? relaySourcePolicy(frame) : null;
+            if (execution) setPolicy(stream.res, executionContext.origin, executionContext.selected,
+              executionContext.rootWorkspace, executionContext.nativeOrigin, execution);
+            if (ordinarySourcePolicy !== null) stream.res.setHeader('Content-Security-Policy',
+              [stream.res.getHeader('Content-Security-Policy'), ordinarySourcePolicy]);
             if(stream.scopedRecord) {
               const profile=stream.scopedRecord.profile,routeDefinition=embedRoute(profile,stream.req.method,stream.requestPath??stream.req.url),route=routeDefinition.kind;
               if(routeDefinition.credentialFree&&frame.headers?.['retry-after']!==undefined){assertApps(frame.status===503&&frame.headers['retry-after']==='1','app_bad_head');stream.res.setHeader('Retry-After','1');}

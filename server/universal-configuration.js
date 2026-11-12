@@ -2,6 +2,10 @@ import { openSync, closeSync, fstatSync, readSync, constants } from 'node:fs';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import { forcedLegacyMode } from './universal-mode.js';
+import { parseContractJson } from '../modules/app-contract/json.mjs';
+import { captureRuntimeExecutionPolicy } from '../modules/apps/server/runtime-execution-policy.mjs';
+
+export const runtimeExecutionPolicyPath = '/run/connect-releases/app-execution-policy.json';
 
 const invalid = () => { throw Object.assign(new Error('universal_configuration_invalid'), { code: 'universal_configuration_invalid' }); };
 const check = value => { if (!value) invalid(); };
@@ -16,7 +20,7 @@ export function validateHumanIdentityRenewalLimits(value) {
     && Number.isSafeInteger(familiesPerAccount) && familiesPerAccount >= 1 && familiesPerAccount <= activeFamilies);
   return Object.freeze({ activeFamilies, familiesPerAccount });
 }
-function fileValue(filename, maximum) {
+function fileValue(filename, maximum, { optional = false, parse = JSON.parse } = {}) {
   check(path.isAbsolute(filename) && filename.length <= 4096 && !filename.includes('\0'));
   let fd;
   const bytes = Buffer.alloc(maximum + 1);
@@ -26,9 +30,12 @@ function fileValue(filename, maximum) {
     let used = 0;
     while (used < bytes.length) { const count = readSync(fd, bytes, used, bytes.length - used, used); if (!count) break; used += count; }
     check(used > 0 && used <= maximum);
-    const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, used)));
+    const value = parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, used)));
     check(value && typeof value === 'object' && !Array.isArray(value)); return value;
-  } catch { invalid(); }
+  } catch (error) {
+    if (optional && fd === undefined && error?.code === 'ENOENT') return undefined;
+    invalid();
+  }
   finally { bytes.fill(0); if (fd !== undefined) closeSync(fd); }
 }
 function humanSecrets(filename) {
@@ -44,7 +51,7 @@ function humanSecrets(filename) {
 
 /** Private process-entry inputs only. No environment enumeration, automatic
  * client registration, secret generation or configuration/status publication. */
-export function loadUniversalConfiguration(env = process.env, { legacyMode = forcedLegacyMode } = {}) {
+export function loadUniversalConfiguration(env = process.env, { legacyMode = forcedLegacyMode, executionPolicyDefaultFile = runtimeExecutionPolicyPath } = {}) {
   try {
     check(typeof legacyMode === 'boolean');
     if (legacyMode || field(env, 'SOTY_UNIVERSAL_APPS_ENABLED') === 'false') return {};
@@ -64,6 +71,10 @@ export function loadUniversalConfiguration(env = process.env, { legacyMode = for
     let selected;
     if(selectedFile){selected=fileValue(selectedFile,131072);check(selected.schema==='soty.selected-embed-registry.v1'&&Array.isArray(selected.profiles)
       &&Object.keys(selected).every(key=>['schema','profiles'].includes(key)));}
+    const executionPolicyFile = field(env, 'SOTY_APP_EXECUTION_POLICY_FILE');
+    const executionPolicy = fileValue(executionPolicyFile || executionPolicyDefaultFile, 65536,
+      { optional: !executionPolicyFile, parse: parseContractJson });
+    const runtimeExecutionPolicy = executionPolicy === undefined ? undefined : captureRuntimeExecutionPolicy(executionPolicy);
     return {
       ...(issuer ? { humanIdentity: { enabled: flag === '1', issuer, registryId: 'soty', environmentId: 'production',
         ...(human ? human.profile : {}) } } : {}),
@@ -74,6 +85,7 @@ export function loadUniversalConfiguration(env = process.env, { legacyMode = for
       ...(selectedMigration==='1'?{allowScopedEmbedMigration:true}:{}),
       ...(selectedResourceMigration==='1'?{allowSelectedResourceMigration:true}:{}),
       ...(frameContinuityMigration==='1'?{allowFrameContinuityMigration:true}:{}),
+      ...(runtimeExecutionPolicy ? { runtimeExecutionPolicy } : {}),
     };
   } catch { invalid(); }
 }
