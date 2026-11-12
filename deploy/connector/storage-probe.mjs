@@ -919,11 +919,14 @@ async function readUniversalFormat(dataDir, kind) {
   if (!filename) return { format: 'empty', metadata: null };
   return inspectDatabase(filename, db => {
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version !== 1 && !(kind === 'humanIdentity' && [2, 3].includes(version))) fail('storage_format_unknown');
+    if (version !== 1 && !(kind === 'humanIdentity' && [2, 3].includes(version))
+      && !(kind === 'feedback' && version === 2)) fail('storage_format_unknown');
     const layout = kind === 'humanIdentity' && version === 3 ? humanDeviceConsentLayout
       : kind === 'humanIdentity' && version === 2 ? humanRenewalLayout : expected;
     recognizeUniversalLayout(db, layout);
-    return { format: version, metadata: universalMetadata(db, layout) };
+    // Early video writers kept epoch1; classify them without reading media bytes or changing data.
+    const format = kind === 'feedback' && (version === 2 || db.prepare("SELECT 1 FROM feedback_attachments WHERE kind='video' LIMIT 1").get()) ? 2 : version;
+    return { format, metadata: universalMetadata(db, layout) };
   });
 }
 

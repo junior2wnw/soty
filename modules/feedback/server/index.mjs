@@ -46,7 +46,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
   const db = new DatabaseSync(filename); let closed = false;
   let maxPages;
   try {
-    db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=100;'); initializeFeedbackSchema(db, registryId, environmentId);
+    db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=100;'); initializeFeedbackSchema(db, registryId, environmentId, { videoEnabled });
     db.exec('PRAGMA journal_mode=WAL;');
     maxPages = Math.floor(maxDatabaseBytes / Number(db.prepare('PRAGMA page_size').get().page_size));
     // An existing larger store remains readable. It cannot accept new effects
@@ -259,6 +259,8 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
           if (prior.value) { const current = ticket(actor, context, inbox, prior.value.ticketId); return { requestId: args.requestId, replayed: true, receipt: prior.value, ticket: project(current, actor, context) }; }
           writeCapacity();
           requireThat(db.prepare('SELECT count(*) AS n FROM feedback_tickets WHERE installation_id=?').get(inbox.id).n < FEEDBACK_LIMITS.ticketsPerInstallation, 'feedback_ticket_capacity', 503);
+          // The epoch, first video and receipt commit together; old Roots must stay closed afterward.
+          if (media.some(item => item.kind === 'video')) db.exec('PRAGMA user_version=2');
           const timestamp = now(), ticketId = newId('fbt_');
           db.prepare('INSERT INTO feedback_tickets VALUES (?,?,?,?,?,?,?,?,?,?)').run(ticketId, inbox.id, context.appId,
             actor.accountId, context.ownerId, args.body, 'received', 1, timestamp, timestamp);

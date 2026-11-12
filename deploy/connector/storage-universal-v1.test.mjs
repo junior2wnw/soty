@@ -115,12 +115,13 @@ test('v3 images cannot start new stores even when a container copies v4 labels; 
 test('v4 format/readers and start receipts are closed, typed and never silently downgraded to v3', () => {
   const declared = JSON.parse(currentStorageReaders);
   for (const store of ['appRegistration', 'feedback']) {
-    for (const value of [undefined, [], [1, 1], [2], ['1'], 1]) {
+    const future = store === 'feedback' ? 3 : 2;
+    for (const value of [undefined, [], [1, 1], [future], ['1'], 1]) {
       const changed = structuredClone(declared);
       if (value === undefined) delete changed.readers[store]; else changed.readers[store] = value;
       assert.throws(() => assertStorageCompatible(image(JSON.stringify(changed)), format()), /storage_reader_unknown/u);
     }
-    for (const value of [undefined, null, 0, 2, '1']) assert.throws(() => checkedStorageFormat({ ...format(), [store]: value }), /storage_probe_invalid/u);
+    for (const value of [undefined, null, 0, future, '1']) assert.throws(() => checkedStorageFormat({ ...format(), [store]: value }), /storage_probe_invalid/u);
   }
   assert.throws(() => checkedStorageFormat({ ...format(), schema: legacy.schema }), /storage_probe_invalid/u);
   assert.throws(() => checkedStorageFormat({ ...legacy, schema: 'soty.storage-format.v4' }), /storage_probe_invalid/u);

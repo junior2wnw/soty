@@ -569,7 +569,7 @@ test('failed probe remains explicit and never becomes a successful start receipt
 test('the full application image declares its readers beside its real module and dependency copies', async () => {
   const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
   assert.deepEqual(JSON.parse(currentStorageReaders), { version: 10,
-    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], notes: [1, 2, 3], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4, 5], world: [6, 7],
+    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], notes: [1, 2, 3], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1, 2], humanIdentity: [1, 2, 3], connect: [3, 4, 5], world: [6, 7],
       canvasObjects:[1,2],canvasWidgets:[1],canvasVault:[1,2],canvasPages:[1,2],materials:[1,2],invitations:[1,2],referrals:[1],appAgentDirectory:[1],universalPublication:[1],appsEndpoint:[1],appsFrameContinuity:[1,2],monitoring:[1] } });
   assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
   assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);

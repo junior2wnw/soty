@@ -48,26 +48,31 @@ export const FEEDBACK_GUARDS = immutable('feedback_meta', 'key=NEW.key')
   + immutable('feedback_provider_receipts', 'receipt_key=NEW.receipt_key')
   + immutable('feedback_receipts', 'installation_id=NEW.installation_id AND account_id=NEW.account_id AND request_key=NEW.request_key');
 
-export function initializeFeedbackSchema(db, registryId, environmentId) {
-  const version = db.prepare('PRAGMA user_version').get().user_version;
+export function initializeFeedbackSchema(db, registryId, environmentId, { videoEnabled = false } = {}) {
   const fail = () => { throw Object.assign(new Error('feedback_storage_unknown'), { code: 'feedback_storage_unknown' }); };
-  if (version === 0) {
-    if (db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").get().n !== 0) fail();
-    db.exec('BEGIN IMMEDIATE');
-    try {
+  if (typeof videoEnabled !== 'boolean') fail();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const version = db.prepare('PRAGMA user_version').get().user_version;
+    if (version === 0) {
+      if (db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").get().n !== 0) fail();
       db.exec(FEEDBACK_DDL + FEEDBACK_GUARDS);
       const insert = db.prepare('INSERT INTO feedback_meta VALUES (?,?)');
       for (const [key, value] of Object.entries({ lineage: FEEDBACK_LINEAGE, registry_id: registryId, environment_id: environmentId })) insert.run(key, value);
-      db.exec('COMMIT');
-    } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
-  } else if (version !== 1) fail();
-  const meta = Object.fromEntries(db.prepare('SELECT key,value FROM feedback_meta').all().map(row => [row.key, row.value]));
-  if (Object.keys(meta).length !== 3 || meta.lineage !== FEEDBACK_LINEAGE || meta.registry_id !== registryId || meta.environment_id !== environmentId) fail();
-  const layout = database => database.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all()
-    .map(row => [row.type, row.name, row.tbl_name, String(row.sql).replace(/\s+/gu, ' ').trim()]);
-  const reference = new DatabaseSync(':memory:');
-  try {
-    reference.exec(FEEDBACK_DDL + FEEDBACK_GUARDS);
-    if (JSON.stringify(layout(db)) !== JSON.stringify(layout(reference))) fail();
-  } finally { reference.close(); }
+    } else if (version !== 1 && !(version === 2 && videoEnabled)) fail();
+    const meta = Object.fromEntries(db.prepare('SELECT key,value FROM feedback_meta').all().map(row => [row.key, row.value]));
+    if (Object.keys(meta).length !== 3 || meta.lineage !== FEEDBACK_LINEAGE || meta.registry_id !== registryId || meta.environment_id !== environmentId) fail();
+    const layout = database => database.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all()
+      .map(row => [row.type, row.name, row.tbl_name, String(row.sql).replace(/\s+/gu, ' ').trim()]);
+    const reference = new DatabaseSync(':memory:');
+    try {
+      reference.exec(FEEDBACK_DDL + FEEDBACK_GUARDS);
+      if (JSON.stringify(layout(db)) !== JSON.stringify(layout(reference))) fail();
+    } finally { reference.close(); }
+    const hasVideo = Boolean(db.prepare("SELECT 1 FROM feedback_attachments WHERE kind='video' LIMIT 1").get());
+    if (hasVideo && !videoEnabled) fail();
+    // Legacy video rows already require the newer reader, even before this marker is normalized.
+    if (hasVideo && version !== 2) db.exec('PRAGMA user_version=2');
+    db.exec('COMMIT');
+  } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
 }

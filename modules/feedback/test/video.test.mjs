@@ -140,11 +140,7 @@ test('real Apps ownership routes video to two distinct private inboxes and survi
   assert.deepEqual(queue('owner-b'), []); assert.deepEqual(queue('first-admin'), []);
   assert.throws(() => f.service.agent.execute({ op: 'apps.feedback.list', actor: f.actors['owner-a'], args: { appId: appA, installationId: contextA.installationId } }), code('unsupported_media_projection'));
   assert.throws(() => f.service.agent.execute({ op: 'apps.feedback.get', actor: f.actors['owner-a'], args: selected }), code('unsupported_media_projection'));
-  const legacy = f.open(false);
-  try {
-    assert.equal(Object.hasOwn(legacy.execute({ op: 'apps.feedback.context', actor: f.actors.reporter, args: { appId: appB } }).context.capabilities, 'video'), false);
-    assert.throws(() => legacy.execute({ op: 'apps.feedback.submit', actor: f.actors.reporter, args: { ...input, appId: appB, installationId: contextB.installationId } }), code('feedback_media_unsupported'));
-  } finally { legacy.close(); }
+  assert.throws(() => f.open(false), code('feedback_storage_unknown'));
   const ready = f.call('owner-a', 'status', { ...selected, requestId: 'owner-ready-once', expectedRevision: recovered.revision, status: 'ready_to_check' }).ticket;
   assert.throws(() => f.call('owner-a', 'accept', { ...selected, requestId: 'owner-cannot-accept', expectedRevision: ready.revision }), code('feedback_acceptance_required'));
   assert.equal(f.call('reporter', 'accept', { ...selected, requestId: 'reporter-accept-once', expectedRevision: ready.revision }).ticket.status, 'resolved');
