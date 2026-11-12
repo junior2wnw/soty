@@ -69,10 +69,50 @@ test('background outbox with no pending edits makes no network read; the visible
   const f = fixture(t), store = memoryStore(), operations = [];
   const api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
   const worker = f.create(store.port(), { api });
-  assert.equal((await worker.load({ skipRemoteIfEmpty: true })).state, 'saved');
+  const cached = await worker.load({ skipRemoteIfEmpty: true });
+  assert.equal(cached.state, 'saved'); assert.equal(cached.serverConfirmed, false, 'a local empty outbox is not a server receipt');
   assert.deepEqual(operations, []);
   const field = f.create(store.port(), { api }); await field.load();
+  assert.equal(field.getState().serverConfirmed, true);
   assert.deepEqual(operations, ['world.field.get']);
+});
+
+test('cached empty layout cannot inherit another controller server confirmation while its own GET is held', async t => {
+  const f=fixture(t),store=memoryStore(),author=f.create(store.port());
+  await author.load();await author.commit(doc(0),{expectedRevision:0,requestId:'confirmed_empty_context'});
+  assert.equal(author.getState().serverConfirmed,true);assert.equal(Object.hasOwn(store.value(),'serverConfirmed'),false);
+  author.dispose();const gate=defer();f.gate(gate);const reader=f.create(store.port()),loading=reader.load();
+  await until(()=>reader.getState().state==='saved');
+  assert.equal(reader.getState().serverConfirmed,false,'valid local base hash still carries no network authority');
+  gate.resolve();await loading;assert.equal(reader.getState().serverConfirmed,true);
+});
+
+test('accepted initial-context PUT advances exact confirmed base only after its held ACK and durable outbox drain',async t=>{
+  const f=fixture(t),store=memoryStore(),model=f.create(store.port(),{localFirst:true});await model.load();
+  const gate=defer();f.gate(gate);
+  const result=await model.commit(doc(0),{expectedRevision:0,requestId:'context_ack_gate'});
+  assert.equal(result.status,'volatile');assert.equal(model.getState().pendingCount,1);
+  assert.notEqual(model.getState().state,'saved');
+  gate.resolve();await until(()=>model.getState().state==='saved');
+  assert.equal(model.getState().revision,1);assert.equal(model.getState().serverConfirmed,true);assert.equal(model.getState().pendingCount,0);
+});
+
+test('invalid remote envelope and retired account epoch never publish server-confirmed empty state',async t=>{
+  const f=fixture(t),store=memoryStore(),invalid=f.create(store.port(),{api:{async request(op,args){const value=await f.api.request(op,args);return{...value,contentHash:'0'.repeat(64)};}}});
+  await invalid.load();assert.equal(invalid.getState().serverConfirmed,false);assert.equal(invalid.getState().errorCode,'field_invalid_receipt');
+  const gate=defer();f.gate(gate);let generation=1;const observed=[];
+  const retired=f.create(memoryStore().port(),{isCurrent:()=>generation===1,onChange:state=>observed.push(state.serverConfirmed)}),loading=retired.load();
+  await until(()=>observed.length>0);generation=2;generation=3;gate.resolve();
+  await assert.rejects(loading,error=>error.code==='field_account_changed');assert.equal(observed.includes(true),false);
+});
+
+test('a shared-store head cannot reuse a prior receipt for a different base revision',async t=>{
+  const f=fixture(t),store=memoryStore(true),author=f.create(store.port()),observer=f.create(store.port());
+  await author.load();await observer.load();assert.equal(observer.getState().serverConfirmed,true);
+  await author.commit(doc(12),{expectedRevision:0,requestId:'another_window_head'});
+  await until(()=>observer.getState().revision===1);
+  assert.equal(observer.getState().serverConfirmed,false,'a channel notice and locally validated hash cannot mint network authority');
+  await observer.load();assert.equal(observer.getState().serverConfirmed,true);
 });
 
 test('an intent added by another window during the empty-outbox check is not stranded', async t => {
@@ -373,6 +413,7 @@ test('cached startup permits a durable edit during slow GET; a legitimately olde
   await model.flush(); assert.equal(f.current().revision, 2);
   gate.resolve(); const loaded = await loading;
   assert.equal(loaded.state, 'saved'); assert.equal(loaded.errorCode, undefined); assert.equal(loaded.revision, 2);
+  assert.equal(loaded.serverConfirmed,true,'an ignored older GET must not revoke the newer verified PUT receipt');
   assert.deepEqual(loaded.document, doc(20)); assert.deepEqual(store.value().base.document, doc(20));
 });
 
@@ -425,6 +466,7 @@ test('storage recovery keeps a confirmed newer field when its older startup GET 
   const recovered = await owner.retry(); assert.equal(recovered.revision, 1); assert.deepEqual(recovered.document, doc(10));
   const afterRecovery = updates.length; gate.resolve(); const after = await pending;
   assert.equal(after.revision, 1); assert.deepEqual(after.document, doc(10));
+  assert.equal(after.serverConfirmed,true,'late rejected startup data must not replace recovered network authority');
   assert.equal(backing.value().base.revision, 1); assert.ok(updates.slice(afterRecovery).every(state => state.revision === 1));
 });
 

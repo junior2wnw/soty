@@ -13,6 +13,8 @@ export interface FieldLocalStore {
 }
 export interface FieldPersistenceState {
   document: FieldDocument; revision: number; projectedRevision: number; state: 'loading' | 'saved' | 'saving' | 'offline' | 'conflict' | 'storage-error';
+  /** This controller verified the exact base receipt; local cache data never supplies this authority. */
+  serverConfirmed: boolean;
   localDurable: boolean; pendingCount: number; errorCode?: string; remote?: FieldEnvelope;
 }
 export interface FieldCommitResult { status: 'saved' | 'volatile' | 'conflict'; revision: number; document: FieldDocument; errorCode?: string; localDurable: boolean }
@@ -86,11 +88,13 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
   const ownedIntents = new Set<string>();
   let local: FieldLocalRecord | null = null, disposed = false, loaded = false, saving = false, volatileDocument: FieldDocument | null = null;
   let volatileIntent: FieldPending | null = null;
+  let confirmedBase: Pick<FieldEnvelope, 'revision' | 'contentHash'> | null = null;
   let errorCode = '', storageError = false, queue: Promise<unknown> = Promise.resolve(), drainFlight: Promise<void> | null = null;
   const check = (): void => { if (disposed || !isCurrent()) fail('field_account_changed'); };
   const document = (): FieldDocument => clone(volatileDocument ?? local?.conflictDocument ?? local?.pending.at(-1)?.document ?? local?.base.document ?? createFieldDocument());
   function snapshot(): FieldPersistenceState {
     return { document: document(), revision: local?.base.revision ?? 0, projectedRevision: (local?.base.revision ?? 0) + (local?.pending.length ?? 0),
+      serverConfirmed: !disposed && isCurrent() && confirmedBase !== null && confirmedBase.revision === local?.base.revision && confirmedBase.contentHash === local?.base.contentHash,
       state: !loaded ? 'loading' : storageError ? 'storage-error' : local?.conflict ? 'conflict' : saving ? 'saving' : local?.pending.length || errorCode ? 'offline' : 'saved',
       localDurable: loaded && !volatileDocument && !volatileIntent
         && (!storageError || (local?.localRevision ?? 0) > 0), pendingCount: local?.pending.length ?? 0,
@@ -142,6 +146,11 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
   const remoteRead = async (): Promise<FieldEnvelope> => {
     check(); const response = await api.request<FieldEnvelope>('world.field.get', { expectedAccountId: accountId }); check(); return envelope(response);
   };
+  function rememberConfirmedBase(verified: FieldEnvelope): void {
+    if (verified.revision === local?.base.revision && verified.contentHash === local?.base.contentHash) {
+      confirmedBase = { revision: verified.revision, contentHash: verified.contentHash };
+    }
+  }
   async function applyRemote(remote: FieldEnvelope, capturedRevision: number): Promise<void> {
     check();
     if (!local) local = await empty();
@@ -166,7 +175,7 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
   async function refreshRemote(): Promise<void> {
     const capturedRevision = await serialize(async () => { check(); return local?.base.revision ?? 0; });
     const remote = await remoteRead();
-    await serialize(() => applyRemote(remote, capturedRevision));
+    await serialize(async () => { await applyRemote(remote, capturedRevision); rememberConfirmedBase(remote); });
   }
   async function acceptReceipt(intent: FieldPending, current: FieldEnvelope, acceptedRevision: number): Promise<void> {
     // Two tabs may drain one shared durable outbox or append another edit while
@@ -208,6 +217,7 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
           || current.revision === response.receipt.revision && current.contentHash !== intent.contentHash) fail('field_invalid_receipt');
         await serialize(async () => {
           await acceptReceipt(intent, current, response.receipt.revision);
+          rememberConfirmedBase(current);
           errorCode = local?.conflict ? 'field_revision_conflict' : ''; emit();
         });
       }
@@ -368,7 +378,7 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
         if (choice === 'local' && !sameDocument(desired, remote.document)) {
           next.pending.push({ requestId: crypto.randomUUID(), expectedRevision: remote.revision, document: desired, contentHash: await hashDocument(desired) });
         }
-        await persist(next); if (next.pending.length) ownedIntents.add(next.pending.at(-1)!.requestId);
+        await persist(next); rememberConfirmedBase(remote); if (next.pending.length) ownedIntents.add(next.pending.at(-1)!.requestId);
         errorCode = ''; volatileDocument = null; volatileIntent = null; emit();
       });
       await drain(); return snapshot();

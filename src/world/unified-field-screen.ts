@@ -580,27 +580,36 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     engine.update({ ...(initialEntities ? { entities: initialEntities } : {}), filter: queries.mine, visibleKinds: filter === 'all' ? ['app', 'builtin', 'person', 'community', 'device','object'] : filter === 'app' ? ['app', 'builtin'] : [filter] });
     updateMineEmpty(summary?.document ?? engine.snapshot());
   }
+  function hasConfirmedPersonalLayout(): boolean {
+    return current() && !!engine && state?.serverConfirmed === true && state.state === 'saved'
+      && state.localDurable && state.pendingCount === 0 && state.document.contexts.length > 0
+      && !persistence.hasUnsavedChanges() && !engine.hasUnsavedChanges()
+      && !canvasContent.hasUnsavedChanges() && !canvasContent.hasUnconfirmedWork()
+      && JSON.stringify(engine.snapshot()) === JSON.stringify(state.document);
+  }
   function updateMineEmpty(doc: FieldDocument): void {
     if (!current()) { empty.hidden = true; emptyDocument = null; return; }
     if (mode !== 'mine') {
       if (empty.className?.split(/\s+/u).includes('uf-personal-start')) { empty.className = 'uf-empty'; empty.hidden = true; emptyDocument = null; }
       return;
     }
-    if (renderMineSearchResults()) { empty.hidden = true; emptyDocument = null; return; }
-    if (mineResolvedGeneration !== mineGeneration && element.dataset.mineState !== 'error') {
+    const query = queries.mine.trim().toLocaleLowerCase('ru');
+    const canStart = (document: FieldDocument): boolean => current() && mode === 'mine' && !queries.mine.trim() && filter === 'all'
+      && typeof options.onCreateMenu === 'function'
+      && document.contexts.length > 0 && document.shortcuts.length === 0 && hasConfirmedPersonalLayout()
+      && JSON.stringify(document) === JSON.stringify(state?.document)
+      && element.dataset.search !== 'open' && !summary?.arranging && !selected;
+    const personalStart = canStart(doc);
+    if (!personalStart && (renderMineSearchResults() || mineResolvedGeneration !== mineGeneration && element.dataset.mineState !== 'error')) {
       empty.hidden = true; emptyDocument = null; return;
     }
-    const query = queries.mine.trim().toLocaleLowerCase('ru');
-    const personalStart = !query && filter === 'all' && doc.shortcuts.length === 0 && liveApps.length > 0
-      && element.dataset.mineState === 'ready' && element.dataset.liveAppsState === 'ready' && ownedAppsState === 'ready'
-      && element.dataset.search !== 'open' && !summary?.arranging && !selected && typeof options.onCreateMenu === 'function';
     const scope = `${queries.mine}:${filter}:${personalStart}`;
     if (doc === emptyDocument && scope === emptyScope && metadataRevision === emptyMetadataRevision) return;
     emptyDocument = doc; emptyScope = scope; emptyMetadataRevision = metadataRevision;
     empty.className = 'uf-empty';
     if (personalStart) {
       const note = button('Записка', 'note', 'uf-first-note', () => {
-        if (current() && mode === 'mine' && filter === 'all' && !queries.mine.trim() && engine?.snapshot().shortcuts.length === 0) options.onCreateMenu?.();
+        if (engine && canStart(engine.snapshot())) options.onCreateMenu?.();
       });
       note.setAttribute('aria-label', 'Создать первую записку'); note.setAttribute('aria-haspopup', 'dialog');
       note.setAttribute('data-glass-role', 'control'); note.setAttribute('data-glass-safe-area', 'off');
@@ -688,6 +697,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       // names or access. Resolve new identities through the existing directory.
       if (newRefs) run(element.dataset.ready === 'loading' ? loadInitialMine() : loadMine());
     }
+    if (engine) updateMineEmpty(engine.snapshot());
   }
   function exportLayout(): void {
     const url = URL.createObjectURL(new Blob([JSON.stringify(persistence.exportPending(), null, 2)], { type: 'application/json' }));
@@ -790,7 +800,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     appProjectionGeneration=engine.snapshot().shortcuts.some(shortcut=>shortcut.entity.kind==='object')?generation:0;
     element.dataset.appCoverageErrors='0';
     readAppCoverage(engine.snapshot());
-    mineConfirmedGeneration = -1; empty.hidden = true; element.dataset.mineState = 'loading'; renderMineSearchResults();
+    mineConfirmedGeneration = -1; element.dataset.mineState = 'loading'; emptyDocument = null; updateMineEmpty(engine.snapshot()); renderMineSearchResults();
     if (mineBusy) {
       queuedMine?.(false);
       if (!await new Promise<boolean>(resolve => { queuedMine = resolve; })) return;
@@ -809,7 +819,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const view = (): string => JSON.stringify({ camera: engine!.getCamera(), context: summary?.focusContextId, selection: summary?.selectedShortcutId, fit: options.viewState?.mineFit });
     const firstView = firstResolve ? view() : null;
     mineConfirmedGeneration = -1;
-    empty.hidden = true; element.dataset.mineState = 'loading';
+    element.dataset.mineState = 'loading'; emptyDocument = null; updateMineEmpty(engine.snapshot());
     mineKnownRefs = new Set(BUILTINS.map(item => fieldEntityKey(item.entity)));
     const refs = [...new Map([...engine.snapshot().shortcuts.map(shortcut=>shortcut.entity),...(previewCommunity&&selected?.item.entity.kind==='community'?[selected.item.entity]:[])].map(ref=>[fieldEntityKey(ref),ref])).values()];
     const resolved = { items: [] as DirectoryEntity[], unavailable: [] as FieldEntityRef[], errors: [] as { source: string; code: string }[] };
@@ -1385,7 +1395,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       merge([item]); engine?.update({ entities: allMetadata() }); addToContext(item);
     },
     async addObject(objectId,size={width:320,height:240}){
-      await ready;if(!current()||!engine)throw Object.assign(new Error('field_account_changed'),{code:'field_account_changed'});
+      // Fresh admission of this object needs the confirmed layout, not unrelated directory pages.
+      if(!hasConfirmedPersonalLayout())await ready;
+      if(!current()||!engine)throw Object.assign(new Error('field_account_changed'),{code:'field_account_changed'});
       const field=engine,ref:FieldEntityRef={kind:'object',id:objectId};
       const result=await directory.resolve([ref]);if(!current()||engine!==field)throw Object.assign(new Error('field_account_changed'),{code:'field_account_changed'});
       const item=result.items.find(value=>fieldEntityKey(value.entity)===fieldEntityKey(ref));if(!item)throw Object.assign(new Error('canvas_object_unavailable'),{code:'canvas_object_unavailable'});
@@ -1455,7 +1467,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     hasUnconfirmedWork:()=>canvasContent.hasUnconfirmedWork(),readRuntimeEpoch:()=>canvasContent.readRuntimeEpoch(),
     async flush() { await engine?.flush(); await canvasContent.flush();await persistence.flush(); },
     async preparePublication(){await engine?.flush();await canvasContent.flush();await persistence.flush();const saved=persistence.getState();if(!current()||!saved||saved.state!=='saved'||saved.pendingCount||!saved.localDurable||persistence.hasUnsavedChanges()||engine?.hasUnsavedChanges()||canvasContent.hasUnsavedChanges())throw Object.assign(new Error('canvas_publication_not_ready'),{code:'canvas_publication_not_ready'});},
-    reconnect() { run(persistence.retry().then(applyPersistence)); if (mode === 'search') run(searchDirectory()); else run(loadMine()); },
+    reconnect() { run(persistence.retry().then(applyPersistence)); run(this.refresh({ preserveView: true })); },
     dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; queuedMine?.(false); queuedMine = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); fieldGlass?.dispose();fieldGlass=null;engine?.destroy(); engine = null;canvasContent.dispose(); unobservePersistence(); if (!options.persistence) persistence.dispose(); directory.dispose(); listDialog = null; search.remove(); listButton.remove(); element.remove(); },
   };
 }

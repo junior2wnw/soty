@@ -55,7 +55,7 @@ function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000,lateStar
     fieldGlass:null,mountFieldGlass:()=>({dispose(){}}),
     canvasContent:{createObject:()=>null,objectKey:()=>null,dispose(){}},
     createObject:()=>null,objectKey:()=>null,focusedCommunityId:null,
-    allMetadata:()=>[...metadata.values()],updateChrome(){},updateStatus(){},updateMineFilter(){},closeList(){},closePreview(){},route(){},
+    allMetadata:()=>[...metadata.values()],updateChrome(){},updateStatus(){},updateMineFilter(){},updateMineEmpty(){},closeList(){},closePreview(){},route(){},
     empty:{hidden:true},mineResolvedGeneration:-1,mineFilterAdmitted:false,firstResolve:false,element,loading,
     activate(){},inspect(){},updateSummary(){},searchScene:()=>({}),searchPlacement:{contextEntity:()=>null},openPreview(){},
     window:{innerWidth:width},resolveFieldAppArt:()=>null,host:{prepend(){}},

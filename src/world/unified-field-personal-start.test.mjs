@@ -17,6 +17,7 @@ const screen=fn(parsed.statements,'createUnifiedFieldScreen');
 const print=(node,file=parsed)=>printer.printNode(ts.EmitHint.Unspecified,node,file);
 const matches=parsed.statements.find(node=>ts.isVariableStatement(node)&&node.declarationList.declarations.some(item=>item.name.getText(parsed)==='matches'));
 const code=ts.transpileModule([print(fn(domParsed.statements,'el'),domParsed),print(fn(domParsed.statements,'button'),domParsed),print(matches),
+  ...screen.body.statements.filter(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='hasConfirmedPersonalLayout').map(n=>print(n)),
   print(fn(screen.body.statements,'updateMineEmpty')),print(fn(screen.body.statements,'updateSummary')),
   'exports.api={updateMineEmpty,updateSummary};'].join('\n').replace(/^export /gmu,''),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 
@@ -34,7 +35,9 @@ function fixture({mode='mine',query='',filter='all',confirmed=true,create=true,s
   const node=()=>new Node();
   const fieldEntityKey=ref=>ref.kind+':'+ref.id;
   const environment={exports,document,icon:()=>new Node('svg'),mode,queries:{mine:query,search:''},filter,filtersByMode:{mine:filter,search:'all'},
-    current:()=>active,engine:{snapshot:()=>doc},options:{...(create?{onCreateMenu:()=>calls.push('existing-owner-composer')}:{}),onMessage(){}},
+    current:()=>active,engine:{snapshot:()=>doc,hasUnsavedChanges:()=>false},persistence:{hasUnsavedChanges:()=>false},
+    canvasContent:{hasUnsavedChanges:()=>false,hasUnconfirmedWork:()=>false},
+    state:{serverConfirmed:confirmed,state:confirmed?'saved':'loading',localDurable:true,pendingCount:0,document:doc},options:{...(create?{onCreateMenu:()=>calls.push('existing-owner-composer')}:{}),onMessage(){}},
     empty:Object.assign(new Node('div','uf-empty'),{hidden:true}),emptyDocument:null,emptyScope:'',emptyMetadataRevision:-1,metadataRevision:0,
     mineGeneration:1,mineResolvedGeneration:confirmed?1:0,mineKnownRefs:new Set(),
     metadata:new Map(),liveApps:[{entity:{kind:'app',id:'app-public'},title:'Каталог',source:'public'}],
@@ -77,9 +80,10 @@ test('retired identity and a stale hint after a new placement cannot launch anot
   const next=fixture();next.render();const stale=next.hint();next.place();stale.click();assert.equal(next.calls.length,0);
 });
 
-test('catalogue state arriving after the same empty document invalidates the hint visibility cache',()=>{
-  const f=fixture();f.environment.element.dataset.liveAppsState='loading';f.render();assert.equal(f.hint(),null);
-  f.environment.element.dataset.liveAppsState='ready';f.render();assert.ok(f.hint());
+test('personal receipt changes invalidate the hint cache while unrelated catalogue readiness never gates it',()=>{
+  const f=fixture();f.environment.element.dataset.liveAppsState='loading';f.environment.ownedAppsState='loading';f.render();assert.ok(f.hint());
+  f.environment.state.serverConfirmed=false;f.render();assert.equal(f.hint(),null);
+  f.environment.state.serverConfirmed=true;f.render();assert.ok(f.hint());
   f.environment.mode='search';f.render();assert.equal(f.hint(),null);
 });
 
@@ -100,9 +104,29 @@ test('arrange, filtered/no-match and private source errors retain their existing
   }
   for(const failure of ['registry','layout','offline']){
     const f=fixture();f.environment.liveApps=[];
+    f.environment.state.serverConfirmed=false;
     if(failure==='registry')f.environment.ownedAppsState='offline';
     if(failure==='layout')f.environment.element.dataset.mineState='error';
     if(failure==='offline')f.environment.element.dataset.liveAppsState='offline';
     f.render();assert.equal(f.hint(),null);assert.equal(f.environment.empty.hidden,false);assert.equal(f.environment.empty.children[0].textContent,'Доступ пока не подтверждён');
+  }
+});
+
+test('stale activation rechecks live authority, outbox, volatile layout and input mode without waiting for another paint',()=>{
+  for(const block of [
+    f=>{f.environment.state.serverConfirmed=false;},
+    f=>{f.environment.state.pendingCount=1;},
+    f=>{f.environment.state.state='conflict';},
+    f=>{f.environment.state.state='offline';},
+    f=>{f.environment.state.localDurable=false;},
+    f=>{f.environment.persistence.hasUnsavedChanges=()=>true;},
+    f=>{f.environment.engine.hasUnsavedChanges=()=>true;},
+    f=>{f.environment.canvasContent.hasUnsavedChanges=()=>true;},
+    f=>{f.environment.canvasContent.hasUnconfirmedWork=()=>true;},
+    f=>{f.environment.queries.mine='новый поиск';},
+    f=>{f.environment.mode='search';},
+  ]){
+    const f=fixture();f.render();const hint=f.hint();assert.ok(hint);block(f);hint.click();assert.equal(f.calls.length,0);
+    f.render();assert.equal(f.hint(),null);
   }
 });
