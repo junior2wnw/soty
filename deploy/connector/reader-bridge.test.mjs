@@ -36,7 +36,7 @@ test('manifest11 explicitly supports absent-only [] without changing current10 o
   assert.deepEqual(bridge.readers.appsEndpoint,[]);assert.deepEqual(bridge.readers.appsFrameContinuity,[]);
   const counts={3:4,4:6,5:7,6:8,7:9,8:19,9:20,10:21};
   for(const version of[3,4,5,6,7,8,9,10]){
-    const readers=Object.fromEntries(Object.entries(current.readers).slice(0,counts[version]).map(([name,values])=>[name,values.filter(n=>!(name==='apps'&&version<7&&n>11)&&!(name==='notes'&&version<8&&n>2)&&!(name==='world'&&version<10&&n>7))]));
+    const readers=Object.fromEntries(Object.entries(current.readers).slice(0,counts[version]).map(([name,values])=>[name,values.filter(n=>!(name==='apps'&&version<7&&n>11)&&!(name==='notes'&&version<8&&n>2)&&!(name==='feedback'&&version<10&&n>1)&&!(name==='world'&&version<10&&n>7))]));
     const declaration={version,readers};storageReaders(image(JSON.stringify(declaration)));
     for(const name of Object.keys(readers)){const changed=structuredClone(declaration);changed.readers[name]=[];assert.throws(()=>storageReaders(image(JSON.stringify(changed))),{code:'storage_reader_unknown'},'manifest'+version+' must still reject empty '+name);}
   }

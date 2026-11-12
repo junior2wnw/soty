@@ -54,7 +54,7 @@ test('native sealing reader capabilities are explicit per store; historical DTOs
     const old=current();old.readers[store]=old.readers[store].filter(value=>value!==version);
     assert.throws(()=>assertStorageCompatible(image(old),currentObservation({[store]:version})),{code:'storage_reader_incompatible'});
   }
-  const historical=current();historical.version=7;historical.readers.world=[6,7];
+  const historical=current();historical.version=7;historical.readers.world=[6,7];historical.readers.feedback=[1];
   for(const store of['canvasObjects','canvasWidgets','canvasVault','canvasPages','materials','invitations','referrals','appAgentDirectory','universalPublication','appsEndpoint','appsFrameContinuity','monitoring'])delete historical.readers[store];
   assert.throws(()=>storageReaders(image(historical)),{code:'storage_reader_unknown'},'historical epoch7 must not be relabelled with the new Notes3 reader');
   historical.readers.notes=[1,2];assert.deepEqual(storageReaders(image(historical)).notes,[1,2]);

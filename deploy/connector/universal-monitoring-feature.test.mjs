@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import * as policy from './universal-policy.mjs';
 import {captureUniversalPreparedness,validateUniversalPreparedness} from '../../modules/app-contract/universal-preparedness.mjs';
-import {currentStorageReaders,storageReaderLabel,assertStorageCompatible} from './storage-guard.mjs';
+import {currentStorageReaders,storageReaderLabel,assertStorageCompatible,storageReaders} from './storage-guard.mjs';
 import {readStorageFormat} from './storage-probe.mjs';
 import {hash,createConfig} from './rollout.mjs';
 import {fixture as engineFixture,args as rolloutArgs} from './test-support/rollout-engine.mjs';
@@ -28,7 +28,7 @@ test('actual monitoring capture is closed, immutable and additive; the legacy po
 });
 test('a first reader-only upgrade accepts an old image without the family only while actual monitoring data is absent',async t=>{
  const f=await fixture(t),source=path.join(f.root,'empty');await mkdir(source);const format=await readStorageFormat(source);assert.equal(format.monitoring,'empty');
- const current=JSON.parse(currentStorageReaders),legacy={version:7,readers:Object.fromEntries(['rooms','apps','notes','capabilities','appRegistration','feedback','humanIdentity','connect','world'].map(key=>[key,current.readers[key]]))};legacy.readers.notes=[1,2];legacy.readers.world=[6,7];
+ const current=JSON.parse(currentStorageReaders),legacy={version:7,readers:Object.fromEntries(['rooms','apps','notes','capabilities','appRegistration','feedback','humanIdentity','connect','world'].map(key=>[key,current.readers[key]]))};legacy.readers.notes=[1,2];legacy.readers.world=[6,7];legacy.readers.feedback=[1];
  const plan={...basePlan(),expectedCurrentPreparednessSha256:hash(runtime())},handle=await prepare(t,f,plan);assert.doesNotThrow(()=>policy.assertUniversalImagePrerequisites(handle,{candidateImage:image(),originalImage:image(legacy,'b')}));assertStorageCompatible(image(legacy,'b'),format);
  const nonempty={...format,monitoring:1};assert.throws(()=>assertStorageCompatible(image(legacy,'b'),nonempty),{code:'storage_reader_incompatible'});
  const enabling=await feature(t,f,'reader','writer');assert.throws(()=>policy.assertUniversalImagePrerequisites(enabling,{candidateImage:image(),originalImage:image(legacy)}),{code:'universal_policy_monitoring_reader_required'});
@@ -129,7 +129,8 @@ test('monitoring access-only preserves an existing writer mode and requires real
  assert.doesNotThrow(()=>policy.assertUniversalPreparedness(handle,accessRuntime('writer',desired),{allowFixture:true}));
  for(const actual of [runtime('writer'),accessRuntime('writer',desired),accessRuntime('reader',old)])assert.throws(()=>policy.assertUniversalFeatureOriginal(handle,{Config:config},actual,{allowFixture:true}));
  assert.throws(()=>policy.assertUniversalPreparedness(handle,accessRuntime('reader',desired),{allowFixture:true}));
- const readers=JSON.parse(currentStorageReaders);delete readers.readers.monitoring;readers.version=9;
+ const readers=JSON.parse(currentStorageReaders);delete readers.readers.monitoring;readers.version=9;readers.readers.world=[6,7];readers.readers.feedback=[1];
+ assert.doesNotThrow(()=>storageReaders(image(readers)),'legacy9 must be known before its missing Monitoring reader is tested');
  policy.assertUniversalImagePrerequisites(handle,{candidateImage:image(),originalImage:image()});
  assert.throws(()=>policy.assertUniversalImagePrerequisites(handle,{candidateImage:image(),originalImage:image(currentStorageReaders,'b')}));
  assert.throws(()=>policy.assertUniversalImagePrerequisites(handle,{candidateImage:image(readers),originalImage:image(readers)}));

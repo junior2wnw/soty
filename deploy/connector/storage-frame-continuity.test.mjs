@@ -17,7 +17,7 @@ test('independent passive DDL pin, readonly probe and literal previous reader la
   const{root,file,d}=await fixture(t,options);const rows=d.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name LIKE 'app_frame_continuity%' ORDER BY name").all().map(r=>[r.type,r.name,r.tbl_name,r.sql.replace(/\s+/gu,' ').trim()]);
   assert.equal(rows.length,3);assert.equal(createHash('sha256').update(JSON.stringify(rows)).digest('hex'),'ef452bfad580903943b9a73830d895f068f9577ad6cb398ecd44c24e84212a5c');d.close();
   const before=await readFile(file),format=await readStorageFormat(root);assert.equal(format.appsFrameContinuity,2);assert.deepEqual(await readFile(file),before);assertStorageCompatible(image(currentStorageReaders),format);
-  const previous=JSON.parse(currentStorageReaders);previous.version=8;previous.readers.world=[6,7];delete previous.readers.appsFrameContinuity;delete previous.readers.monitoring;assert.throws(()=>assertStorageCompatible(image(previous),format),{code:'storage_reader_incompatible'});
+  const previous=JSON.parse(currentStorageReaders);previous.version=8;previous.readers.world=[6,7];previous.readers.feedback=[1];delete previous.readers.appsFrameContinuity;delete previous.readers.monitoring;assert.throws(()=>assertStorageCompatible(image(previous),format),{code:'storage_reader_incompatible'});
  }
 });
 for(const [name,breakIt,code]of[

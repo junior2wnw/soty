@@ -19,7 +19,7 @@ test('actual Root new stores/endpoint journal have exact content-free reader for
  const observed=await readStorageFormat(f.directory);assert.equal(observed.schema,'soty.storage-format.v10');
  for(const key of Object.keys(featurePaths))assert.equal(observed[key],key==='invitations'?2:1,key);assert.equal(observed.appsEndpoint,1);
  assertStorageCompatible(image(currentStorageReaders),observed);
- const old=JSON.parse(currentStorageReaders);old.version=7;old.readers.notes=[1,2];for(const key of [...Object.keys(featurePaths),'appsEndpoint','appsFrameContinuity','monitoring'])delete old.readers[key];
+ const old=JSON.parse(currentStorageReaders);old.version=7;old.readers.notes=[1,2];old.readers.feedback=[1];old.readers.world=[6,7];for(const key of [...Object.keys(featurePaths),'appsEndpoint','appsFrameContinuity','monitoring'])delete old.readers[key];
  assert.doesNotThrow(()=>storageReaders(image(JSON.stringify(old))),'the historical V7 fixture must remain a recognized image before its incompatible data is tested');
  assert.throws(()=>assertStorageCompatible(image(JSON.stringify(old)),observed),{code:'storage_reader_incompatible'});
  assert.equal(JSON.stringify(observed).includes(f.account.accountId),false);assert.equal(JSON.stringify(observed).includes(f.source.address),false);
