@@ -9,6 +9,7 @@ import ts from 'typescript';
 import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { emptyState } from '../../modules/connect/browser/storage.mjs';
+import { createRootHostClient } from '../core/app-host-retirement-client.mjs';
 
 const tick = async () => { for (let count = 0; count < 10; count++) await Promise.resolve(); };
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -28,6 +29,7 @@ async function compiled(path, ports = {}, extras = {}) {
 async function core() {
   let options;
   const exports = await compiled('../core/connect-client.ts', {
+    './app-host-retirement-client.mjs': { createRootHostClient },
     '../../modules/connect/browser/index.mjs': { createConnectClient(value) { options = value; return {}; } },
   });
   return { ...exports, options };

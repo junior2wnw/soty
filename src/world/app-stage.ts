@@ -87,11 +87,16 @@ export function appLaunchFailure(error: unknown): { title: string; detail: strin
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
   if (code === 'native_voice_parent_origin_mismatch') return { title: 'Голосовое приложение недоступно на этом адресе', detail: 'Откройте его в основном адресе Сот.' };
   if (code === 'native_voice_descriptor_unavailable') return { title: 'Не удалось проверить подключение приложения', detail: 'Проверьте соединение и попробуйте снова.' };
+  if (code === 'app_host_retirement_unavailable') return { title: 'Браузер не смог сохранить вход', detail: 'Используйте обновлённый браузер и разрешите хранилище для Сот.' };
+  if (code === 'app_host_retirement_pending') return { title: 'Не удалось завершить прежний вход', detail: 'Повторите проверку. Новое окно пока не открыто.' };
+  if (code === 'app_host_retirement_changed') return { title: 'Вход изменился', detail: 'Откройте приложение заново из нужного профиля.' };
   if (code === 'ACTIVE_PROFILE_CHANGED') return { title: 'Аккаунт изменился', detail: 'Выберите нужный аккаунт и откройте приложение ещё раз.' };
   if (code === 'app_offline') return { title: 'Устройство не в сети', detail: 'Попробуйте снова, когда устройство подключится.' };
   if (['app_scoped_admission_required','app_scoped_human_required','app_scoped_migration_required','app_scoped_key_required'].includes(code)) return {title:'Подключение пока не готово',detail:'Владелец приложения должен завершить подключение выбранного проекта.'};
   if (['apps_access_denied', 'app_access_revoked', 'app_unavailable', 'authentication_required'].includes(code)) return { title: 'Этот вход недоступен', detail: 'Выберите другой аккаунт или попросите владельца проверить доступ.' };
-  if (['apps_launch_busy', 'apps_entry_busy', 'apps_sessions_busy', 'app_public_capacity', 'app_capacity'].includes(code)) return { title: 'Приложение сейчас занято', detail: 'Попробуйте ещё раз немного позже.' };
+  if (code === 'apps_sessions_busy') return { title: 'Достигнут предел открытых приложений', detail: 'Закройте ненужное окно через меню приложения и повторите вход.' };
+  if (code === 'apps_entry_busy') return { title: 'Не удалось подготовить вход', detail: 'Соты пока не подтвердили этот вход. Попробуйте ещё раз.' };
+  if (['apps_launch_busy', 'app_public_capacity', 'app_capacity'].includes(code)) return { title: 'Приложение сейчас занято', detail: 'Попробуйте ещё раз немного позже.' };
   if (['invalid_app_launch_url', 'invalid_app_entry', 'invalid_app_path', 'invalid_app_launch_binding'].includes(code)) return { title: 'Не удалось безопасно открыть приложение', detail: 'Попробуйте получить новую ссылку.' };
   if (['app_launch_source_changed', 'app_launch_binding_required'].includes(code)) return { title: 'Вход изменился', detail: 'Откройте приложение заново.' };
   if (['scoped_embed_source_changed', 'scoped_embed_authority_changed'].includes(code)) return { title: 'Адрес приложения изменился', detail: 'Откройте актуальный вход. Сохранённая ссылка останется на прежнем адресе.' };

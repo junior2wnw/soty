@@ -19,7 +19,7 @@ const state = (accountId = 'account-A', deviceId = 'device-A') => ({ accountId, 
 function fixture(t, config = {}) {
   let selected = state(), reads = 0, fetches = 0, actionsDestroyed = 0, detached = 0, disposed = 0, bootstraps = 0;
   const entry = deferred(), observers = new Set(), events = new Map(), mounts = [], requests = [], follows = [], navigationCalls = [], notifications = [],liveClients=[], accountPanels = [];
-  const root = { isConnected: true }, window = { location: { href: config.href ?? 'https://shell.example/', origin: 'https://shell.example', assign(value) { navigationCalls.push(value); } },
+  const root = { isConnected: true, dataset: {} }, window = { location: { href: config.href ?? 'https://shell.example/', origin: 'https://shell.example', assign(value) { navigationCalls.push(value); } },
     addEventListener(name, fn) { const set = events.get(name) ?? new Set(); set.add(fn); events.set(name, set); }, removeEventListener(name, fn) { events.get(name)?.delete(fn); } };
   window.history = { replaceState(_state, _title, value) { window.location.href = new URL(value, window.location.href).href; } };
   const client = { async getLocalState() { const index = ++reads; return config.read ? config.read(index, selected) : selected; },
@@ -42,7 +42,11 @@ function fixture(t, config = {}) {
       void options.api.request('fixture.actor');
       return { async refresh() { if (config.refresh) await config.refresh(mounts.length); }, destroy() { mount.destroyed++; },
         loseAccess(error){mount.lost.push(error);},
-        async followConnection(intent, navigate) { follows.push(intent); if (navigate) await navigate(); } };
+        async followConnection(intent, navigate, continueIf) {
+          if (config.follow) await config.follow();
+          if (mount.destroyed || continueIf && !continueIf()) throw Error('connection_entry_changed');
+          follows.push(intent); if (navigate) await navigate();
+        } };
     } },
     './assistant': {}, '../sync': {}, '../../modules/connect/ui/index.mjs': { openConnectPanel(options) { accountPanels.push(options); return { close() {} }; } }, qrcode: { default: {} },
   };
@@ -231,6 +235,60 @@ test('fatal durable startup before mount restores the same-scope original URL wi
   await assert.rejects(f.start(), error => error === expected);
   assert.equal(f.window.location.href, href); assert.equal(f.mounts.length, 0);
   assert.equal(intents.parseConnectionIntent(f.window.location.href, 'https://shell.example').launch.takeInvitation(), 'b'.repeat(64));
+});
+
+test('fatal typed refresh or follow after mount restores the original same-identity URL for a retry', async t => {
+  for (const operation of ['refresh', 'follow']) {
+    const expected = Error('synthetic mounted failure'), href = appLink(), fail = async () => { throw expected; };
+    const f = fixture(t, { href, [operation]: fail });
+    await assert.rejects(f.start(), error => error === expected);
+    assert.equal(f.window.location.href, href);
+    assert.equal(f.root.dataset.startupEntryStatus, 'restored');
+    assert.equal(f.mounts[0].destroyed, 1); assert.equal(f.follows.length, 0);
+    assert.equal(intents.parseConnectionIntent(f.window.location.href, 'https://shell.example').launch.takeInvitation(), 'b'.repeat(64));
+  }
+});
+
+test('late typed follow cannot overwrite a newer navigation or destroy its mounted shell', async t => {
+  const flush = deferred(), f = fixture(t, { href: appLink(), follow: () => flush.promise }), running = f.start();
+  await until(() => f.mounts.length === 1); await turn();
+  f.window.history.replaceState({}, '', '#notes/note123'); flush.resolve(); await running;
+  assert.equal(f.window.location.href, 'https://shell.example/#notes/note123');
+  assert.equal(f.follows.length, 0); assert.equal(f.mounts[0].destroyed, 0);
+  assert.equal(f.root.dataset.startupEntryStatus, 'route_changed');
+});
+
+test('identity changes during typed follow retire only the old shell and leave the new profile alive', async t => {
+  const flush = deferred(), f = fixture(t, { href: appLink(), follow: () => flush.promise }), running = f.start();
+  await until(() => f.mounts.length === 1); await turn();
+  f.change(state('account-B', 'device-B')); flush.resolve(); await running;
+  assert.equal(f.follows.length, 0); assert.equal(f.mounts.length, 2);
+  assert.equal(f.mounts[0].destroyed, 1); assert.equal(f.mounts[1].destroyed, 0);
+  assert.equal(f.root.dataset.startupEntryStatus, 'profile_changed');
+});
+
+test('a durable identity change cannot restore the old typed URL after a mounted failure', async t => {
+  const f = fixture(t, { href: appLink(), read: index => index === 1 ? state() : state('account-B', 'device-B'),
+    refresh: async () => { throw Error('synthetic refresh failure'); } });
+  await assert.rejects(f.start(), { code: 'ACTIVE_PROFILE_CHANGED' });
+  assert.equal(f.window.location.href, 'https://shell.example/#mine');
+  assert.equal(f.root.dataset.startupEntryStatus, 'profile_changed');
+  assert.equal(f.follows.length, 0); assert.equal(f.mounts[0].destroyed, 1);
+});
+
+test('late failed-entry identity read cannot restore after navigation or closing the page', async t => {
+  for (const cancel of ['navigation', 'pagehide', 'removed-root']) {
+    const identity = deferred(), f = fixture(t, { href: appLink(), read: index => index === 1 ? state() : identity.promise,
+      refresh: async () => { throw Error('synthetic refresh failure'); } }), running = f.start();
+    await until(() => f.reads === 2);
+    if (cancel === 'navigation') f.window.history.replaceState({}, '', '#notes/note123');
+    else if (cancel === 'pagehide') f.pagehide();
+    else f.root.isConnected = false;
+    identity.resolve(state()); await running;
+    assert.equal(f.window.location.href, cancel === 'navigation' ? 'https://shell.example/#notes/note123' : 'https://shell.example/#mine');
+    assert.equal(f.mounts[0].destroyed, cancel === 'pagehide' ? 1 : 0);
+    assert.equal(f.follows.length, 0);
+  }
 });
 
 test('profile and community deep links use one bound typed follow after neutral mount', async t => {

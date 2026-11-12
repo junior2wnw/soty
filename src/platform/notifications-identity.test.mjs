@@ -10,6 +10,7 @@ import { validateState } from '../../modules/connect/browser/storage.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
 import { createConnectHandler } from '../../modules/connect/server/http.mjs';
 import { createNotificationsController } from './notifications-client.mjs';
+import { createRootHostClient } from '../core/app-host-retirement-client.mjs';
 import * as intents from './connection-intent.mjs';
 import * as navigation from './connection-navigation.mjs';
 
@@ -25,7 +26,7 @@ function load(source,ports,globals={}){
 // and signed loopback Connect HTTP. Only UI/media/browser-push ports are inert;
 // synthetic notification targets isolate this test from World delivery tests.
 async function fixture(t,{cold=false,initiallyBlocked=false}={}){
-  const projectId='soty',calls=[],opened=[],mounts=[],controllers=[],events=new Map();let handler,saved=null,offlineStatus=false,blocked=initiallyBlocked;
+  const projectId='soty',calls=[],opened=[],mounts=[],controllers=[],events=new Map();let handler,client,saved=null,offlineStatus=false,blocked=initiallyBlocked;
   const server=createServer((req,res)=>void handler(req,res));await new Promise(done=>server.listen(0,'127.0.0.1',done));
   const origin='http://127.0.0.1:'+server.address().port,endpoint=origin+'/api/connect/rpc',scope={projectId,endpoint};
   const key=createECDH('prime256v1');key.generateKeys();const publicKey=key.getPublicKey().toString('base64url');
@@ -40,12 +41,12 @@ async function fixture(t,{cold=false,initiallyBlocked=false}={}){
   }]});handler=createConnectHandler(service);
   const storage={read:async()=>structuredClone(saved),claim:async value=>{if(saved===null){validateState(value,scope);saved=structuredClone(value);}return structuredClone(saved);},
     compareAndSwap:async(expected,value)=>{assert.equal(saved.localRevision,expected);validateState(value,scope);saved=structuredClone(value);return structuredClone(saved);}};
-  const core=load(coreSource,{'../../modules/connect/browser/index.mjs':{createConnectClient(options){return createClientWithStorage({...options,endpoint,
+  t.after(async()=>{for(const fn of events.get('pagehide')??[])fn({persisted:false});for(const controller of controllers)controller.dispose();
+    client?.dispose();server.closeAllConnections();await new Promise(done=>server.close(done));service.close();});
+  const core=load(coreSource,{'./app-host-retirement-client.mjs':{createRootHostClient},'../../modules/connect/browser/index.mjs':{createConnectClient(options){return createClientWithStorage({...options,endpoint,
     fetch:async(url,request)=>{const body=JSON.parse(request.body);if(offlineStatus&&body.op==='notifications.status')throw TypeError('synthetic status network outage');
       return fetch(url,{...request,headers:{...request.headers,origin}});}},storage);}}});
-  const client=core.accountClient;
-  t.after(async()=>{for(const fn of events.get('pagehide')??[])fn({persisted:false});for(const controller of controllers)controller.dispose();
-    client.dispose();server.closeAllConnections();await new Promise(done=>server.close(done));service.close();});
+  client=core.accountClient;
   await client.bootstrap('Disposable notification identity');
   const window={location:{href:origin+(cold?'/?notification='+notificationId+'#mine':'/#mine'),origin,assign(){throw Error('unexpected fixture navigation');}},
     addEventListener(name,fn){const set=events.get(name)??new Set();set.add(fn);events.set(name,set);},removeEventListener(name,fn){events.get(name)?.delete(fn);}};

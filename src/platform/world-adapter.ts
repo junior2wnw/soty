@@ -52,7 +52,10 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   let world: WorldAppHandle, activeAccount: string | null = null, activeDevice: string | null = null;
   let mountGeneration = 0, currentCallView: WorldHumanCallPort | undefined;
   let identityEvents = 0, pageClosed = false, unobserveAccount: (() => void) | undefined, destroyActions: (() => void) | undefined;
-  let restoreOwnedRoute: (() => void) | undefined, worldMounted = false, entryScopeChanged = false;
+  let restoreOwnedRoute: (() => Promise<boolean>) | undefined, worldMounted = false, entryScopeChanged = false;
+  const entryStatus = (value: string) => {
+    if (!pageClosed && root.isConnected && root.dataset) root.dataset.startupEntryStatus = value;
+  };
   let notifications: NotificationsController | undefined;
   let platformLive:ReturnType<typeof createPlatformLiveClient>|undefined;
   const closePage = () => {
@@ -111,10 +114,21 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (source.origin !== window.location.origin || source.pathname !== '/') throw Error('connection_entry_changed');
     const neutral = new URL('/', window.location.origin); neutral.hash = 'mine'; ownedRoute = neutral.href;
     window.history.replaceState(ownedHistoryState, '', ownedRoute);
-    restoreOwnedRoute = () => {
-      if (!worldMounted && !entryScopeChanged && !pageClosed && root.isConnected && !pageLifetime.signal.aborted
-        && activeAccount === entry.state.accountId && activeDevice === entry.state.deviceId && window.location.href === ownedRoute)
-        window.history.replaceState(ownedHistoryState, '', entryInput);
+    entryStatus('pending');
+    restoreOwnedRoute = async () => {
+      const current = () => !entryScopeChanged && !pageClosed && root.isConnected && !pageLifetime.signal.aborted
+        && activeAccount === entry.state.accountId && activeDevice === entry.state.deviceId && window.location.href === ownedRoute;
+      if (!current()) { entryStatus(entryScopeChanged ? 'profile_changed' : 'route_changed'); return false; }
+      // A mounted controller may have awaited identity IO without an observer event.
+      if (worldMounted) {
+        const ticket = identityEvents, state = await accountClient.getLocalState();
+        if (!current() || ticket !== identityEvents) { entryStatus(entryScopeChanged ? 'profile_changed' : 'route_changed'); return false; }
+        if (state.current?.revoked || state.accountId !== entry.state.accountId || state.deviceId !== entry.state.deviceId) {
+          entryStatus('profile_changed');
+          throw Object.assign(Error('The entry profile changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
+        }
+      }
+      window.history.replaceState(ownedHistoryState, '', entryInput); entryStatus('restored'); return true;
     };
   }
   // Subscribe before optional IO. This observer has no replay; a durable read
@@ -430,11 +444,20 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   const entryCurrent = () => !entryScopeChanged && !pageClosed && !pageLifetime.signal.aborted && root.isConnected && world === entryWorld
     && mountGeneration === entryGeneration && activeAccount === entry.state.accountId && activeDevice === entry.state.deviceId;
   if (ownedConnection) {
-    if (!entryCurrent() || window.location.href !== ownedRoute) return;
-    await entryWorld.refresh();
-    if (!entryCurrent() || window.location.href !== ownedRoute) return;
-    if (ownedConnection.kind === 'contact' || ownedConnection.kind === 'device') await openAccount('people', ownedConnection);
-    else await entryWorld.followConnection(ownedConnection);
+    const pending = () => entryCurrent() && window.location.href === ownedRoute;
+    const cancelled = () => entryStatus(entryScopeChanged ? 'profile_changed' : 'route_changed');
+    if (!pending()) { cancelled(); return; }
+    try {
+      await entryWorld.refresh();
+      if (!pending()) { cancelled(); return; }
+      if (ownedConnection.kind === 'contact' || ownedConnection.kind === 'device') await openAccount('people', ownedConnection);
+      else await entryWorld.followConnection(ownedConnection, undefined, pending);
+      if (entryCurrent()) entryStatus('dispatched');
+    } catch (error) {
+      // A late startup failure no longer owns a newer route or profile shell.
+      if (!pending()) { cancelled(); return; }
+      throw error;
+    }
   } else if (entry.intent) {
     if (!entryCurrent()) return;
     if (entry.intent.kind === 'contact' || entry.intent.kind === 'device') await openAccount('people', entry.intent);
@@ -448,5 +471,9 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     actionUrl.searchParams.delete('action'); history.replaceState({}, '', actionUrl);
     await actions.connectDevice();
   }
-  } catch (error) { try { restoreOwnedRoute?.(); } catch {} closePage(); throw error; }
+  } catch (error) {
+    entryStatus('failed'); let failure = error;
+    try { if (restoreOwnedRoute && !await restoreOwnedRoute()) return; } catch (restoreError) { failure = restoreError; }
+    closePage(); throw failure;
+  }
 }
