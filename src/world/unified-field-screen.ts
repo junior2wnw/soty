@@ -640,8 +640,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (summary && (next.document !== summary.document || next.focusContextId !== summary.focusContextId || next.arranging !== summary.arranging)) closeList(false);
     if (next.mode === 'mine' && next.focusContextId !== summary?.focusContextId && current()&&(!next.focusContextId||next.document.contexts.some(context=>context.contextId===next.focusContextId))) options.onContextChange?.(next.focusContextId);
     if (mode === 'mine' && selected?.shortcutId) {
-      const inspected = next.document.shortcuts.find(shortcut => shortcut.shortcutId === selected?.shortcutId);
-      if (!inspected || next.focusContextId && inspected.contextId !== next.focusContextId) closePreview(false);
+      const inspected = current() ? next.document.shortcuts.find(shortcut => shortcut.shortcutId === selected?.shortcutId)
+        ?? liveAppScene(next.document).shortcuts.find(shortcut => shortcut.shortcutId === selected?.shortcutId) : undefined;
+      if (!inspected || fieldEntityKey(inspected.entity) !== fieldEntityKey(selected.item.entity) || next.focusContextId && inspected.contextId !== next.focusContextId) closePreview(false);
     }
     summary = next; arrange.setAttribute('aria-pressed', String(next.arranging)); arrange.querySelector('span')!.textContent = next.arranging ? 'Готово' : 'Расставить';
     if (documentChanged) { publishKnownApps(next.document); refreshAppCoverage(); }
