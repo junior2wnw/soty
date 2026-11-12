@@ -789,6 +789,15 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     const existingFrame = runtime.querySelector('iframe');
     const previousFrameGeneration = frameGeneration, checkedWork = !!existingFrame && appWork.requiresCheck();
     let frameCutover: ReturnType<typeof launcher.beginFrameCutover> | null = null;
+    let identityClearConfirmed = false;
+    const resumeRetainedIdentity = () => {
+      if (identityClearConfirmed && alive() && !liveAuthorityDenied && existingFrame
+        && runtime.querySelector('iframe') === existingFrame && frameGeneration === previousFrameGeneration) relayIdentity.resume();
+    };
+    const authorityLost = (reason: unknown) => reason && typeof reason === 'object'
+      && ('status' in reason && (reason.status === 401 || reason.status === 403)
+        || 'code' in reason && ['ACTIVE_PROFILE_CHANGED', 'ACCOUNT_MISMATCH', 'authentication_required', 'apps_access_denied',
+          'app_access_revoked', 'app_source_changed', 'app_policy_changed', 'scoped_embed_source_changed', 'scoped_embed_authority_changed'].includes(String(reason.code)));
     if (checkedWork) {
       runtimePending = true;
       try { await appWork.flush(); }
@@ -798,8 +807,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     }
     if (relayIdentity.hasActive()) {
       runtimePending = true;
-      try { await relayIdentity.clear(); }
-      catch { relayIdentity.resume(); if (current()) showMessage('Не удалось безопасно закрыть вход. Окно приложения остаётся открытым.'); return; }
+      try { await relayIdentity.clear(); identityClearConfirmed = true; }
+      catch { if (current()) showMessage('Не удалось безопасно закрыть вход. Окно приложения остаётся открытым.'); return; }
       finally { runtimePending = false; }
       if (!alive()) return;
     }
@@ -835,12 +844,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       runtimeTrace.attach(frame,browserOrigin);
       frame.src = url;
       if(nativeVoice?.mount.appId===app.appId&&nativeVoice.mount.parentOrigin===view.location.origin&&new URL(url).origin===nativeVoice.mount.frameOrigin&&!isScopedRuntimeProfile(launcher.runtimeProfile()))frame.allow='microphone '+nativeVoice.mount.frameOrigin+'; autoplay '+nativeVoice.mount.frameOrigin;
-      if (relayIdentity.hasActive()) { await relayIdentity.clear(); if (!alive()) return; }
+      if (relayIdentity.hasActive()) { identityClearConfirmed = false; await relayIdentity.clear(); identityClearConfirmed = true; if (!alive()) return; }
       if (existingFrame && (checkedWork || appWork.requiresCheck())) {
         try {
           if (!appWork.requiresCheck()) throw Error('soty_work_unavailable');
           await appWork.flush();
-        } catch { if (current()) showMessage('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.'); return; }
+        } catch (reason) { if (authorityLost(reason)) identityClearConfirmed = false; if (current()) showMessage('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.'); return; }
         if (!alive()) return;
       }
       if (existingFrame && (runtime.querySelector('iframe') !== existingFrame || frameGeneration !== previousFrameGeneration)) return;
@@ -908,8 +917,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       }
       runtimeTrace.inserted();
     } catch (reason) {
+      if (authorityLost(reason)) identityClearConfirmed = false;
       frameCutover?.discard();
-      relayIdentity.resume();
       if (!alive()) return;
       runtimeTrace.launchFailed();
       runtime.setAttribute('aria-busy', 'false');
@@ -923,6 +932,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (automatic) recoveryRetry.hidden = false;
     } finally {
       frameCutover?.discard();
+      resumeRetainedIdentity();
       if (current()) { runtimePending = false; refresh.disabled = false; recoveryRetry.disabled = false; ensureDiscussion(); showPanel(); }
     }
   }

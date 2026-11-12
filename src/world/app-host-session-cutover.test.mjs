@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import vm from 'node:vm';
 import ts from 'typescript';
 import {createAppLauncher,isScopedRuntimeProfile} from './app-launch.mjs';
+import {createRelayIdentityBridge} from './app-relay-identity-bridge.mjs';
 import {createHostSessionContinuity} from '../../modules/apps/server/host-session-continuity.mjs';
 import {FRAME_CONTINUITY_STORAGE,frameContinuityDdl} from '../../modules/apps/server/frame-continuity.mjs';
 
@@ -37,7 +38,8 @@ const compiled=ts.transpileModule(`exports.create=(launcher,runtime,state,appWor
  const appLaunchFailure=error=>({title:error.code??error.message,detail:'fixture'});
  ${printer.printNode(ts.EmitHint.Unspecified,captureEntry,parsed)}
  ${printer.printNode(ts.EmitHint.Unspecified,launch,parsed)}
- return{launch:()=>launchRuntime(),busy:()=>runtimePending,entry:()=>selectedEntry};
+ return{launch:()=>launchRuntime(),busy:()=>runtimePending,entry:()=>selectedEntry,peer:()=>relayPeer,
+   loseSource(){liveAuthorityDenied=true;liveAuthorityEpoch++;},navigateFrame(){frameGeneration++;}};
 };`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 
 const appId='app-'+'1'.repeat(32),domainId='dom_'+'2'.repeat(32),actor={accountId:'synthetic_owner',deviceId:'synthetic_device'};
@@ -49,7 +51,7 @@ const scope=(person=actor)=>({schema:'soty.app-host-scope.v1',...person,appId,po
  target:{revision:1,digest:pin.targetDigest,profile:pin.profile,bindingFloor:1},instanceId:'main',runtimeOrigin,runtimeScopeDigest:'8'.repeat(64)});
 const tick=()=>new Promise(setImmediate);
 
-function fixture(t){
+function fixture(t,{realIdentity=false}={}){
  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE local_apps(id TEXT PRIMARY KEY);CREATE TABLE apps_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);');
  db.prepare('INSERT INTO local_apps VALUES(?)').run(appId);db.exec(frameContinuityDdl());db.prepare('INSERT INTO apps_meta VALUES(?,?)').run('frame_continuity',FRAME_CONTINUITY_STORAGE);
  const state={actor,app:{appId,name:'Synthetic'},at:Date.now(),current:true,issued:[],closed:[],messages:[],failed:0,requiresCheck:false,checks:0,dirty:false,closing:false,
@@ -58,7 +60,7 @@ function fixture(t){
  const runtime={querySelector:()=>child?.tag==='iframe'?child:null,setAttribute(){},
    replaceChildren(value){if(child)child.isConnected=false;child=value??null;if(child)child.isConnected=true;}};
  state.node=(tag,text)=>({tag,textContent:text,isConnected:false,setAttribute(){},addEventListener(){},removeEventListener(){},
-   set src(value){this.frameId=byUrl.get(value);},contentWindow:{postMessage(){}}});
+   set src(value){this.frameId=byUrl.get(value);},contentWindow:{postMessage(value){state.identityReplies?.push(value.type);}}});
  const close=async args=>{
    state.closed.push({...args});
    assert.ok(state.closing||runtime.querySelector('iframe')?.frameId!==args.frameId,'a live frame must keep its own lease');
@@ -77,12 +79,29 @@ function fixture(t){
      return{url:state.invalidUrl?'https://foreign.example/':url,entry,runtimeOrigin,launchBinding:pin,hostSession,hostSessionExpiresAt:state.at+120000};
    },abandonHost:close});
  const work={requiresCheck:()=>state.requiresCheck,attach(){},async flush(){state.checks++;if(state.saveError)throw state.saveError;if(state.dirty)throw Error('soty_work_not_saved');}};
- const identity={hasActive:()=>!!state.identityActive,clear:async()=>{await state.onIdentityClose?.();state.identityActive=false;},resume(){}};
+ let stage,identity;
+ if(realIdentity){
+   const listeners=new Set();state.identityRequests=[];state.identityReplies=[];state.identityResumes=0;
+   const view={performance:{now:()=>state.at},setTimeout,clearTimeout,
+     addEventListener(type,listener){if(type==='message')listeners.add(listener);},removeEventListener(type,listener){if(type==='message')listeners.delete(listener);}};
+   const bridge=createRelayIdentityBridge({view,isCurrent:()=>state.current,
+     getFrame:()=>{const peer=stage?.peer(),host=launcher.hostSession()?.hostSession;return runtime.querySelector('iframe')===peer?.frame
+       &&(peer.hostFrameId===null||host?.frameId===peer.hostFrameId)?peer.frame:null;},
+     getEntry:()=>stage?.peer()?.entry,getBinding:()=>stage?.peer()?.binding,getRuntimeScope:()=>stage?.peer()?.runtimeScope,
+     getHostSession:()=>{const value=launcher.hostSession()?.hostSession;return value&&value.frameId===stage?.peer()?.hostFrameId
+       ?{frameId:value.frameId,lease:value.lease,revision:value.revision}:null;},
+     request:async args=>{store.current(args.hostSession,actor,appId);state.identityRequests.push(args);
+       return{schema:'soty.relay-window-grant.v1',grant:'G'.repeat(43),expiresAt:state.at+30000};},
+     close:async()=>{await state.onIdentityClose?.();return{closed:true};}});
+   identity={...bridge,resume(){state.identityResumes++;bridge.resume();}};
+   state.askIdentity=()=>{const frame=runtime.querySelector('iframe');for(const listener of listeners)listener({source:frame?.contentWindow,origin:runtimeOrigin,
+     data:{schema:'soty.relay-window-identity.v1',type:'request',requestId:randomUUID()}});};
+ }else identity={hasActive:()=>!!state.identityActive,clear:async()=>{await state.onIdentityClose?.();state.identityActive=false;},resume(){}};
  const context=vm.createContext({exports:{},isScopedRuntimeProfile,setTimeout,clearTimeout,URL});new vm.Script(compiled).runInContext(context);
- const stage=context.exports.create(launcher,runtime,state,work,identity);
+ stage=context.exports.create(launcher,runtime,state,work,identity);
  const active=()=>db.prepare("SELECT count(*) n FROM app_frame_continuity WHERE state='open'").get().n;
  const current=descriptor=>store.current(descriptor,actor,appId);
- t.after(async()=>{state.closing=true;state.closeError=null;state.releaseClose?.();launcher.dispose();await tick();db.close();});
+ t.after(async()=>{state.closing=true;state.closeError=null;state.onIdentityClose=null;identity.dispose?.();state.releaseClose?.();launcher.dispose();await tick();db.close();});
  return{state,store,db,runtime,launcher,stage,active,current,extra(){const member=store.create(scope());member.claim=store.activateInitial(member.claim);return member;}};
 }
 
@@ -95,6 +114,77 @@ test('twenty actual Stage reopens retire each replaced member only after its fra
    assert.equal(f.runtime.querySelector('iframe').frameId,f.launcher.hostSession().hostSession.frameId);
  }
  assert.equal(f.state.closed.length,19);
+});
+
+for(const refusal of ['save-failed','timeout','new-edit','unknown-work'])test(`real relay: a retained frame gets its exact old lease back after ${refusal}`,async t=>{
+ const f=fixture(t,{realIdentity:true});await f.stage.launch();const frame=f.runtime.querySelector('iframe'),before=f.launcher.hostSession();
+ f.state.askIdentity();await tick();assert.equal(f.state.identityRequests.length,1);
+ f.state.requiresCheck=true;f.state.afterIssue=async()=>{
+   if(refusal==='new-edit')f.state.dirty=true;
+   else if(refusal==='unknown-work')f.state.requiresCheck=false;
+   else f.state.saveError=Error(refusal==='timeout'?'soty_work_timeout':'save_failed');
+ };
+ await f.stage.launch();await tick();
+ assert.equal(f.runtime.querySelector('iframe'),frame);assert.equal(f.launcher.hostSession(),before);f.current(before.hostSession);
+ assert.equal(f.active(),1);assert.equal(f.stage.busy(),false);assert.equal(f.state.closed.length,1);
+ f.state.askIdentity();await tick();assert.equal(f.state.identityRequests.length,2);assert.equal(f.state.identityReplies.at(-1),'grant');
+ assert.deepEqual(f.state.identityRequests.at(-1).hostSession,{frameId:before.hostSession.frameId,lease:before.hostSession.lease,revision:before.hostSession.revision});
+ assert.equal(f.state.identityRequests.at(-1).launchBinding,before.launchBinding);
+});
+
+test('real relay: pending old-host renewal keeps its newest exact proof after a declined cutover',async t=>{
+ const f=fixture(t,{realIdentity:true});await f.stage.launch();const before=f.launcher.hostSession(),old=f.state.issued[0];
+ f.state.askIdentity();await tick();f.state.requiresCheck=true;let successor;
+ f.state.afterIssue=async()=>{
+   successor=f.store.prepare(old.claim);f.store.promote(successor.claim);
+   assert.equal(f.launcher.commitHostSession(before,{...before,hostSession:successor.descriptor}),true);f.state.dirty=true;
+ };
+ await f.stage.launch();await tick();f.state.askIdentity();await tick();
+ const current=f.launcher.hostSession().hostSession;
+ assert.equal(current.frameId,before.hostSession.frameId);assert.equal(current.revision,2);assert.equal(f.active(),1);
+ assert.equal(f.state.identityRequests.length,2);assert.deepEqual(f.state.identityRequests.at(-1).hostSession,
+   {frameId:current.frameId,lease:successor.descriptor.lease,revision:2});
+});
+
+for(const change of ['actor','source','replaced-frame','navigated-frame'])test(`real relay: no retained-identity resume after ${change} departure`,async t=>{
+ const f=fixture(t,{realIdentity:true});await f.stage.launch();f.state.askIdentity();await tick();const resumes=f.state.identityResumes;
+ f.state.afterIssue=async()=>{
+   if(change==='actor')f.state.current=false;
+   else if(change==='source')f.stage.loseSource();
+   else if(change==='navigated-frame')f.stage.navigateFrame();
+   else f.runtime.replaceChildren(f.state.node('iframe'));
+ };
+ await f.stage.launch();await tick();assert.equal(f.state.identityResumes,resumes);
+ f.state.askIdentity();await tick();assert.equal(f.state.identityRequests.length,1);
+});
+
+for(const timing of ['before-admission','after-admission'])test(`real relay: unknown identity close stays paused ${timing} until that close is confirmed`,async t=>{
+ const f=fixture(t,{realIdentity:true});await f.stage.launch();const frame=f.runtime.querySelector('iframe'),before=f.launcher.hostSession(),resumes=f.state.identityResumes;
+ const unknown=()=>{throw Object.assign(Error('unknown_close'),{code:'NETWORK_TIMEOUT'});};
+ if(timing==='before-admission'){f.state.askIdentity();await tick();f.state.onIdentityClose=unknown;}
+ else f.state.afterIssue=async()=>{f.state.askIdentity();await tick();f.state.onIdentityClose=unknown;};
+ await f.stage.launch();await tick();assert.equal(f.state.identityResumes,resumes);
+ assert.equal(f.runtime.querySelector('iframe'),frame);assert.equal(f.launcher.hostSession(),before);f.current(before.hostSession);
+ f.state.askIdentity();await tick();assert.equal(f.state.identityRequests.length,1);
+ f.state.onIdentityClose=null;f.state.afterIssue=null;await f.stage.launch();await tick();
+ assert.notEqual(f.runtime.querySelector('iframe'),frame);f.state.askIdentity();await tick();assert.equal(f.state.identityRequests.length,2);
+});
+
+test('real relay: a transient admission refusal restores the still-authorized old frame',async t=>{
+ const f=fixture(t,{realIdentity:true});await f.stage.launch();f.state.askIdentity();await tick();
+ const before=f.launcher.hostSession();f.state.requestError=Object.assign(Error('busy'),{code:'apps_sessions_busy'});
+ await f.stage.launch();await tick();f.state.askIdentity();await tick();
+ assert.equal(f.state.identityRequests.length,2);assert.equal(f.launcher.hostSession(),before);f.current(before.hostSession);
+});
+
+for(const phase of ['admission','late-save'])for(const denial of [{code:'app_source_changed'},{code:'ACTIVE_PROFILE_CHANGED'},
+ {code:'apps_access_denied',status:403}])test(`real relay: explicit ${denial.code} at ${phase} cannot resume before a live invalidation arrives`,async t=>{
+ const f=fixture(t,{realIdentity:true});await f.stage.launch();f.state.askIdentity();await tick();const resumes=f.state.identityResumes;
+ const error=Object.assign(Error(denial.code),denial);
+ if(phase==='admission')f.state.requestError=error;
+ else{f.state.requiresCheck=true;f.state.afterIssue=async()=>{f.state.saveError=error;};}
+ await f.stage.launch();await tick();assert.equal(f.state.identityResumes,resumes);f.state.askIdentity();await tick();
+ assert.equal(f.state.identityRequests.length,1);
 });
 
 test('a failed or malformed candidate preserves the existing frame and live lease, closing only any unused candidate',async t=>{
