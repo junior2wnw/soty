@@ -14,7 +14,8 @@ const projectId = 'progressive-connect-test', origin = 'https://progressive.fixt
 const reads = ['world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get', 'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list'];
 const backgroundReads = ['call.inbox', 'notifications.status', 'apps.cover.read', 'apps.discussion.inbox','canvas.pages.read','canvas.pages.content','canvas.pages.wait'];
 const coverageReads=['canvas.objects.get','canvas.widgets.get'];
-const effects = ['world.profile.update', 'world.field.put', 'apps.launch', 'contacts.requestAccount', 'apps.directory.search.extra', 'apps.discussion.read'];
+const relayIdentityRead='apps.relay.identity';
+const effects = ['world.profile.update', 'world.field.put', 'apps.launch', 'contacts.requestAccount', 'apps.directory.search.extra', 'apps.discussion.read', 'apps.relay.identity.close', 'apps.relay.identity.extra'];
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const turn = () => new Promise(done => setTimeout(done, 5));
 const outcome = promise => promise.then(value => ({ value }), error => ({ error }));
@@ -33,7 +34,7 @@ async function fixture(t) {
   const state = { traffic: [], executed: [], active: 0, peak: 0, before: null, after: null };
   const service = createConnectService({ databasePath: ':memory:', projectId, allowedOrigins: [origin], extensions: [{
     // Built-in operations must keep their genuine dispatcher and exact argument contracts.
-    operations: new Set([...reads, ...backgroundReads, ...coverageReads, ...effects,'canvas.objects.create','canvas.objects.project'].filter(op => !['contacts.list', 'contacts.requestAccount'].includes(op))),
+    operations: new Set([...reads, ...backgroundReads, ...coverageReads, ...effects,relayIdentityRead,'canvas.objects.create','canvas.objects.project'].filter(op => !['contacts.list', 'contacts.requestAccount'].includes(op))),
     execute({ op, args, actor }) { state.executed.push({ op, accountId: actor.accountId, args: structuredClone(args) }); return state.result?state.result({op,args,actor}):{ operation: op, args, accountId: actor.accountId, deviceId: actor.deviceId }; },
   }], canRequestContact: () => true });
   const clients = [];
@@ -231,6 +232,74 @@ test('mutations retain signed queue order and later metadata admission waits for
   const second = f.primary.extension('world.field.put', {}, f.context), read = f.primary.extension('apps.directory.search', {}, f.context); let early;
   try { await turn(); await turn(); early = f.state.traffic.filter(row => row.signed).map(row => row.op); } finally { release.resolve(); }
   await Promise.all([first, second, read]); assert.deepEqual(early, ['world.profile.update']); assert.deepEqual(f.state.executed.map(row => row.op), ['world.profile.update', 'world.field.put', 'apps.directory.search']);
+});
+
+test('a bound relay identity request completes behind a held mutation without bypassing queued writes or reusing a nonce', async t => {
+  const f=await fixture(t),entered=gate(),release=gate(),proofs=[];
+  f.state.before=async body=>{
+    if(body.op===relayIdentityRead&&body.proof)proofs.push(structuredClone(body));
+    if(body.op==='world.profile.update'&&body.proof){entered.resolve();await release.promise;}
+  };
+  const first=f.primary.extension('world.profile.update',{marker:'first'},f.context);await entered.promise;
+  const second=f.primary.extension('world.field.put',{marker:'second'},f.context);
+  const args={appId:'app-'+'a'.repeat(32)},context={expectedAccountId:f.a};let completed=0;
+  const grants=Array.from({length:3},()=>f.primary.extension(relayIdentityRead,args,context).then(value=>{completed++;return value;}));
+  args.appId='app-'+'b'.repeat(32);context.expectedAccountId=f.b;
+  let early,beforeRelease;try{early=await until(()=>completed===3);beforeRelease=f.state.executed.map(value=>value.op);}finally{release.resolve();}
+  const values=await Promise.all(grants);await Promise.all([first,second]);
+  assert.equal(early,true,'current-window identity must not wait behind an unrelated network-held mutation');
+  assert.deepEqual(beforeRelease,[relayIdentityRead,relayIdentityRead,relayIdentityRead],'only the fixed identity read leaves the mutation queue');
+  assert.deepEqual(f.state.executed.map(value=>value.op),[relayIdentityRead,relayIdentityRead,relayIdentityRead,'world.profile.update','world.field.put']);
+  assert.ok(values.every(value=>value.accountId===f.a&&value.args.appId==='app-'+'a'.repeat(32)),'payload and expected account are captured before asynchronous admission');
+  assert.equal(proofs.length,3);assert.equal(new Set(proofs.map(value=>value.proof.challengeId)).size,3);
+  assert.ok(proofs.every(value=>canonicalJson(value.proof.publicJwk)===canonicalJson(f.signingPublicJwk)));
+  const replay=await f.service.handle({...proofs[0],origin});assert.equal(replay.ok,false);assert.equal(replay.error.code,'challenge_consumed');
+});
+
+for(const phase of ['challenge','response'])test(`relay identity rejects profile ABA during its ${phase} while an unrelated mutation is held`,async t=>{
+  const f=await fixture(t),mutationEntered=gate(),mutationRelease=gate(),entered=gate(),release=gate();
+  f.state.before=async body=>{if(body.op==='world.profile.update'&&body.proof){mutationEntered.resolve();await mutationRelease.promise;}};
+  f.state.after=async body=>{if(phase==='challenge'?body.op==='challenge'&&body.args.operation===relayIdentityRead:body.op===relayIdentityRead&&body.proof){entered.resolve();await release.promise;}};
+  const mutation=outcome(f.primary.extension('world.profile.update',{},f.context));await mutationEntered.promise;
+  const grant=outcome(f.primary.extension(relayIdentityRead,{},f.context));
+  try{await entered.promise;await f.other.switchProfile(f.b);await f.other.switchProfile(f.a);}finally{release.resolve();mutationRelease.resolve();}
+  assert.equal((await grant).error?.code,'ACTIVE_PROFILE_CHANGED');await mutation;
+  assert.equal(f.state.traffic.filter(value=>value.op===relayIdentityRead&&value.signed).length,phase==='challenge'?0:1,'no stale challenge may be signed or stale result applied');
+});
+
+test('relay identity retires an unchanged-account generation before dispatch when another tab changes local state',async t=>{
+  const f=await fixture(t);await f.other.startEnrollment('Other-tab enrollment');
+  const entered=gate(),release=gate();f.store.nextRead(async()=>{entered.resolve();await release.promise;});
+  const grant=outcome(f.primary.extension(relayIdentityRead,{},f.context));await entered.promise;
+  await f.other.discardPendingEnrollment();release.resolve();
+  assert.equal((await grant).error?.code,'ACTIVE_PROFILE_CHANGED');
+  assert.equal(f.state.traffic.some(value=>value.target===relayIdentityRead||value.op===relayIdentityRead),false);
+});
+
+test('relay identity rejects disposal and an account mismatch before a stale signature',async t=>{
+  const f=await fixture(t);await f.other.switchProfile(f.b);
+  await assert.rejects(f.primary.extension(relayIdentityRead,{},f.context),{code:'ACTIVE_PROFILE_CHANGED'});assert.equal(f.state.traffic.length,0);
+  await f.other.switchProfile(f.a);const entered=gate(),release=gate();
+  f.state.after=async body=>{if(body.op==='challenge'&&body.args.operation===relayIdentityRead){entered.resolve();await release.promise;}};
+  const grant=outcome(f.primary.extension(relayIdentityRead,{},f.context));await entered.promise;f.primary.dispose();release.resolve();
+  assert.equal((await grant).error?.code,'CLIENT_DISPOSED');assert.equal(f.state.traffic.some(value=>value.op===relayIdentityRead&&value.signed),false);
+});
+
+test('relay identity requires a valid independent challenge bound to its exact payload',async t=>{
+  const f=await fixture(t);
+  f.state.before=async body=>{if(body.op===relayIdentityRead&&body.proof)body.args.appId='app-'+'b'.repeat(32);};
+  await assert.rejects(f.primary.extension(relayIdentityRead,{appId:'app-'+'a'.repeat(32)},f.context),{code:'challenge_mismatch'});
+  assert.equal(f.state.executed.length,0);
+});
+
+test('unbound relay identity, close and lookalike operations keep the normal serialized queue',async t=>{
+  const f=await fixture(t),entered=gate(),release=gate();
+  f.state.before=async body=>{if(body.op==='world.profile.update'&&body.proof){entered.resolve();await release.promise;}};
+  const mutation=f.primary.extension('world.profile.update',{},f.context);await entered.promise;
+  const calls=[f.primary.extension(relayIdentityRead),f.primary.extension('apps.relay.identity.close',{},f.context),f.primary.extension('apps.relay.identity.extra',{},f.context)];
+  let early;try{await turn();await turn();early=f.state.traffic.filter(value=>value.signed).map(value=>value.op);}finally{release.resolve();}
+  await Promise.all([mutation,...calls]);assert.deepEqual(early,['world.profile.update']);
+  assert.deepEqual(f.state.executed.map(value=>value.op),['world.profile.update',relayIdentityRead,'apps.relay.identity.close','apps.relay.identity.extra']);
 });
 
 test('effect operations and lookalike names do not enter the exact read allowlist', async t => {

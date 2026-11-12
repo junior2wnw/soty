@@ -15,7 +15,7 @@ const parallelMetadataReads = new Set([
   'platform.live.wait',
   'canvas.pages.read', 'canvas.pages.content', 'canvas.pages.wait',
   'canvas.objects.get', 'canvas.widgets.get',
-  'apps.entry.get',
+  'apps.entry.get', 'apps.relay.identity',
   'world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get',
   'apps.catalog', 'apps.list', 'apps.authentication.get', 'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list',
   // Startup polls and visible covers must not hold the field's identity queue.
@@ -542,12 +542,15 @@ export function createClientWithStorage(options, storage) {
       }
       if (expectedAccountId !== undefined && (parallelMetadataReads.has(operation) || detachedVoiceOperations.has(operation))) {
         // Bind one local generation, then let these fixed signed operations leave the state queue.
-        return serialize(async () => {
+        const captureRead = async () => {
           if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
           const localRevision = (await read())?.localRevision;
           const actor = await installation(); assertExpectedAccount(actor, expectedAccountId);
           return { actor, localRevision };
-        }).then(async ({ actor, localRevision }) => {
+        };
+        // A current window's grant must not wait for an unrelated mutation response.
+        // Its read-only snapshot keeps the same account/generation RPC fences below.
+        return (operation === 'apps.relay.identity' ? captureRead() : serialize(captureRead)).then(async ({ actor, localRevision }) => {
           const checkReadCurrent = async () => {
             if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
             const state = await read();
