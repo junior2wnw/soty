@@ -416,7 +416,8 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
         finally{publishPlatformChange({ref:change.target,accountIds:change.accountIds,authorityChanged:true});}
       },
       onAdmission({claimId,target}){if(target.kind==='app')applyInvitationReferral({referrals,claimId});}});
-    if (universalEnabled) universal = createUniversalApps({ dataDir, apps, reviews, actorActive: actor => connect?.isActorActive(actor) === true });
+    if (universalEnabled) universal = createUniversalApps({ dataDir, apps, reviews, actorActive: actor => connect?.isActorActive(actor) === true,
+      admitNewWork: () => Boolean(connectors && !connectors.store.maintenance()) });
     if (humanProfile?.enabled) human = createHumanIdentityService({ databasePath: path.join(dataDir || path.resolve('data'), 'human-identity', 'identity.sqlite'),
       profile: humanProfile, actorActive: actor => connect?.isActorActive(actor) === true,
       withAuthorityFence: action => connect.withAuthorityFence(action),

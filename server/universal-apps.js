@@ -6,11 +6,11 @@ import { createReviewsService } from '../modules/reviews/server/index.mjs';
 import {createUniversalPublicationJournal} from './universal-publication-journal.js';
 
 /** Host composition only: HTTP bodies never instantiate reviewed authority. */
-export function createUniversalApps({ dataDir, apps, actorActive, reviews: reviewedReviews, registryId = 'soty', environmentId = 'production' }) {
+export function createUniversalApps({ dataDir, apps, actorActive, reviews: reviewedReviews, registryId = 'soty', environmentId = 'production', admitNewWork }) {
   const base = dataDir || path.resolve('data');
   const reviews = reviewedReviews ?? createReviewsService({ registryId, environmentId, actorActive, withAppAuthority: apps.withAppAuthority });
   const feedback = createFeedbackService({ databasePath: path.join(base, 'feedback', 'feedback.sqlite'),
-    registryId, environmentId, actorActive, withAppAuthority: apps.withAppAuthority, videoEnabled: true });
+    registryId, environmentId, actorActive, withAppAuthority: apps.withAppAuthority, videoEnabled: true, admitNewWork });
   let registration,publication;
   try {
     registration = createUniversalRegistrationService({ databasePath: path.join(base, 'app-registration', 'registry.sqlite'),

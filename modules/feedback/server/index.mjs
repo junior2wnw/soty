@@ -32,10 +32,11 @@ export const feedbackOperations = Object.freeze(['apps.feedback.context', 'apps.
 /** Verified Connect actor + Apps participant/source fence are supplied by the
  * host. Neither installation IDs nor actor fields from a body grant access. */
 export function createFeedbackService({ databasePath, registryId = 'soty', environmentId = 'production',
-  actorActive, withAppAuthority, withTransaction, now = Date.now, limits = {}, videoEnabled = false } = {}) {
+  actorActive, withAppAuthority, withTransaction, now = Date.now, limits = {}, videoEnabled = false, admitNewWork = () => true } = {}) {
   requireThat(typeof databasePath === 'string' && typeof actorActive === 'function' && typeof withAppAuthority === 'function', 'feedback_host_required', 500);
   requireThat(withTransaction === undefined || typeof withTransaction === 'function', 'feedback_host_required', 500);
   requireThat(typeof videoEnabled === 'boolean', 'feedback_host_required', 500);
+  requireThat(typeof admitNewWork === 'function', 'feedback_host_required', 500);
   id(registryId); id(environmentId);
   exact(limits, ['maxDatabaseBytes'], []);
   const maxDatabaseBytes = limits.maxDatabaseBytes ?? 64 * 1024 * 1024;
@@ -56,7 +57,17 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
   catch (error) { db.close(); throw error; }
   const operations = new Set(feedbackOperations);
   let stageReceipt = null;
-  function writeCapacity() { requireThat(Number(db.prepare('PRAGMA page_count').get().page_count) < maxPages, 'feedback_storage_capacity', 503); }
+  function accepting() {
+    try {
+      const value = admitNewWork();
+      if (value && typeof value.then === 'function') { void Promise.resolve(value).catch(() => {}); return false; }
+      return value === true;
+    } catch { return false; }
+  }
+  function writeCapacity(newWork = false) {
+    requireThat(!newWork || accepting(), 'feedback_busy', 503);
+    requireThat(Number(db.prepare('PRAGMA page_count').get().page_count) < maxPages, 'feedback_storage_capacity', 503);
+  }
   function authenticate(actor) { requireThat(!closed, 'feedback_closed', 503); requireThat(actor && sync(actorActive(actor)) === true, 'feedback_authentication_required', 401); id(actor.accountId); id(actor.deviceId); }
   function transaction(callback, receiptScope = null) {
     requireThat(!db.isTransaction, 'feedback_nested_transaction', 500);
@@ -257,7 +268,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
         return scoped(actor, args, (context, inbox) => {
           const prior = priorReceipt(actor, inbox, args.requestId, intent);
           if (prior.value) { const current = ticket(actor, context, inbox, prior.value.ticketId); return { requestId: args.requestId, replayed: true, receipt: prior.value, ticket: project(current, actor, context) }; }
-          writeCapacity();
+          writeCapacity(true);
           requireThat(db.prepare('SELECT count(*) AS n FROM feedback_tickets WHERE installation_id=?').get(inbox.id).n < FEEDBACK_LIMITS.ticketsPerInstallation, 'feedback_ticket_capacity', 503);
           // The epoch, first video and receipt commit together; old Roots must stay closed afterward.
           if (media.some(item => item.kind === 'video')) db.exec('PRAGMA user_version=2');
@@ -304,7 +315,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
       return scoped(actor, args, (context, inbox) => {
         const row = ticket(actor, context, inbox, args.ticketId), prior = priorReceipt(actor, inbox, args.requestId, intent);
         if (prior.value) return { requestId: args.requestId, replayed: true, receipt: prior.value, ticket: project(row, actor, context) };
-        writeCapacity();
+        writeCapacity(true);
         requireThat(row.revision === args.expectedRevision, 'feedback_revision_conflict', 409);
         if (kind === 'status') requireThat(context.canManage && row.owner_id === context.ownerId, 'feedback_support_required', 403);
         if (kind === 'accept') requireThat(row.reporter_id === actor.accountId && row.status === 'ready_to_check', 'feedback_acceptance_required', 403);
