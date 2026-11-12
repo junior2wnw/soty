@@ -204,9 +204,9 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
   requireValue(typeof accountId === 'string' && accountId.length > 0, 'app_account_required');
   const requestedTarget = normalizeAppLaunchTarget(target);
   let selected = null, initializing = null, disposed = false, popup = null, externalPending = false;
-  let scoped=null;
+  let scoped=null,frameCutover=null;
   function abandon(value) {if(!value)return;const action=value.cleanup??(typeof abandonScoped==='function'?()=>abandonScoped({appId:requestedTarget.appId,handle:value.handle}):null);if(action)void Promise.resolve(action()).catch(()=>{});}
-  function abandonHostProof(value,cleanup){if(!value)return;const action=typeof cleanup==='function'?cleanup:typeof abandonHost==='function'
+  function abandonHostProof(value,cleanup){if(!value||value.frameId===hostSession?.hostSession.frameId)return;const action=typeof cleanup==='function'?cleanup:typeof abandonHost==='function'
     ?()=>abandonHost({appId:requestedTarget.appId,frameId:value.frameId,lease:value.lease,revision:value.revision}):null;
     if(action)void Promise.resolve().then(()=>action()).catch(()=>{});}
   let originalBinding = null, latestBinding = null, bindingPinned = false, acceptedRuntimeOrigin = null, hostSession = null;
@@ -239,6 +239,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     if (url !== undefined && !transport?.external) acceptedRuntimeOrigin = nextOrigin;
   }
   async function issue(initial,external=false,requireSameBinding=false) {
+    const cutover=external?null:frameCutover;
     const scopedBefore=requireSameBinding&&!originalBinding?scoped:null;
     requireValue(!requireSameBinding||!!originalBinding||!!scopedBefore?.source,'app_launch_binding_required');
     const args = parameters(), intended = { appId: args.appId,
@@ -258,7 +259,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
       if(result.hostSession!==undefined)responseHost=validateAppHostSession(result.hostSession);
       if(typeof result.hostSessionCleanup==='function')responseHostCleanup=result.hostSessionCleanup;
       requireValue(!external||result.hostSession===undefined&&result.hostSessionExpiresAt===undefined,'invalid_app_host_session');
-      if (!current()) {abandon(binding);abandonHostProof(responseHost,responseHostCleanup);return null;}
+      if (!current()||cutover&&frameCutover!==cutover) {abandon(binding);abandonHostProof(responseHost,responseHostCleanup);return null;}
       const provenance=result?.launchBinding===undefined?null:validateAppLaunchBinding(result.launchBinding);
       requireValue(!requireSameBinding||(scopedBefore
         ?scoped===scopedBefore&&binding?.profile===scopedBefore.profile&&binding.source
@@ -276,16 +277,21 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
       capture(result?.entry, intended, url, binding, {runtimeOrigin:result.runtimeOrigin,provenance,requireSameBinding,external,hostSession:host});
       if(!bindingPinned&&!external){originalBinding=provenance;bindingPinned=true;}
       if(!external)latestBinding=provenance;
-      if(!external)hostSession=host?Object.freeze({hostSession:host,hostSessionExpiresAt:result.hostSessionExpiresAt,
+      const nextHost=host?Object.freeze({hostSession:host,hostSessionExpiresAt:result.hostSessionExpiresAt,
         entry:selected,launchBinding:provenance,runtimeOrigin:acceptedRuntimeOrigin,slot:Object.freeze({}),
         ...(result.hostSessionCleanup?{cleanup:result.hostSessionCleanup}:{})}):null;
-      if(!external){const previous=scoped;scoped=binding;abandon(previous);}
+      if(!external){
+        if(cutover){
+          const unused=cutover.candidate;cutover.candidate={host:nextHost,scoped:binding};
+          abandon(unused?.scoped);abandonHostProof(unused?.host?.hostSession,unused?.host?.cleanup);
+        }else{hostSession=nextHost;const previous=scoped;scoped=binding;abandon(previous);}
+      }
       return url;
     } catch (error) {
       if (['scoped_embed_source_changed', 'scoped_embed_authority_changed'].includes(error?.code)) sourceEntryChanged = true;
       abandon(binding);
       abandonHostProof(responseHost,responseHostCleanup);
-      if (!current()) return null;
+      if (!current()||cutover&&frameCutover!==cutover) return null;
       // Only a failed admission may resolve an offline location. A successful
       // response with a missing/mismatched DTO must never be guessed later.
       if (initial && !received && typeof resolveEntry === 'function') {
@@ -341,6 +347,28 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     entry: () => current() ? selected : null,
     runtimeOrigin: () => current() ? acceptedRuntimeOrigin ?? selected?.origin ?? null : null,
     hostSession:()=>current()?hostSession:null,
+    /** The frame owner commits only after its old document has actually left. */
+    beginFrameCutover(){
+      requireValue(current()&&!frameCutover,'app_runtime_cutover_pending');
+      const previous={selected,acceptedRuntimeOrigin,originalBinding,latestBinding,bindingPinned};
+      const operation={candidate:null};frameCutover=operation;
+      return Object.freeze({
+        commit(){
+          if(!current()||frameCutover!==operation||!operation.candidate)return false;
+          const oldHost=hostSession,oldScoped=scoped;
+          hostSession=operation.candidate.host;scoped=operation.candidate.scoped;frameCutover=null;
+          abandon(oldScoped);abandonHostProof(oldHost?.hostSession,oldHost?.cleanup);return true;
+        },
+        discard(){
+          if(frameCutover!==operation)return false;frameCutover=null;
+          if(operation.candidate){
+            ({selected,acceptedRuntimeOrigin,originalBinding,latestBinding,bindingPinned}=previous);
+            abandon(operation.candidate.scoped);abandonHostProof(operation.candidate.host?.hostSession,operation.candidate.host?.cleanup);
+          }
+          return true;
+        },
+      });
+    },
     commitHostSession(previous,next){
       if(!current()||hostSession!==previous)return false;
       const session=validateAppHostSession(next.hostSession);
@@ -359,7 +387,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     latestBinding: () => current() ? latestBinding : null,
     launch, resolve,
     isCurrent: current,
-    runtimeProfile:()=>scoped?.profile??null,
+    runtimeProfile:()=>frameCutover?.candidate?frameCutover.candidate.scoped?.profile??null:scoped?.profile??null,
     scopedCapture:()=>current()&&scoped?Object.freeze({handle:scoped.handle,source:scoped.source,slot:scoped.slot,...(scoped.frameId?{frameId:scoped.frameId,entry:selected}:{})}):null,
     // Presentation only. Opening still performs its own fresh signed read.
     async canOpenExternal() { return current() && (!needsNativeEntry() || !!await readNativeEntry()); },
@@ -409,6 +437,6 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
         throw error;
       } finally { popup = null; externalPending = false; }
     },
-    dispose() {if(disposed)return;disposed = true; selected = null;const host=hostSession;hostSession=null;abandonHostProof(host?.hostSession,host?.cleanup);close(popup); popup = null;const previous=scoped;scoped=null;abandon(previous); },
+    dispose() {if(disposed)return;const pending=frameCutover?.candidate;frameCutover=null;abandon(pending?.scoped);abandonHostProof(pending?.host?.hostSession,pending?.host?.cleanup);disposed = true; selected = null;const host=hostSession;hostSession=null;abandonHostProof(host?.hostSession,host?.cleanup);close(popup); popup = null;const previous=scoped;scoped=null;abandon(previous); },
   };
 }

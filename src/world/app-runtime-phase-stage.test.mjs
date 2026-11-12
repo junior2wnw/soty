@@ -42,7 +42,7 @@ exports.harness=(host,options,state)=>{
  ${voiceCode}
  ${declaration('messageOwner').replace(/^const /u,'let ')}
  ${fn('showMessage')}
- const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},canOpenExternal:async()=>true,runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),runtimeOrigin(){return this.entry().origin;},hostSession:()=>null,binding:()=>null,latestBinding:()=>null,scopedCapture:()=>state.binding??null};
+ const launcher={beginFrameCutover:()=>({commit:()=>true,discard:()=>true}),launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},canOpenExternal:async()=>true,runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),runtimeOrigin(){return this.entry().origin;},hostSession:()=>null,binding:()=>null,latestBinding:()=>null,scopedCapture:()=>state.binding??null};
  let relayPeer=null;
  const relayIdentity=createRelayIdentityBridge({view,isCurrent:current,
    getFrame:()=>runtime.querySelector('iframe')===relayPeer?.frame?relayPeer.frame:null,

@@ -35,6 +35,8 @@ export function createAppLauncher(options: {
   /** Accepted browser peer only; never substitutes canonical app/Source entry. */
   runtimeOrigin(): string | null;
   hostSession():AppHostSessionBinding|null;
+  /** Stage transport only; commit after replacing/removing the old physical frame. */
+  beginFrameCutover():{commit():boolean;discard():boolean};
   commitHostSession(previous:AppHostSessionBinding,next:AppHostSessionState):boolean;
   binding(): AppLaunchBinding | null;
   latestBinding(): AppLaunchBinding | null;

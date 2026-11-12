@@ -787,7 +787,9 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     const alive = () => current() && authorityEpoch===liveAuthorityEpoch && (!automatic || recoveryCurrent());
     if (!alive() || runtimePending) return;
     const existingFrame = runtime.querySelector('iframe');
-    if (existingFrame && appWork.requiresCheck()) {
+    const previousFrameGeneration = frameGeneration, checkedWork = !!existingFrame && appWork.requiresCheck();
+    let frameCutover: ReturnType<typeof launcher.beginFrameCutover> | null = null;
+    if (checkedWork) {
       runtimePending = true;
       try { await appWork.flush(); }
       catch { if (current()) showMessage('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.'); return; }
@@ -822,6 +824,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         runtime.replaceChildren(emptyState('Голосовое приложение недоступно на этом адресе',
           'Откройте его в основном адресе Сот. Профиль и сохранённые данные остаются на прежних адресах.',undefined,'app'));return;
       }
+      frameCutover = launcher.beginFrameCutover();
       const url = await launcher.launch({ requireSameBinding: automatic });
       if (!url || !alive()) return;
       captureEntry();
@@ -836,14 +839,22 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       runtimeTrace.attach(frame,browserOrigin);
       frame.src = url;
       if(nativeVoice?.mount.appId===app.appId&&nativeVoice.mount.parentOrigin===view.location.origin&&new URL(url).origin===nativeVoice.mount.frameOrigin&&!isScopedRuntimeProfile(launcher.runtimeProfile()))frame.allow='microphone '+nativeVoice.mount.frameOrigin+'; autoplay '+nativeVoice.mount.frameOrigin;
-      frameGeneration++;
-      lastRuntimeLaunchAt=Date.now();
-      if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:browserOrigin,binding:launcher.binding()});
-      watchRuntimeDisplay(frame);
       if (relayIdentity.hasActive()) { await relayIdentity.clear(); if (!alive()) return; }
+      if (existingFrame && (checkedWork || appWork.requiresCheck())) {
+        try {
+          if (!appWork.requiresCheck()) throw Error('soty_work_unavailable');
+          await appWork.flush();
+        } catch { if (current()) showMessage('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.'); return; }
+        if (!alive()) return;
+      }
+      if (existingFrame && (runtime.querySelector('iframe') !== existingFrame || frameGeneration !== previousFrameGeneration)) return;
       const peerEntry = launcher.entry(), peerBinding = launcher.latestBinding();
       hostRenewal?.dispose();hostRenewal=null;
       runtime.replaceChildren(frame);
+      if (!frameCutover.commit()) throw Error('app_runtime_cutover_pending');
+      frameGeneration++;lastRuntimeLaunchAt=Date.now();
+      if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:browserOrigin,binding:launcher.binding()});
+      watchRuntimeDisplay(frame);
       if(options.presentation==='widget')widgetContext=createGlassWidgetHost(frame,{origin:browserOrigin,initialMode:widgetMode,view,
         isCurrent:()=>current()&&runtime.querySelector('iframe')===frame,
         onReset:()=>{delete screen.dataset.widgetContext;},
@@ -910,6 +921,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!currentEntryRetry.hidden) recoveryRetry.hidden = true;
       if (automatic) recoveryRetry.hidden = false;
     } finally {
+      frameCutover?.discard();
       if (current()) { runtimePending = false; refresh.disabled = false; recoveryRetry.disabled = false; ensureDiscussion(); showPanel(); }
     }
   }
