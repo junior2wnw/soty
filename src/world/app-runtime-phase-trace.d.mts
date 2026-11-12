@@ -6,10 +6,12 @@ export interface RuntimeFrameSample { connected:boolean;hasArea:boolean;ancestor
 export interface RuntimePhaseSnapshot {
   schema:'soty.runtime-phase-trace.v1';surface:'main';observation:'partial';truncated:boolean;
   events:{t100ms:number;phase:RuntimePhase}[];view:RuntimeFrameSample|null;
+  requests:{t100ms:number;method:'POST'|'GET';status:number|null;elapsed100ms:number;headersReceived:boolean;jsonParsed:boolean;
+    errorName:'none'|'http'|'TypeError'|'SyntaxError'|'AbortError'|'other';signalAborted:boolean}[];
 }
 export function sampleRuntimeFrame(frame:HTMLIFrameElement,view:Window):RuntimeFrameSample;
-export function createAppRuntimePhaseTrace(options:{view:Window;isCurrent():boolean;getFrame():HTMLIFrameElement|null;getEpoch():number;canSample?():boolean;onChange?():void}):{
-  arm():boolean;reset():void;beginManual():boolean;attach(frame:HTMLIFrameElement,origin:string):void;inserted():void;
+export function createAppRuntimePhaseTrace(options:{view:Window;appId?:string;isCurrent():boolean;getFrame():HTMLIFrameElement|null;getEpoch():number;canSample?():boolean;onChange?():void}):{
+  arm():boolean;reset():void;beginManual():boolean;beginReload():boolean;attach(frame:HTMLIFrameElement,origin:string):void;inserted():void;
   launchFailed():void;sample():void;snapshot():RuntimePhaseSnapshot|null;
   state():'empty'|'armed'|'limited'|'recording';copy():Promise<boolean>;clear():void;dispose():void;
 };

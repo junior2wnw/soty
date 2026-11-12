@@ -32,7 +32,7 @@ exports.harness=(host,options,state)=>{
  let liveAuthorityEpoch=0,liveAuthorityDenied=false;
  let widgetContext=null,widgetMode='interactive',hostRenewal=null;const screen={dataset:{}};
  let diagnosticOpen=false,closeDiagnostic=null,renderDiagnostic=null,routeGeneration=0,intent={},presentationVersion=0;
- const presented=()=>state.current,current=()=>state.current,matches=()=>true,app={appId:'app-synthetic',name:'Synthetic'},panel=host.panel;
+ const presented=()=>state.current,current=()=>state.current,matches=()=>true,app={appId:'app-'+'a'.repeat(32),name:'Synthetic'},panel=host.panel;
  const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},external={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
  const stopAssist=()=>{state.calls.stopAssist++;},captureEntry=()=>{state.calls.captureEntry++;},ensureDiscussion=()=>{},showPanel=()=>{},applyPresentation=async()=>{},discussion=null;
  const closeMore=()=>{};
@@ -78,10 +78,10 @@ class Node {
  set src(value){this.state.order.push('src');this.privateSrc=value;}
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
-function fixture(presentation){
+function fixture(presentation,storage){
  const state={current:true,recoveryCurrent:true,verified:[],calls:{launch:0,bind:0,stopAssist:0,captureEntry:0},messages:[],order:[],probes:[],copies:[],dialogs:[],reads:[],draft:'retained discussion draft'};
  let now=0,next=0;const tasks=new Map(),doc=new Node('document',state),view=new Node('window',state),runtime=new Node('runtime',state);
- Object.assign(view,{document:doc,performance:{now:()=>now},crypto:{randomUUID:()=> 'a'.repeat(32)},getComputedStyle:n=>n.style,navigator:{clipboard:{writeText:async text=>state.copies.push(text)}},
+ Object.assign(view,{document:doc,performance:{now:()=>now},...(storage?{sessionStorage:storage}:{}),crypto:{randomUUID:()=> 'a'.repeat(32)},getComputedStyle:n=>n.style,navigator:{clipboard:{writeText:async text=>state.copies.push(text)}},
    setTimeout:(fn,ms)=>{const id=++next;tasks.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>tasks.delete(id)});
  doc.elementsFromPoint=()=>[runtime.querySelector('iframe')];doc.activeElement=null;
  const button=(text,_icon,_cls,action)=>Object.assign(new Node('button',state),{textContent:text,action});
@@ -105,6 +105,17 @@ test('actual manual buttons record one ordinary launch; initial/automatic/pendin
  // the explicit presentation contract, not runtime tracing or Source rights.
  assert.deepEqual(widget.state.probes.map(p=>p.data.schema),['glass-ui.widget-context.v1']);assert.equal(widget.state.probes[0].data.mode,'interactive');
  const failed=fixture();failed.state.failure=new Error('synthetic launch refusal');failed.h.refresh();await flush();assert.deepEqual(failed.state.verified,[false]);assert.equal(failed.state.calls.launch,1);assert.equal(failed.h.frame(),null);
+});
+
+test('actual initial stage launch resumes an explicit cold arm once; automatic recovery and widget launches cannot consume it',async()=>{
+  const values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  const previous=fixture(undefined,storage);previous.h.api.arm();previous.h.api.dispose();
+  const automatic=fixture(undefined,storage);await automatic.h.automatic();assert.equal(automatic.h.api.snapshot(),null);assert.equal(values.size,1);
+  const widget=fixture('widget',storage);await widget.h.initial();assert.equal(widget.h.api.snapshot(),null);assert.equal(values.size,1);
+  const cold=fixture(undefined,storage);await cold.h.initial();cold.tick(0);
+  assert.equal(cold.state.calls.launch,1);assert.equal(cold.h.api.snapshot().events[0].phase,'root_launch');assert.equal(values.size,0);
+  assert.ok(cold.state.probes.some(value=>value.data.schema==='soty.runtime-phase-watch.v2'));
+  const next=fixture(undefined,storage);await next.h.initial();assert.equal(next.h.api.snapshot(),null);assert.equal(next.state.calls.launch,1);
 });
 
 test('actual launch wiring observes before src/insert and preserves existing load/error/timeout behavior and drafts',async()=>{
@@ -135,7 +146,7 @@ test('actual stage distinguishes load from a correlated Boot reply and preserves
 for(const missedFirstProbe of [false,true])test(`actual stage exposes ready-to-failed Boot without replay or frame replacement; initial watch ${missedFirstProbe?'lost':'delivered'}`,async()=>{
  const f=fixture(),source={id:'app.selected-workspace',version:1,digest:'a'.repeat(64)},expiresAt=Date.now()+120000;
  f.state.binding={source,slot:{},handle:'synthetic-slot'};
- f.state.context={ready:true,appId:'app-synthetic',scopedSource:source,target:{revision:1,digest:'b'.repeat(64)},expiresAt,
+ f.state.context={ready:true,appId:'app-'+'a'.repeat(32),scopedSource:source,target:{revision:1,digest:'b'.repeat(64)},expiresAt,
   sourceSession:{ready:true,accessExpiresAt:expiresAt,sessionExpiresAt:expiresAt}};
  await f.h.initial();const frame=f.h.frame();
  if(missedFirstProbe){f.tick(0);assert.equal(f.state.probes.filter(p=>p.data.schema==='soty.runtime-display-watch.v1').length,1);}

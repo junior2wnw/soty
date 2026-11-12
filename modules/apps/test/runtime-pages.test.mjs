@@ -66,6 +66,60 @@ const diagnosticPhases = env => diagnosticMessages(env).map(x=>x.data.phase);
 const phaseWatchV2 = (env,watchId='a'.repeat(32),extra={}) => env.emit('message',{
   source:env.parent,origin:'https://soty.example',ports:[],data:{schema:'soty.runtime-phase-watch.v2',watchId},...extra});
 const correlatedMessages = env => env.parentMessages.filter(x=>x.data.schema==='soty.runtime-phase.v2');
+const requestMessages = env => env.parentMessages.filter(x=>x.data.schema==='soty.runtime-session-request.v1');
+
+for(const scenario of ['network','http','json','abort'])test(`ordinary session request observations distinguish ${scenario} without retry or private payload`,async()=>{
+  const held=pending(),secret='PRIVATE_URL_TICKET_COOKIE_BODY_ERROR',watchId='a'.repeat(32);
+  const env=browser(renderBootPage({shellUrl}),{framed:true,responses:[(_url,options)=>{
+    if(scenario==='abort')options.signal.addEventListener('abort',()=>held.reject(Object.assign(Error(secret),{name:'AbortError'})));
+    return held.promise;
+  }]});
+  phaseWatchV2(env,watchId);env.elapse(scenario==='abort'?10000:349);
+  if(scenario==='network')held.reject(new TypeError(secret));
+  if(scenario==='http')held.resolve(response({ok:false,error:secret},false));
+  if(scenario==='json')held.resolve({ok:true,status:200,json:async()=>{throw new SyntaxError(secret);}});
+  if(scenario==='abort')[...env.timers.values()].find(value=>value.delay===10000).callback();
+  await flush();
+  const messages=requestMessages(env);assert.equal(messages.length,1);
+  assert.deepEqual(messages[0],{origin:'https://soty.example',data:{schema:'soty.runtime-session-request.v1',watchId,
+    method:'POST',status:scenario==='http'?403:scenario==='json'?200:null,elapsed100ms:scenario==='abort'?100:3,
+    headersReceived:['http','json'].includes(scenario),jsonParsed:scenario==='http',
+    errorName:{network:'TypeError',http:'http',json:'SyntaxError',abort:'AbortError'}[scenario],signalAborted:scenario==='abort'}});
+  assert.equal(env.calls.length,1);assert.equal(env.navigations.length,0);assert.notEqual(env.element('status-title').textContent,'');
+  const safe=JSON.stringify(messages);for(const value of[secret,ticket,sessionCheck,'/_soty/session'])assert.equal(safe.includes(value),false);
+  assert.deepEqual(env.forbidden,{storageReads:0,telemetryCalls:0});
+});
+
+test('ordinary v2 watch drains at most the existing POST/GET observations after a late handshake; unarmed flow is identical',async()=>{
+  const run=async armed=>{
+    const cookie=pending(),env=browser(renderBootPage({shellUrl}),{framed:true,responses:[response({ok:true,entryPath:'/',sessionCheck}),()=>cookie.promise]});
+    await flush();assert.equal(env.parentMessages.length,0);assert.equal(env.calls.length,2);
+    if(armed){phaseWatch(env);assert.equal(env.parentMessages.length,0);phaseWatchV2(env);}
+    cookie.resolve(response({ok:true,sessionCheck}));await flush();
+    if(armed){const messages=requestMessages(env);assert.deepEqual(messages.map(value=>value.data.method),['POST','GET']);
+      for(const {data}of messages)assert.deepEqual({...data,watchId:undefined,method:undefined},
+        {schema:'soty.runtime-session-request.v1',watchId:undefined,method:undefined,status:200,elapsed100ms:0,headersReceived:true,jsonParsed:true,errorName:'none',signalAborted:false});}
+    else assert.equal(env.parentMessages.length,0);
+    assert.deepEqual(env.forbidden,{storageReads:0,telemetryCalls:0});
+    return{calls:env.calls.map(({url,options})=>({url,method:options.method,body:options.body,headers:structuredClone(options.headers),credentials:options.credentials,cache:options.cache,redirect:options.redirect,aborted:options.signal.aborted})),
+      navigations:env.navigations,title:env.element('status-title').textContent};
+  };
+  assert.deepEqual(await run(true),await run(false));
+});
+
+test('ordinary request observations reject wrong or stale peers and share the existing 24-message/120-second bound',async()=>{
+  const held=pending(),env=browser(renderBootPage({shellUrl}),{framed:true,responses:[()=>held.promise]});
+  for(const extra of[{source:{}},{origin:'https://other.example'},{ports:[{}]},
+    {data:{schema:'soty.runtime-phase-watch.v2',watchId:'a'.repeat(32),url:'PRIVATE'}}])phaseWatchV2(env,'a'.repeat(32),extra);
+  assert.equal(env.parentMessages.length,0);phaseWatchV2(env);const count=env.parentMessages.length;
+  phaseWatchV2(env,'b'.repeat(32));assert.equal(env.parentMessages.length,count);
+  for(let index=0;index<40;index++)phaseWatchV2(env);
+  assert.equal(env.parentMessages.length,24);held.reject(new TypeError('PRIVATE'));await flush();
+  assert.equal(env.parentMessages.length,24);assert.equal(env.calls.length,1);
+  const timeout=pending(),expired=browser(renderBootPage({shellUrl}),{framed:true,responses:[()=>timeout.promise]});
+  phaseWatchV2(expired);expired.elapse(120001);timeout.reject(new TypeError('PRIVATE'));await flush();
+  assert.equal(expired.parentMessages.length,1);assert.equal(expired.calls.length,1);
+});
 
 const scopedResponses = (issued = {}) => [
   response({ok:true,entryPath:'/embed',sessionCheck,frame:'F'.repeat(43),scopedRequestId:'R'.repeat(43),...issued}),

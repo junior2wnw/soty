@@ -9,7 +9,7 @@ class Events {
   emit(type,event={}) { for (const fn of [...(this.listeners.get(type)??[])]) fn(event); }
   count() { return [...this.listeners.values()].reduce((n,set)=>n+set.size,0); }
 }
-function fixture() {
+function fixture({storage,appId}={}) {
   let now=0,next=0,alive=true,epoch=0,sampling=true,watch=0;
   const tasks=new Map(),probes=[],copies=[];
   const doc=new Events(),view=new Events(),frame=new Events();
@@ -18,11 +18,11 @@ function fixture() {
     contentWindow:{postMessage:(data,origin)=>probes.push({data,origin})}});
   let selected=frame,hit=frame;
   Object.assign(doc,{elementsFromPoint:()=>[hit,frame]});
-  Object.assign(view,{document:doc,performance:{now:()=>now},getComputedStyle:node=>node.style,
+  Object.assign(view,{document:doc,performance:{now:()=>now},getComputedStyle:node=>node.style,...(storage?{sessionStorage:storage}:{}),
     crypto:{randomUUID:()=> (++watch).toString(16).padStart(32,'0')},
     navigator:{clipboard:{writeText:async text=>{copies.push(text);}}},
     setTimeout:(fn,ms)=>{const id=++next;tasks.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>tasks.delete(id)});
-  const api=createAppRuntimePhaseTrace({view,isCurrent:()=>alive,getFrame:()=>selected,getEpoch:()=>epoch,canSample:()=>sampling});
+  const api=createAppRuntimePhaseTrace({view,appId,isCurrent:()=>alive,getFrame:()=>selected,getEpoch:()=>epoch,canSample:()=>sampling});
   const tick=ms=>{const target=now+ms;while(true){const entry=[...tasks].sort((a,b)=>a[1].at-b[1].at)[0];if(!entry||entry[1].at>target)break;tasks.delete(entry[0]);now=entry[1].at;entry[1].fn();}now=target;};
   const hint=(phase='boot_cookie_pending',extra={})=>view.emit('message',{source:frame.contentWindow,origin:'https://frame.example',ports:[],data:{schema:'soty.runtime-phase.v2',watchId:watch.toString(16).padStart(32,'0'),phase},...extra});
   const start=()=>{api.arm();api.reset();assert.equal(api.beginManual(),true);api.attach(frame,'https://frame.example');api.inserted();};
@@ -31,6 +31,49 @@ function fixture() {
     replace:()=>{selected=new Events();},nextEpoch:()=>epoch++,leave:()=>{alive=false;},hit:node=>{hit=node;},pause:()=>{sampling=false;},resume:()=>{sampling=true;}};
 }
 const phases=f=>f.api.snapshot()?.events.map(x=>x.phase)??[];
+
+test('an explicit same-app arm survives Root disposal and is consumed once by the next cold initial launch',()=>{
+  const values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  const appId='app-'+'a'.repeat(32),first=fixture({storage,appId});
+  first.api.arm();assert.equal(values.size,1);const persisted=JSON.parse([...values.values()][0]);
+  assert.deepEqual(Object.keys(persisted).sort(),['appId','expiresAt','schema']);assert.equal(persisted.appId,appId);
+  first.api.dispose();assert.equal(values.size,1);
+  const foreign=fixture({storage,appId:'app-'+'b'.repeat(32)});assert.equal(foreign.api.beginReload(),false);assert.equal(values.size,1);
+  const cold=fixture({storage,appId});assert.equal(cold.api.beginReload(),true);assert.equal(values.size,0);
+  assert.deepEqual(phases(cold),['root_launch']);assert.equal(cold.api.beginReload(),false);
+  const again=fixture({storage,appId});assert.equal(again.api.beginReload(),false);
+});
+
+test('cold arm expires, clears explicitly, tolerates denied storage and never persists an observation',()=>{
+  const values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},appId='app-'+'a'.repeat(32);
+  const f=fixture({storage,appId});f.api.arm();f.api.clear();assert.equal(values.size,0);
+  f.api.arm();const key=[...values.keys()][0],value=JSON.parse(values.get(key));value.expiresAt=Date.now()-1;values.set(key,JSON.stringify(value));
+  const expired=fixture({storage,appId});assert.equal(expired.api.beginReload(),false);assert.equal(values.size,0);
+  f.api.arm();f.api.beginManual();assert.equal(values.size,0);f.api.attach(f.frame,'https://frame.example');f.api.inserted();f.hint();assert.equal(values.size,0);
+  const denied=fixture({appId});Object.defineProperty(denied.view,'sessionStorage',{get(){throw Error('PRIVATE');}});
+  assert.equal(denied.api.arm(),true);assert.equal(denied.api.beginManual(),true);assert.equal(denied.api.snapshot().events[0].phase,'root_launch');
+});
+
+const requestData=(f,extra={})=>({schema:'soty.runtime-session-request.v1',watchId:f.watchId(),method:'POST',status:null,elapsed100ms:3,
+  headersReceived:false,jsonParsed:false,errorName:'TypeError',signalAborted:false,...extra});
+
+test('request observations accept only closed safe fields from the current frame/origin/watch and export fresh bounded copies',async()=>{
+  const f=fixture();f.start();let reads=0;
+  const getter=requestData(f);Object.defineProperty(getter,'errorName',{get(){reads++;throw Error('PRIVATE_URL');}});
+  for(const data of[getter,requestData(f,{url:'PRIVATE'}),requestData(f,{watchId:'f'.repeat(32)}),requestData(f,{method:'DELETE'}),
+    requestData(f,{elapsed100ms:1201}),requestData(f,{status:0}),requestData(f,{jsonParsed:true}),requestData(f,{errorName:'PRIVATE_ERROR'}),
+    requestData(f,{signalAborted:'false'}),requestData(f,{errorName:new String('TypeError')})])f.hint(undefined,{data});
+  for(const extra of[{source:{}},{origin:'https://other.example'},{ports:[{}]}])f.hint(undefined,{data:requestData(f),...extra});
+  assert.equal(reads,0);assert.deepEqual(f.api.snapshot().requests,[]);
+  f.hint(undefined,{data:requestData(f)});f.hint(undefined,{data:requestData(f)});
+  f.hint(undefined,{data:requestData(f,{method:'GET',status:200,headersReceived:true,jsonParsed:false,errorName:'SyntaxError'})});
+  assert.equal(f.api.snapshot().requests.length,2);assert.equal(phases(f).filter(value=>value==='boot_document_ack').length,1);
+  const result=f.api.snapshot();result.requests[0].errorName='PRIVATE';assert.equal(await f.api.copy(),true);
+  assert.doesNotMatch(f.copies[0],/PRIVATE|https:|watchId|appId|ticket|cookie|requestId/u);
+  for(let index=0;index<50;index++)f.hint(index%2?'boot_cookie_pending':'boot_admission_pending');
+  assert.equal(f.api.snapshot().events.length+f.api.snapshot().requests.length,24);assert.equal(f.api.snapshot().truncated,true);
+  assert.equal(f.view.count()+f.doc.count()+f.frame.count(),0);f.tick(120001);assert.equal(f.api.snapshot(),null);
+});
 
 test('off and arm are inert; initial/automatic reset does not consume the manual arm',async()=>{
   const f=fixture();f.api.attach(f.frame,'https://frame.example');f.api.inserted();f.hint();f.tick(20_000);

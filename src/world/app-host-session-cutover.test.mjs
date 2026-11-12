@@ -32,7 +32,7 @@ const compiled=ts.transpileModule(`exports.create=(launcher,runtime,state,appWor
  const message={textContent:''},showMessage=value=>{message.textContent=value;state.messages.push(value);};
  const stopAssist=()=>{},resetRuntimeDisplay=()=>{},ensureDiscussion=()=>{},showPanel=()=>{},checkExternalAvailability=()=>{state.externalReads++;};
  const voiceOriginAllowed=()=>true,resolveVoice=async()=>{},watchRuntimeDisplay=()=>{};
- const runtimeTrace={beginManual(){},attach(){},inserted(){},launchFailed(){state.failed++;}};
+ const runtimeTrace={beginManual(){},beginReload(){return false;},attach(){},inserted(){},launchFailed(){state.failed++;}};
  const recovery={bind(){}},createAppHostSessionRenewal=()=>({start(){},dispose(){}});
  const el=(tag,_class,text)=>state.node(tag,text),button=()=>({}),emptyState=()=>state.node('error');
  const appLaunchFailure=error=>({title:error.code??error.message,detail:'fixture'});

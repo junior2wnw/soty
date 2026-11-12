@@ -153,16 +153,21 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
   // This starts only after the one-time fragment has already been cleared.
   const diagnostic = (() => {
     const phases = ['boot_admission_pending','boot_cookie_pending','boot_continuation_pending','boot_navigation','boot_failed','boot_inactive'];
-    let phase = null, parentOrigin = '', protocol = '', watchId = '', sent = 0, deadline = 0, timeout, active = config.mode === 'boot' && config.scoped === true && !config.renewal && !topLevel;
-    const send = () => {
-      if (!active || !parentOrigin || !phase || sent >= 24) return;
+    const requests = []; let requestCount = 0;
+    let phase = null, parentOrigin = '', protocol = '', watchId = '', sent = 0, deadline = 0, timeout,
+      active = config.mode === 'boot' && !config.renewal && !config.hostRenewal && !topLevel;
+    const emit = data => {
+      if (!active || !parentOrigin || sent >= 24) return;
       if (performance.now() >= deadline) { stop(); return; }
       sent++;
-      try { window.parent.postMessage(protocol === 'soty.runtime-phase-watch.v2'
-        ? {schema:'soty.runtime-phase.v2',watchId,phase} : {schema:'soty.runtime-phase.v1',phase},parentOrigin); } catch { /* No payload or action. */ }
+      try { window.parent.postMessage(data,parentOrigin); } catch { /* No payload or action. */ }
       if (sent >= 24) stop();
     };
-    const stop = () => { active = false; phase = null; parentOrigin = ''; protocol = ''; watchId = ''; clearTimeout(timeout); window.removeEventListener('message',receive); };
+    const send = () => { if (phase) emit(protocol === 'soty.runtime-phase-watch.v2'
+      ? {schema:'soty.runtime-phase.v2',watchId,phase} : {schema:'soty.runtime-phase.v1',phase}); };
+    const flushRequests = () => { while (active && parentOrigin && protocol === 'soty.runtime-phase-watch.v2' && requests.length)
+      emit({schema:'soty.runtime-session-request.v1',watchId,...requests.shift()}); };
+    const stop = () => { active = false; requests.length = 0; phase = null; parentOrigin = ''; protocol = ''; watchId = ''; clearTimeout(timeout); window.removeEventListener('message',receive); };
     const receive = event => {
       if (!active || offPage || navigated || event.source !== window.parent || !config.parentOrigins.includes(event.origin) || event.ports?.length) return;
       if (deadline && performance.now() >= deadline) { stop(); return; }
@@ -171,17 +176,18 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
         if (!data || typeof data !== 'object' || Array.isArray(data)) return;
         const keys = Reflect.ownKeys(data), schema = Object.getOwnPropertyDescriptor(data,'schema');
         if (!schema || !Object.hasOwn(schema,'value') || parentOrigin && parentOrigin !== event.origin) return;
-        const legacy = schema.value === 'soty.runtime-phase-watch.v1' && keys.length === 1 && keys[0] === 'schema';
+        const legacy = config.scoped === true && schema.value === 'soty.runtime-phase-watch.v1' && keys.length === 1 && keys[0] === 'schema';
         const watch = Object.getOwnPropertyDescriptor(data,'watchId');
         const correlated = schema.value === 'soty.runtime-phase-watch.v2' && keys.length === 2 && keys.includes('schema') && keys.includes('watchId')
           && watch && Object.hasOwn(watch,'value') && typeof watch.value === 'string' && /^[a-f0-9]{32}$/.test(watch.value);
         if (!legacy && !correlated || protocol && (protocol !== schema.value || correlated && watchId !== watch.value)) return;
         if (!parentOrigin) { parentOrigin = event.origin; protocol = schema.value; watchId = correlated ? watch.value : ''; deadline = performance.now()+120_000; timeout = setTimeout(stop,120_000); }
-        send(); if (sent >= 24) stop();
+        send(); flushRequests(); if (sent >= 24) stop();
       } catch { /* Ignore malformed input without reading or serializing it. */ }
     };
     if (active) window.addEventListener('message',receive);
     return { phase(next) { bootDisplay.phase(next); if (active && phases.includes(next)) { phase = next; send(); } },
+      request(value) { if (active && requestCount < 2) { requestCount++; requests.push(value); flushRequests(); } },
       close() { bootDisplay.close(); if (active) { phase = 'boot_inactive'; send(); stop(); } } };
   })();
   let recoveryParentOrigin = '', recoveryNonce = '', recoveryApp = '', recoveryFailure = false, recoverySent = false;
@@ -226,6 +232,7 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
   async function requestJson(method, body, sessionCheck, frame) {
     const controller = new AbortController(); controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 10_000);
+    const started = performance.now(), observation = {method,status:null,elapsed100ms:0,headersReceived:false,jsonParsed:false,errorName:'none',signalAborted:false};
     try {
       const headers = { Accept: 'application/json' };
       if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -233,10 +240,20 @@ function pageClient(config, allowPath, createDisplay, allowScopedPath) {
       if (frame !== undefined) headers['X-Soty-Frame'] = frame;
       const response = await fetch('/_soty/session', { method, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
         headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controller.signal });
+      observation.headersReceived = true; observation.status = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? response.status : null;
       const value = await response.json();
-      if (!response.ok || !value || typeof value !== 'object' || value.ok !== true) throw { code: value?.error, responseFailed: true, status: response.status };
+      observation.jsonParsed = true;
+      if (!response.ok || !value || typeof value !== 'object' || value.ok !== true) { observation.errorName = 'http'; throw { code: value?.error, responseFailed: true, status: response.status }; }
       return value;
-    } finally { clearTimeout(timeout); controllers.delete(controller); }
+    } catch (error) {
+      if (observation.errorName === 'none') { try { observation.errorName = ['TypeError','SyntaxError','AbortError'].includes(error?.name) ? error.name : 'other'; } catch { observation.errorName = 'other'; } }
+      throw error;
+    } finally {
+      clearTimeout(timeout); controllers.delete(controller);
+      observation.elapsed100ms = Math.min(1200,Math.max(0,Math.round((performance.now()-started)/100)));
+      observation.signalAborted = controller.signal.aborted;
+      if (method === 'POST' || method === 'GET') diagnostic.request(observation);
+    }
   }
   function navigate(path, currentGeneration) {
     if (offPage || generation !== currentGeneration) { clearNativeContinue(); return; }

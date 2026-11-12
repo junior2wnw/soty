@@ -16,14 +16,14 @@ const waitUntil = async predicate => {
   assert.fail('HTTP fixture did not settle');
 };
 
-async function fixture(t,{deny=false}={}) {
+async function fixture(t,{deny=false,scoped=true}={}) {
   const calls=[],ticket='T'.repeat(43),sessionCheck='C'.repeat(43),frameSelector='F'.repeat(43);
   const server=http.createServer(async(req,res)=>{
     let body='';for await(const chunk of req)body+=chunk;
     calls.push({method:req.method,path:req.url,body});
     const reply=(value,status=200)=>{res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(value));};
-    if(req.url==='/_soty/boot') {res.writeHead(200,{'content-type':'text/html'});res.end(renderBootPage({shellUrl:origin+'/#mine',scoped:true}));}
-    else if(req.url==='/_soty/session'&&req.method==='POST')reply(deny?{ok:false,error:'apps_access_denied'}:{ok:true,entryPath:'/embed',sessionCheck,frame:frameSelector,scopedRequestId:'R'.repeat(43)},deny?403:200);
+    if(req.url==='/_soty/boot') {res.writeHead(200,{'content-type':'text/html'});res.end(renderBootPage({shellUrl:origin+'/#mine',scoped}));}
+    else if(req.url==='/_soty/session'&&req.method==='POST')reply(deny?{ok:false,error:'apps_access_denied'}:scoped?{ok:true,entryPath:'/embed',sessionCheck,frame:frameSelector,scopedRequestId:'R'.repeat(43)}:{ok:true,entryPath:'/',sessionCheck},deny?403:200);
     else if(req.url==='/_soty/session'&&req.method==='GET')reply({ok:true,sessionCheck});
     else if(req.url==='/api/embed/session-continue')reply({schema:'soty.source-session-continuation.v1',ready:true});
     else reply({ok:false},404);
@@ -98,4 +98,15 @@ test('HTTP admission denial stays a visible failure and an observed failure, wit
   assert.equal(f.snapshot().events.at(-1).phase,'boot_failed');assert.equal(f.navigated(),null);
   assert.equal(f.calls.length,2);assert.equal(f.element('status-title').textContent,'Доступ закрыт');
   f.tick(12000);assert.equal(f.snapshot().events.map(x=>x.phase).includes('root_boot_unobserved'),false);
+});
+
+test('actual ordinary HTTP Boot and Root preserve POST/GET admission while exporting only correlated safe request observations',async t=>{
+  const f=await fixture(t,{scoped:false});f.begin();f.run();f.tick(0);
+  await waitUntil(()=>f.navigated()!==null);
+  assert.deepEqual(f.calls.map(value=>[value.method,value.path]),[['GET','/_soty/boot'],['POST','/_soty/session'],['GET','/_soty/session']]);
+  assert.equal(f.navigated(),'/');assert.equal(f.location.hash,'');
+  const snapshot=f.snapshot();assert.deepEqual(snapshot.requests.map(value=>[value.method,value.status,value.headersReceived,value.jsonParsed,value.errorName,value.signalAborted]),
+    [['POST',200,true,true,'none',false],['GET',200,true,true,'none',false]]);
+  assert.equal(snapshot.events.at(-1).phase,'boot_navigation');assert.equal(snapshot.observation,'partial');
+  assert.doesNotMatch(JSON.stringify(snapshot),/T{43}|C{43}|F{43}|R{43}|a{32}|https?:|watchId|ticket|requestId/u);
 });

@@ -138,7 +138,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   name.tabIndex = -1; const subtitle = el('p'); title.append(name, subtitle);
   const workspace = el('div', 'sa-workspace'), runtime = el('div', 'sa-runtime'), panel = el('aside', 'sa-discussion');
   let diagnosticOpen = false, closeDiagnostic: (() => void) | null = null, renderDiagnostic: (() => void) | null = null;
-  const runtimeTrace = createAppRuntimePhaseTrace({view,isCurrent:current,getFrame:()=>runtime.querySelector('iframe'),getEpoch:()=>displayEpoch,
+  const runtimeTrace = createAppRuntimePhaseTrace({view,...(options.presentation === 'widget' ? {} : {appId:app.appId}),isCurrent:current,getFrame:()=>runtime.querySelector('iframe'),getEpoch:()=>displayEpoch,
     canSample:()=>!diagnosticOpen,onChange:()=>renderDiagnostic?.()});
   const detachHiveBridge = mountHiveDeviceBridge({ view, getFrame: () => runtime.querySelector('iframe'), isCurrent: current });
   let nativeVoice = options.nativeVoice ?? null, voiceResolved = !!options.nativeVoice || !options.readNativeVoice, voiceLookupAttempted = false;
@@ -401,8 +401,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     }, {isCurrent:presented,resolve:()=>more});
     dialog.body.classList.add('sa-runtime-diagnostics');
     closeDiagnostic = () => dialog.close({restoreFocus:false}); options.onModalChange?.(dialog.element, true);
-    const explanation = el('p', '', 'Включите запись, затем нажмите обычную кнопку «Обновить приложение» или «Открыть приложение заново». События не подтверждают готовность или доступ.');
-    const privacy = el('p', '', 'Отчёт хранится в памяти до двух минут. В нём только этапы загрузки и признаки видимости окна.');
+    const explanation = el('p', '', 'Включите запись, затем обновите приложение или Соты целиком в этой вкладке. События не подтверждают готовность или доступ.');
+    const privacy = el('p', '', 'Отчёт хранится в памяти до двух минут: этапы, признаки запросов входа и видимости окна. До следующего открытия сохраняется только разрешение записи для этого приложения, без отчёта и данных входа.');
     const status = el('p'); status.setAttribute('role','status');
     const events = el('ol'), geometry = el('p'), technical = el('details'), summary = el('summary','','Технические сведения');
     const report = el('textarea','sw-textarea'); report.readOnly = true; report.rows = 8; technical.append(summary,report);
@@ -818,8 +818,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!alive()) return;
     }
     saved?.setEntryVerified(false);
+    const diagnosticCold = !runtimeStarted && !automatic && options.presentation !== 'widget';
     resetRuntimeDisplay();
     if (diagnosticManual && !automatic && options.presentation !== 'widget') runtimeTrace.beginManual();
+    else if (diagnosticCold) runtimeTrace.beginReload();
     entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; currentEntryRetry.hidden = true;
     runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.disabled = true;
     externalAvailability = voiceResolved ? 'unknown' : 'available'; external.hidden = voiceResolved;
