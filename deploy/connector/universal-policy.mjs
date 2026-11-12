@@ -700,7 +700,7 @@ export const assertSelectedEmbedFeatureOriginal = assertUniversalFeatureOriginal
 export function assertUniversalFrameContinuityStorage(handle, storageGuard, { containerId, image, afterStart = false } = {}) {
   const frame = stateFor(handle).receipt.featureFrameContinuityMigration;
   if (!frame) return;
-  check(typeof afterStart === 'boolean' && storageGuard?.schema === 'soty.storage-start.v10', 'universal_policy_frame_continuity_storage_invalid');
+  check(typeof afterStart === 'boolean' && ['soty.storage-start.v10','soty.storage-start.v11'].includes(storageGuard?.schema), 'universal_policy_frame_continuity_storage_invalid');
   requireStorageStartReceipt(storageGuard, containerId);
   check(storageGuard.image === image, 'universal_policy_frame_continuity_storage_invalid');
   const actual = storageGuard.appsFrameContinuity === 'empty' ? 0 : storageGuard.appsFrameContinuity;

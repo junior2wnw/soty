@@ -68,7 +68,7 @@ function startFixture(root,label=currentStorageReaders,probe=()=>readStorageForm
 test('v7 explicit empty is admissible and historical3..6 labels, formats and receipts keep their old key semantics',async t=>{
   const f=await folder(t),observed=await readStorageFormat(f.root);assert.deepEqual(observed,empty7());
   assert.deepEqual(assertStorageCompatible(image(OLD6),observed),observed);
-  const current=storageReaders(image());assert.deepEqual(current.world,[6,7]);assert.deepEqual(current.apps,[1,2,3,4,5,6,7,8,9,10,11,12,13,14]);
+  const current=storageReaders(image());assert.deepEqual(current.world,[6,7,8,9]);assert.deepEqual(current.apps,[1,2,3,4,5,6,7,8,9,10,11,12,13,14]);
   for(const version of [3,4,5,6]){
     const old=legacy(version),parsed=checkedStorageFormat(old.format);assert.deepEqual(parsed,old.format);storageReaders(image(old.label));
     assertStorageCompatible(image(old.label),old.format);
@@ -91,6 +91,12 @@ for(const version of [3,5])for(const field of [false,true])test(`genuine World${
   const f=await worldStore(t,{version,field}),before=digest(await readFile(f.file));
   assert.equal(await readWorldFormat(f.root),version);assert.deepEqual(await readStorageFormat(f.root),empty7({world:version}));
   assert.throws(()=>assertStorageCompatible(image(),empty7({world:version})),{code:'storage_reader_incompatible'});
+  assert.equal(digest(await readFile(f.file)),before);
+});
+
+for(const version of [3,5])test(`historical physical World${version} cannot claim the new field epoch2 format`,async t=>{
+  const f=await worldStore(t,{version,field:true});f.db.exec("UPDATE world_meta SET value='2' WHERE key='field_schema_version'");
+  const before=digest(await readFile(f.file));await assert.rejects(readWorldFormat(f.root),{code:'storage_format_unknown'});
   assert.equal(digest(await readFile(f.file)),before);
 });
 for(const field of [false,true])test(`actual World6 migrator field${+field} matches literal exact independent layout and stable store metadata`,async t=>{

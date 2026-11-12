@@ -28,7 +28,7 @@ test('actual monitoring capture is closed, immutable and additive; the legacy po
 });
 test('a first reader-only upgrade accepts an old image without the family only while actual monitoring data is absent',async t=>{
  const f=await fixture(t),source=path.join(f.root,'empty');await mkdir(source);const format=await readStorageFormat(source);assert.equal(format.monitoring,'empty');
- const current=JSON.parse(currentStorageReaders),legacy={version:7,readers:Object.fromEntries(['rooms','apps','notes','capabilities','appRegistration','feedback','humanIdentity','connect','world'].map(key=>[key,current.readers[key]]))};legacy.readers.notes=[1,2];
+ const current=JSON.parse(currentStorageReaders),legacy={version:7,readers:Object.fromEntries(['rooms','apps','notes','capabilities','appRegistration','feedback','humanIdentity','connect','world'].map(key=>[key,current.readers[key]]))};legacy.readers.notes=[1,2];legacy.readers.world=[6,7];
  const plan={...basePlan(),expectedCurrentPreparednessSha256:hash(runtime())},handle=await prepare(t,f,plan);assert.doesNotThrow(()=>policy.assertUniversalImagePrerequisites(handle,{candidateImage:image(),originalImage:image(legacy,'b')}));assertStorageCompatible(image(legacy,'b'),format);
  const nonempty={...format,monitoring:1};assert.throws(()=>assertStorageCompatible(image(legacy,'b'),nonempty),{code:'storage_reader_incompatible'});
  const enabling=await feature(t,f,'reader','writer');assert.throws(()=>policy.assertUniversalImagePrerequisites(enabling,{candidateImage:image(),originalImage:image(legacy)}),{code:'universal_policy_monitoring_reader_required'});

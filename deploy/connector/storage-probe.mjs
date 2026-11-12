@@ -1010,14 +1010,16 @@ export async function readWorldFormat(dataDir = '/data') {
     const meta = Object.fromEntries(rows.map(row => [row.key,row.value])), field = meta.field_schema_version !== undefined;
     const keys = ['project_id','lineage','schema_version',...(field ? ['field_schema_version'] : [])].sort().join(',');
     if (rows.length !== (field ? 4 : 3) || Object.keys(meta).sort().join(',') !== keys || meta.project_id !== 'soty'
-      || meta.lineage !== 'soty.world.sqlite.v1' || meta.schema_version !== String(version) || field && meta.field_schema_version !== '1') fail('storage_format_unknown');
+      || meta.lineage !== 'soty.world.sqlite.v1' || meta.schema_version !== String(version)
+      || field && !['1','2'].includes(meta.field_schema_version)
+      || meta.field_schema_version === '2' && ![6,7].includes(version)) fail('storage_format_unknown');
     recognizeFrozenLayout(db, worldLayouts[version + ':' + (field ? 1 : 0)]);
     if (db.prepare('PRAGMA quick_check(1)').all().some(row => row.quick_check !== 'ok')
       || db.prepare(`SELECT 1 FROM profiles p LEFT JOIN profile_avatars a ON a.account_id=p.account_id
         WHERE (p.avatar_revision IS NULL)<>(a.account_id IS NULL)
           OR (p.avatar_revision IS NOT NULL AND (typeof(p.avatar_revision)<>'integer' OR p.avatar_revision<1 OR p.avatar_revision>p.revision)) LIMIT 1`).get()) fail('storage_format_unreadable');
     if (version >= 6) recognizeCoverStorage(db, 'profile_avatar');
-    return version;
+    return meta.field_schema_version === '2' ? version + 2 : version;
   });
 }
 

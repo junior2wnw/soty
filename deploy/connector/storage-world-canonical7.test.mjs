@@ -9,6 +9,7 @@ import { migrateWorld } from '../../modules/world/server/schema.mjs';
 import { createWorldService } from '../../modules/world/server/index.mjs';
 import { migrateWorld as frozenWorld6 } from '../../modules/world/test/support/world6-schema-before.mjs';
 import { migrateField } from '../../modules/world/server/field.mjs';
+import { createFieldDocumentV2 } from '../../modules/field/contract.mjs';
 import { readStorageFormat, readWorldFormat } from './storage-probe.mjs';
 import { assertStorageCompatible, currentStorageReaders, guardStorageStart, requireStorageStartReceipt, storageReaderLabel } from './storage-guard.mjs';
 
@@ -100,4 +101,47 @@ test('populated canonical7 committed WAL is recognized with the original databas
   const before = bytes(f); assert.ok(before['-wal']);
   assert.equal(await readWorldFormat(f.root), 7); assert.deepEqual(bytes(f), before);
   assert.deepEqual(Buffer.from(f.db.prepare('SELECT data FROM world_chat_attachment_chunks').get().data), chunk);
+});
+
+function commitField2(f) {
+  const actor = { accountId: 'synthetic_owner', deviceId: 'synthetic_device', label: 'Synthetic' };
+  const service = createWorldService({ databasePath: f.file, projectId: 'soty' });
+  try {
+    service.execute({ op: 'world.field.put', actor, args: { expectedAccountId: actor.accountId,
+      expectedRevision: 0, requestId: 'synthetic_field2_commit', document: createFieldDocumentV2() } });
+  } finally { service.close(); }
+  assert.equal(f.db.prepare("SELECT value FROM world_meta WHERE key='field_schema_version'").get().value, '2');
+}
+
+for (const version of [6, 7]) for (const wal of [false, true])
+  test(`World${version} field epoch2 committed by the actual runtime is recognized unchanged, WAL=${wal}`, async t => {
+    const f = fixture(t, { version, wal }); commitField2(f);
+    if (!wal) f.db.exec('PRAGMA journal_mode=DELETE');
+    const before = bytes(f); assert.equal(Boolean(before['-wal']), wal);
+    assert.equal(await readWorldFormat(f.root), version + 2);
+    assert.equal(assertStorageCompatible(image(currentStorageReaders), await readStorageFormat(f.root)).world, version + 2);
+    assert.deepEqual(bytes(f), before);
+  });
+
+for (const [label, sql, code] of [
+  ['unknown epoch', "UPDATE world_meta SET value='3' WHERE key='field_schema_version'", 'storage_format_unknown'],
+  ['missing epoch', "DELETE FROM world_meta WHERE key='field_schema_version'", 'storage_format_unreadable'],
+  ['wrong lineage', "UPDATE world_meta SET value='foreign.world' WHERE key='lineage'", 'storage_format_unknown'],
+  ['mismatched version', "UPDATE world_meta SET value='7' WHERE key='schema_version'", 'storage_format_unknown'],
+  ['missing field trigger', 'DROP TRIGGER world_field_receipt_no_update', 'storage_format_unreadable'],
+]) test(`field epoch2 still refuses ${label} without changing main or WAL`, async t => {
+  const f = fixture(t, { version: 6, wal: true }); commitField2(f); f.db.exec(sql); const before = bytes(f);
+  await assert.rejects(readWorldFormat(f.root), { code }); assert.deepEqual(bytes(f), before);
+});
+
+test('pure legacy World6/7 labels cannot attest epoch2 logical8/9, including the historical manifest7 reader', async t => {
+  for (const version of [6, 7]) {
+    const f = fixture(t, { version }); commitField2(f); const format = await readStorageFormat(f.root);
+    assert.equal(format.world, version + 2);
+    for (const legacy of [JSON.parse(currentStorageReaders), JSON.parse(reader6)]) {
+      legacy.readers.world = [6, 7];
+      assert.throws(() => assertStorageCompatible(image(JSON.stringify(legacy)), format), { code: 'storage_reader_incompatible' });
+    }
+    assert.equal(assertStorageCompatible(image(currentStorageReaders), format).world, version + 2);
+  }
 });

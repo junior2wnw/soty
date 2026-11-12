@@ -24,6 +24,7 @@ import { HIVE_SELECTED_KERNEL_SOURCE, HIVE_SELECTED_SOURCE, STANDARD_SELECTED_SO
 import { STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE } from '../../modules/source-app/server/standard-profile.mjs';
 import { loadInstalledApplicationsEntry } from '../../server/installed-applications-entry.js';
 import { fixture as engineFixture, args as rolloutArgs } from './test-support/rollout-engine.mjs';
+import { WORLD_FIELD_FIXTURE_SHA256, WORLD_FIELD_LAYOUT_SHA256, WORLD_FIELD_READER_RESULT } from './world-field-reader-probe.mjs';
 
 const frameMigrationSetting = 'SOTY_APPS_FRAME_CONTINUITY_MIGRATION';
 const frameAccess = () => ({ readAccountIds: [], configureAccountIds: [], adminAccountIds: [] });
@@ -113,6 +114,22 @@ test('frame migration refuses stale, historical, mismatched and incomplete stora
   const incomplete = frameStorage(2); delete incomplete.monitoring;
   assert.throws(() => framePolicy.assertUniversalFrameContinuityStorage(handle, incomplete, frameStorageContext(true)));
   assert.equal(Object.hasOwn(frameRuntime(), 'frameContinuity'), false);
+});
+
+test('frame migration consumes validated start.v11 World proof while start.v10 retains exact keys', async t => {
+  const f = await fixture(t), handle = await prepared(t, f, framePlan());
+  const scriptSha256 = createHash('sha256').update(await readFile(new URL('./world-field-reader-probe.mjs', import.meta.url))).digest('hex');
+  for (const afterStart of [false, true]) {
+    const receipt = frameStorage(afterStart ? 2 : 0, { schema: 'soty.storage-start.v11', world: 8 });
+    receipt.worldFieldReader = { schema: 'soty.world-field-reader-proof.v1', image: receipt.image, helperId: '7'.repeat(64),
+      transactionId: '8'.repeat(32), worldFormat: 8, baseWorldFormat: 6, scriptSha256,
+      fixtureSha256: WORLD_FIELD_FIXTURE_SHA256, layoutSha256: WORLD_FIELD_LAYOUT_SHA256,
+      resultSha256: createHash('sha256').update(JSON.stringify(WORLD_FIELD_READER_RESULT)).digest('hex') };
+    framePolicy.assertUniversalFrameContinuityStorage(handle, receipt, frameStorageContext(afterStart));
+    assert.throws(() => framePolicy.assertUniversalFrameContinuityStorage(handle, { ...receipt, schema: 'soty.storage-start.v10' }, frameStorageContext(afterStart)));
+    assert.throws(() => framePolicy.assertUniversalFrameContinuityStorage(handle, { ...receipt,
+      worldFieldReader: { ...receipt.worldFieldReader, fixtureSha256: '9'.repeat(64) } }, frameStorageContext(afterStart)));
+  }
 });
 
 async function frameRollout(t, { beforeVersion = 0, afterVersion = 2, staleHash = false } = {}) {

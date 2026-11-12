@@ -21,7 +21,7 @@ async function fixture(t,{empty=false,policy=false}={}){
  if(!empty){await mkdir(path.dirname(file));db=new DatabaseSync(file);db.exec(MONITORING_DDL);db.prepare('INSERT INTO monitoring_meta VALUES(1,?,?,?)').run('soty','soty.monitoring.sqlite.v1','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');}
  return{root,source,file,get db(){return db;},close(){db?.close();db=null;}};
 }
-function reader(version){const value=JSON.parse(currentStorageReaders);value.version=version;if(version===9)delete value.readers.monitoring;else value.readers.monitoring=[1];return value;}
+function reader(version){const value=JSON.parse(currentStorageReaders);value.version=version;if(version<10)value.readers.world=[6,7];if(version===9)delete value.readers.monitoring;else value.readers.monitoring=[1];return value;}
 
 test('frozen monitoring1 store is independently observed, read-only, and declared in current reader envelope10',async t=>{
  const f=await fixture(t);assert.equal(sha(MONITORING_DDL),'be38b10a2d6d5d11773a7eb8038f1ecd109fc15bc132532c1683794794e20372');

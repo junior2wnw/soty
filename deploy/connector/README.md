@@ -148,8 +148,32 @@ The maintained source uses full `soty.storage-format.v7` observations and
 AppRegistration, Feedback, HumanIdentity, Connect and World. The exact current
 source declaration is `currentStorageReaders` in the guard and the root Dockerfile;
 the observed original/candidate **image** labels must be inspected independently.
-Current source declares World readers6/7 and Apps readers1–14. This does not
+Current source declares World readers6/7/8/9 and Apps readers1–14. This does not
 automatically qualify an installed image or permit a first incompatible write.
+World logical reader formats8/9 distinguish field epoch2 on physical SQLite
+World6/7 respectively. Formats6/7 retain epoch1/absent-field semantics; physical
+`user_version` is never rewritten by the detector. Future full images declare
+World readers6/7/8/9 explicitly. Pure label compatibility never upgrades a
+historical6/7 claim into8/9.
+
+For a pinned legacy image whose declared physical-world base and every other
+store are compatible, the START guard can qualify only its missing field2
+reader using the actual immutable image. The canonical helper imports that
+image's real field module on synthetic in-memory SQLite at the requested base6/7, checks an independent
+eight-object field layout, commits a host-literal v2 free-placement document,
+then migrates/reads it without rewriting its document, metadata or receipt.
+No production DATA/config/Env, network or bind is present; image-declared DATA
+volumes are overridden with bounded private tmpfs and effective mounts checked.
+Every guard run gets a new helper/proof. Unknown or failed helpers keep the same
+existing reconciliation barrier; CREATE/START is not replayed.
+
+Such a qualified legacy START returns strict `soty.storage-start.v11`, the full
+v10 store fields plus `worldFieldReader` binding image/helper/transaction and
+script/fixture/layout/result hashes to the logical/base World formats. This is
+not storage-format11 or reader-manifest11. Receipts3–10 retain their exact keys;
+an explicitly declaring image still uses receipt10. A receipt is not current
+authority: recovery and restart-policy operations obtain a fresh guard.
+
 The guard requires explicit `DATA_DIR=/data` and its exact supported sole local
 volume mount. Unknown layouts, stores, readers and unresolved operations remain
 blocked; a parser's recognition of World3 is not World3 runtime support.
