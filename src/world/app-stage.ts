@@ -827,10 +827,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       frameCutover = launcher.beginFrameCutover();
       const url = await launcher.launch({ requireSameBinding: automatic });
       if (!url || !alive()) return;
-      captureEntry();
-      saved?.setEntryVerified(true);
-      externalAvailability = 'unknown'; external.hidden = true;
-      checkExternalAvailability();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
       const browserOrigin = launcher.runtimeOrigin()!;
       const voiceFrame=nativeVoice?.mount.appId===app.appId&&nativeVoice.mount.parentOrigin===view.location.origin
@@ -852,6 +848,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       hostRenewal?.dispose();hostRenewal=null;
       runtime.replaceChildren(frame);
       if (!frameCutover.commit()) throw Error('app_runtime_cutover_pending');
+      captureEntry();
+      saved?.setEntryVerified(true);
+      externalAvailability = 'unknown'; external.hidden = true;
+      checkExternalAvailability();
       frameGeneration++;lastRuntimeLaunchAt=Date.now();
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:browserOrigin,binding:launcher.binding()});
       watchRuntimeDisplay(frame);
@@ -908,6 +908,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       }
       runtimeTrace.inserted();
     } catch (reason) {
+      frameCutover?.discard();
       relayIdentity.resume();
       if (!alive()) return;
       runtimeTrace.launchFailed();

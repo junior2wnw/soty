@@ -15,23 +15,29 @@ const source=readFileSync(new URL('./app-stage.ts',import.meta.url),'utf8');
 const parsed=ts.createSourceFile('app-stage.ts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),printer=ts.createPrinter();
 const mount=parsed.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='mountAppStage');
 const launch=mount.body.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='launchRuntime');
+const captureEntry=mount.body.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='captureEntry');
 const compiled=ts.transpileModule(`exports.create=(launcher,runtime,state,appWork,relayIdentity)=>{
  const current=()=>state.current,serverNow=()=>state.at,app=state.app,accountId=state.actor.accountId;
  let runtimePending=false,runtimeStarted=false,liveAuthorityEpoch=0,liveAuthorityDenied=false,frameGeneration=0,relayPeer=null;
  let externalAvailability='unknown',entryRecoveryEpoch=0,entryRecoveryPending=false,lastRuntimeLaunchAt=0;
  let hostRenewal=null,voiceResolved=true,nativeVoice=null,widgetContext=null,widgetMode='interactive';
  const view={location:{origin:'https://soty.example',href:'https://soty.example/#mine'},setTimeout,clearTimeout};
- const options={api:{request:async()=>{}},instanceId:'main'},screen={append(){},dataset:{}};
- const saved={setEntryVerified(){}},refresh={},recoveryRetry={},externalRecovery={},external={},currentEntryRetry={};
+ const options={api:{request:async()=>{}},instanceId:'main',onNavigate:value=>state.routes.push(value.path),onRemember:()=>state.remembered++},screen={append(){},dataset:{}};
+ let saved=null,selectedEntry=null,intent={presentation:undefined};const field={},widget={},bookmark={},savedHost={},savedReplacementHost={hidden:true};
+ const more={},moreBody={hidden:true},presented=current,routeWith=()=>({path:selectedEntry?.path});
+ const mountAppSaved=(_host,value)=>{state.bookmarkEntry=value.entry;return{setEntryVerified:value=>state.verified.push(value)};};
+ const discussion={updateEntry:async value=>state.discussionEntries.push(value.path)};
+ const refresh={},recoveryRetry={},externalRecovery={},external={},currentEntryRetry={};
  const message={textContent:''},showMessage=value=>{message.textContent=value;state.messages.push(value);};
- const stopAssist=()=>{},resetRuntimeDisplay=()=>{},captureEntry=()=>{},ensureDiscussion=()=>{},showPanel=()=>{},checkExternalAvailability=()=>{};
+ const stopAssist=()=>{},resetRuntimeDisplay=()=>{},ensureDiscussion=()=>{},showPanel=()=>{},checkExternalAvailability=()=>{state.externalReads++;};
  const voiceOriginAllowed=()=>true,resolveVoice=async()=>{},watchRuntimeDisplay=()=>{};
  const runtimeTrace={beginManual(){},attach(){},inserted(){},launchFailed(){state.failed++;}};
  const recovery={bind(){}},createAppHostSessionRenewal=()=>({start(){},dispose(){}});
  const el=(tag,_class,text)=>state.node(tag,text),button=()=>({}),emptyState=()=>state.node('error');
  const appLaunchFailure=error=>({title:error.code??error.message,detail:'fixture'});
+ ${printer.printNode(ts.EmitHint.Unspecified,captureEntry,parsed)}
  ${printer.printNode(ts.EmitHint.Unspecified,launch,parsed)}
- return{launch:()=>launchRuntime(),busy:()=>runtimePending};
+ return{launch:()=>launchRuntime(),busy:()=>runtimePending,entry:()=>selectedEntry};
 };`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 
 const appId='app-'+'1'.repeat(32),domainId='dom_'+'2'.repeat(32),actor={accountId:'synthetic_owner',deviceId:'synthetic_device'};
@@ -46,7 +52,8 @@ const tick=()=>new Promise(setImmediate);
 function fixture(t){
  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE local_apps(id TEXT PRIMARY KEY);CREATE TABLE apps_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);');
  db.prepare('INSERT INTO local_apps VALUES(?)').run(appId);db.exec(frameContinuityDdl());db.prepare('INSERT INTO apps_meta VALUES(?,?)').run('frame_continuity',FRAME_CONTINUITY_STORAGE);
- const state={actor,app:{appId,name:'Synthetic'},at:Date.now(),current:true,issued:[],closed:[],messages:[],failed:0,requiresCheck:false,checks:0,dirty:false,closing:false};
+ const state={actor,app:{appId,name:'Synthetic'},at:Date.now(),current:true,issued:[],closed:[],messages:[],failed:0,requiresCheck:false,checks:0,dirty:false,closing:false,
+   verified:[],routes:[],remembered:0,bookmarkEntry:null,discussionEntries:[],externalReads:0};
  const store=createHostSessionContinuity({db,clock:()=>state.at}),byUrl=new Map();let child=null;
  const runtime={querySelector:()=>child?.tag==='iframe'?child:null,setAttribute(){},
    replaceChildren(value){if(child)child.isConnected=false;child=value??null;if(child)child.isConnected=true;}};
@@ -61,6 +68,7 @@ function fixture(t){
  };
  const launcher=createAppLauncher({target:{appId,domainId,path:entry.path},accountId:actor.accountId,instanceId:'main',shellUrl:'https://soty.example/#mine',isCurrent:()=>state.current,
    request:async()=>{
+     if(state.fixedReply)return state.fixedReply;
      if(state.requestError)throw state.requestError;
      const member=store.create(scope()),claim=store.activateInitial(member.claim),hostSession={...member.descriptor,expiresAt:claim.expiresAt};
      const url=runtimeOrigin+'/_soty/boot?path=%2Freader#'+member.descriptor.frameId;byUrl.set(url,member.descriptor.frameId);
@@ -150,4 +158,30 @@ test('an unconfirmed retirement never closes the replacement or sweeps another t
  await f.stage.launch();await tick();
  assert.equal(f.state.closed.length,1);assert.notEqual(f.state.closed[0].frameId,f.launcher.hostSession().hostSession.frameId);
  assert.doesNotThrow(()=>f.current(other.descriptor));assert.doesNotThrow(()=>f.current(f.launcher.hostSession().hostSession));
+});
+
+test('a refused cutover publishes no candidate verification or external entry while keeping the once-captured live entry',async t=>{
+ const f=fixture(t);await f.stage.launch();const before=f.stage.entry(),frame=f.runtime.querySelector('iframe'),routes=f.state.routes.length,remembered=f.state.remembered;
+ f.state.verified=[];f.state.externalReads=0;f.state.requiresCheck=true;
+ f.state.afterIssue=async()=>{f.state.saveError=Error('soty_work_timeout');};await f.stage.launch();await tick();
+ assert.equal(f.runtime.querySelector('iframe'),frame);assert.equal(f.stage.entry(),before);assert.equal(f.state.bookmarkEntry,before);
+ assert.equal(f.state.routes.length,routes);assert.equal(f.state.remembered,remembered);assert.deepEqual(f.state.verified,[false]);assert.equal(f.state.externalReads,0);
+});
+
+test('a first candidate rejected after admission cannot pin stage entry, bookmark, discussion or history before rollback',async t=>{
+ const f=fixture(t);f.state.afterIssue=async()=>{f.state.identityActive=true;};f.state.onIdentityClose=async()=>{throw Error('identity close unconfirmed');};
+ await f.stage.launch();await tick();
+ assert.equal(f.stage.entry(),null);assert.equal(f.launcher.entry(),null);assert.equal(f.state.bookmarkEntry,null);assert.equal(f.active(),0);
+ assert.equal(f.state.routes.length,0);assert.equal(f.state.remembered,0);assert.equal(f.state.discussionEntries.length,0);assert.equal(f.state.externalReads,0);
+});
+
+test('disposing a pending same-frame candidate cannot close a promoted successor using its newer proof',async t=>{
+ const f=fixture(t);await f.stage.launch();const before=f.launcher.hostSession(),old=f.state.issued[0],other=f.extra();
+ const successor=f.store.prepare(old.claim);f.store.promote(successor.claim);
+ f.state.fixedReply={url:runtimeOrigin+'/_soty/boot?path=%2Freader#'+'T'.repeat(43),entry,runtimeOrigin,launchBinding:pin,
+   hostSession:successor.descriptor,hostSessionExpiresAt:f.state.at+120000};
+ f.launcher.beginFrameCutover();await f.launcher.launch();assert.equal(f.launcher.hostSession(),before);
+ f.state.closing=true;f.launcher.dispose();await tick();
+ assert.equal(f.state.closed.length,1);assert.equal(f.state.closed[0].lease,before.hostSession.lease);assert.equal(f.state.closed[0].revision,before.hostSession.revision);
+ assert.doesNotThrow(()=>f.current(successor.descriptor));assert.doesNotThrow(()=>f.current(other.descriptor));
 });
