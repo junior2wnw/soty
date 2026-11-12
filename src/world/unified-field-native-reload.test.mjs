@@ -40,7 +40,7 @@ function screenCode(text){
   const print=node=>printer.printNode(ts.EmitHint.Unspecified,node,parsed);
   const returned=production.body.statements.find(ts.isReturnStatement).expression;
   const add=returned.properties.find(node=>node.name?.getText(parsed)==='addObject');assert.ok(add,'Production screen.addObject exists');
-  return compile(coverageTestSource(production.body.statements,parsed,printer)+'\n'+['merge','pruneMetadata','allMetadata','currentEntity','updateMineFilter','updateMineEmpty','loadMine','loadMinePass','loadOwnedApps'].map(name=>print(named(production.body.statements,name))).join('\n')
+  return compile(coverageTestSource(production.body.statements,parsed,printer)+'\n'+['merge','pruneMetadata','allMetadata','currentEntity','hasConfirmedPersonalLayout','updateMineFilter','updateMineEmpty','loadMine','loadMinePass','loadOwnedApps'].map(name=>print(named(production.body.statements,name))).join('\n')
     +`\nObject.assign(exports,{loadMine,updateMineFilter,allMetadata,${print(add)}});`);
 }
 
