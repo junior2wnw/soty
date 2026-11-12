@@ -124,7 +124,10 @@
 .uf-preview-pin{position:absolute;top:8px;right:58px;min-width:44px;min-height:44px}
 .uf-preview-notice{position:absolute;top:4px;left:16px;right:114px;min-width:0;height:44px;display:flex;align-items:center;overflow:auto}
 .uf-preview-notice>.sw-toast{position:static;inset:auto;transform:none;max-width:100%;max-height:44px;overflow:auto;margin:0;padding:4px 0;border:0;border-radius:0;box-shadow:none;background:transparent;color:var(--sw-muted);font-size:12px;line-height:18px;text-align:left;animation:none;pointer-events:auto}
-@media (hover: none) { .uf-inspect { opacity: 1; pointer-events: auto; } }
+@media (hover: none) {
+  .uf-inspect,.uf-node:hover+.uf-inspect,.uf-inspect:hover { opacity:0;pointer-events:none; }
+  .uf-node+.uf-inspect.is-selected,.uf-node+.uf-inspect:focus,.uf-node:focus-within+.uf-inspect { opacity:1;pointer-events:auto; }
+}
 .uf-node[data-object-presentation=overview]:has(>.uf-object-expand:not([hidden]))+.uf-inspect { display: none; }
 .uf-context-title.is-icon-only { width: 44px; min-width: 44px; max-width: 44px; min-height: 44px; padding: 8px; gap: 0; }
 .uf-context-title.is-icon-only .uf-context-name { display: none; }
