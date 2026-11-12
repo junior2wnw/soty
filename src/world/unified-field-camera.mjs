@@ -20,9 +20,15 @@ export function zoomFieldCamera(camera, nextScale, anchor, viewport) {
 export function fitFieldCamera(bounds, viewport, { padding = 28, maxScale = 1, minScale = UNIFIED_SCALE_MIN } = {}) {
   if (!bounds || viewport.width <= 0 || viewport.height <= 0) return normalizeFieldCamera();
   const width = Math.max(1, bounds.right - bounds.left), height = Math.max(1, bounds.bottom - bounds.top);
-  return normalizeFieldCamera({ x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2,
-    scale: Math.max(minScale, Math.min(maxScale, (Math.max(1, viewport.width - padding * 2)) / width,
-      Math.max(1, viewport.height - padding * 2) / height)) });
+  const inset = side => finite(viewport.insets?.[side]) ? Math.max(0, viewport.insets[side]) : 0;
+  const left = inset('left'), right = inset('right'), top = inset('top'), bottom = inset('bottom');
+  const scale = normalizeFieldCamera({ scale: Math.max(minScale, Math.min(maxScale,
+    Math.max(1, viewport.width - left - right - padding * 2) / width,
+    Math.max(1, viewport.height - top - bottom - padding * 2) / height)) }).scale;
+  // Projection still uses the full viewport; move the fitted centre into its
+  // unobscured rectangle without changing manual pan or anchored zoom math.
+  return normalizeFieldCamera({ x: (bounds.left + bounds.right) / 2 + (right - left) / (2 * scale),
+    y: (bounds.top + bounds.bottom) / 2 + (bottom - top) / (2 * scale), scale });
 }
 /** Hysteresis prevents semantic labels from flickering on a wheel threshold. */
 export function fieldLevelOfDetail(scale, previous = 'detail') {

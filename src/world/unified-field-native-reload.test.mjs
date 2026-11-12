@@ -48,6 +48,7 @@ const objectId='object_'+ 'a'.repeat(32),ref={kind:'object',id:objectId};
 function harness({serialized,text=screenText,hidden=false}={}){
   const calls=[],state={persisted:serialized??JSON.stringify({schema:'soty.field.v1',contexts:[{contextId:'personal',title:'Личное',x:0,y:0}],shortcuts:[]}),revision:serialized?1:0,hidden};
   const environment={exports:{},TextEncoder,TextDecoder,crypto,performance,clearTimeout,setTimeout,Buffer,URL,
+    getComputedStyle:()=>({scrollPaddingTop:'auto',scrollPaddingRight:'auto',scrollPaddingBottom:'auto',scrollPaddingLeft:'auto'}),
     document:{activeElement:null},HTMLElement:class{},viewport:{clientWidth:1280,clientHeight:800,hasPointerCapture:()=>false},
     plane:{contains:()=>false},live:{},render(){},schedule(){},flushPointerSample(){},errorText:error=>String(error),
     mode:'mine',queries:{mine:'old search that must clear',search:''},filter:'person',filtersByMode:{mine:'person',search:'all'},

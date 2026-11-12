@@ -88,6 +88,7 @@ const stateClosure = [enginePrint(engineParsed.statements.find(node => ts.isVari
 const engineCompiled = ts.transpileModule(stateClosure, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 function withField(h, viewState = { mineContext: 'studio', mineFit: 'context' }, width = 393, height = 450) {
   const port = vm.createContext({ exports: {}, ...contract,validateFieldDocument:contract.validateAnyFieldDocument,validateFieldEntity:contract.validateAnyFieldEntity,validateFieldPresentation, ...camera, ...layout,...liveProjection,createFieldHistory, structuredClone, performance, clearTimeout,
+    getComputedStyle: () => ({ scrollPaddingTop:'auto', scrollPaddingRight:'auto', scrollPaddingBottom:'auto', scrollPaddingLeft:'auto' }),
     viewport: { clientWidth: width, clientHeight: height, hasPointerCapture: () => false }, plane: { contains: () => false }, document: { activeElement: null }, HTMLElement: class {},
     live: {}, render() {}, schedule() {}, flushPointerSample() {} });
   new vm.Script(engineCompiled).runInContext(port);

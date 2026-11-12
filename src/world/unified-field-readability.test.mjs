@@ -9,6 +9,7 @@ import { fitFieldCamera, fieldScreenToWorld, fieldWorldToScreen, fieldLevelOfDet
 import { resolveAppArt } from './app-art.mjs';
 import { fieldEntityKey } from '../../modules/field/contract.mjs';
 import {fieldPresentationClip} from './unified-field-presentation.mjs';
+import { nextFieldSlot } from './unified-field-state.mjs';
 
 // Actual production geometry, rendering and event callbacks, with inert DOM ports.
 // These tests do not measure browser typography or claim a real application launch.
@@ -90,7 +91,7 @@ function harness(width, height, { scale, focus = '',renderCode=compiled } = {}) 
   const calls = { activate: [], inspect: [], focus: [], nodeFocus: [], remember: 0 }, plane = new Port(), viewport = new Port();
   const environment = { exports: {}, destroyed: false, inPointerFrame: false, activeLayout: () => data.layout,
     gesture: null, pinch: null, lastInspection: null, suppressClickUntil: 0,spacePanning:false,liveScene:{contexts:[],shortcuts:[]},performance, clearTimeout,
-    viewportSize: () => view, camera: () => camera, cameraFit: { mine: focus ? 'context' : 'overview' },
+    viewportSize: () => view, fitViewport: () => view, camera: () => camera, cameraFit: { mine: focus ? 'context' : 'overview' },
     contextFocus: { mine: focus }, mode: 'mine', arranging: false, moving: null, contextPreview: null,
     viewport, plane, signal: new AbortController().signal, document: { createElementNS: (_, tag) => new Port(tag) }, window: { innerWidth: width },
     metrics: UNIFIED_FIELD_METRICS, SVG_NS: 'svg', fieldEntityKey, fieldBoundsOverlap, fieldScreenToWorld, fieldLevelOfDetail,fieldPresentationClip,
@@ -449,6 +450,74 @@ function mobileFlow(width, height, configuration = {}) {
   };
 }
 const nearPixel = (actual, expected) => assert.ok(Math.abs(actual - expected) < .001, `${actual}px must be ${expected}px`);
+
+test('fit reads the compact CSS dock inset, while ordinary camera frames do not request computed style', () => {
+  const declarations = production.body.statements.filter(ts.isVariableStatement);
+  const viewportMethods = ['viewportSize', 'fitViewport'].map(name => {
+    const declaration = declarations.find(item => item.declarationList.declarations.some(node => node.name.getText(parsed) === name));
+    assert.ok(declaration, name); return print(declaration);
+  });
+  let styleReads = 0;
+  const environment = { exports: {}, viewport: { clientWidth: 390, clientHeight: 844 }, parseFloat,
+    getComputedStyle() { styleReads++; return { scrollPaddingTop:'auto', scrollPaddingRight:'0px', scrollPaddingBottom:'88px', scrollPaddingLeft:'0px' }; } };
+  vm.createContext(environment);
+  new vm.Script(compile(viewportMethods.join('\n') + '\nexports.viewportSize=viewportSize;exports.fitViewport=fitViewport;')).runInContext(environment);
+  environment.exports.viewportSize(); environment.exports.viewportSize(); assert.equal(styleReads, 0);
+  const view = environment.exports.fitViewport(); assert.equal(styleReads, 1);
+  assert.equal(JSON.stringify(view), JSON.stringify({ width:390, height:844, insets:{top:0,right:0,bottom:88,left:0} }));
+  const require = createRequire(import.meta.url), postcss = createRequire(require.resolve('vite/package.json'))('postcss');
+  let inset;
+  postcss.parse(readFileSync(new URL('./one-field.css', import.meta.url), 'utf8')).walkRules(rule => {
+    if (rule.selector === '.sw-app[data-experience=one-field] .uf-viewport') rule.walkDecls('scroll-padding-bottom', declaration => { inset = declaration.value; });
+  });
+  assert.equal(inset, 'var(--of-search-bottom-inset)', 'the fit uses the existing dock geometry including safe area, without moving or hiding apps');
+});
+
+function tenInitialApps() {
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Личное', x: 0, y: 0 }], shortcuts: [] }, entities = [];
+  for (let n = 0; n < 10; n++) {
+    const entity = app(n + 1), slot = nextFieldSlot(document, 'personal', 'app');
+    document.shortcuts.push({ shortcutId: 'initial-' + n, entity, contextId: 'personal', slot });
+    entities.push({ entity, title: 'Приложение ' + n, source: 'owner' });
+  }
+  return { document, entities, layout: layoutUnifiedField(document, entities) };
+}
+function assertInitialAppsInside(h) {
+  const e = h.environment;
+  assert.equal(e.nodeElements.size, 10, 'every app must keep its actual render node');
+  for (const node of e.layout.nodes) for (const point of node.footprint) {
+    const projected = fieldWorldToScreen(point, h.cameraNow(), h.view);
+    assert.ok(projected.x >= 24 && projected.x <= h.view.width - 24, `${node.shortcutId} x=${projected.x} is clipped`);
+    assert.ok(projected.y >= 24 && projected.y <= h.view.height - 88 - 24, `${node.shortcutId} y=${projected.y} is behind the dock`);
+  }
+}
+test('initial 390px compact view fits all ten app hexes above the dock, while explicit focus stays readable', t => {
+  const h = mobileFlow(390, 844, { readableMobileFocus: true, data: tenInitialApps() }), e = h.environment, before = h.geometry();
+  h.view.insets = { bottom: 88 }; e.initialized.mine = false; e.rebuild();
+  assertInitialAppsInside(h); assert.equal(e.contextFocus.mine, 'personal'); assert.equal(e.cameraFit.mine, 'overview');
+  t.diagnostic(JSON.stringify({ viewport: '390x844', camera: h.cameraNow(), apps: e.nodeElements.size, dockInset: 88 }));
+  h.resizeTo(320, 740); assertInitialAppsInside(h);
+  e.focusContext('personal'); nearPixel(e.layout.nodes[0].width * h.cameraNow().scale, 118.4);
+  assert.equal(e.cameraFit.mine, 'context'); assert.equal(h.geometry(), before); assert.deepEqual(h.commits, []);
+});
+test('late automatic app admission can fit its chosen context without applying the explicit readability floor', () => {
+  const h = mobileFlow(390, 844, { readableMobileFocus: true, data: tenInitialApps() }), e = h.environment;
+  h.view.insets = { bottom: 88 }; e.focusContext('personal', 'overview'); h.render();
+  assertInitialAppsInside(h); assert.equal(e.contextFocus.mine, 'personal'); assert.equal(e.cameraFit.mine, 'overview');
+  assert.ok(e.layout.nodes[0].width * h.cameraNow().scale < 144);
+});
+test('initial fit never resets a later manual pan/zoom on metadata refresh, resize or restored view', () => {
+  const h = mobileFlow(390, 844, { readableMobileFocus: true, data: tenInitialApps() }), e = h.environment;
+  h.view.insets = { bottom: 88 }; e.initialized.mine = false; e.rebuild();
+  e.setCamera({ x: 137, y: -83, scale: .86 }); const manual = h.cameraNow();
+  e.entities = e.entities.map(item => ({ ...item, description: 'Live metadata' })); e.rebuild(); h.resizeTo(450, 940);
+  assert.deepEqual(h.cameraNow(), manual); assert.equal(e.cameraFit.mine, 'manual');
+  const saved = h.savedViews.at(-1), reopened = mobileFlow(390, 844, { readableMobileFocus: true, data: tenInitialApps() });
+  reopened.environment.cameras.mine = { ...saved.mine }; reopened.environment.cameraFit.mine = saved.mineFit;
+  reopened.environment.contextFocus.mine = saved.mineContext; reopened.environment.rebuild();
+  assert.deepEqual(reopened.cameraNow(), manual); assert.equal(reopened.environment.cameraFit.mine, 'manual');
+  assert.deepEqual(h.commits, []); assert.deepEqual(reopened.commits, []);
+});
 
 test('readable mobile focus: actual 320/390 context cameras produce 118.4/144px uniform cells without changing placements or entities', () => {
   for (const [width, expected] of [[320, 118.4], [390, 144]]) {

@@ -109,7 +109,7 @@ export interface UnifiedField {
   update(update: UnifiedFieldUpdate): void;
   getCamera(): FieldCamera;
   setCamera(camera: FieldCamera): void;
-  focusContext(contextId: string): void;
+  focusContext(contextId: string, fit?: 'context' | 'overview'): void;
   revealShortcut(shortcutId:string):void;
   focusObject(shortcutId:string):FieldObjectView|null;
   closeObject():void;
@@ -297,6 +297,12 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   let lastInspection: { shortcutId: string; until: number } | null = null;
   let pendingPointer: { gesture: Gesture; point: FieldPoint } | { pinch: Pinch } | null = null, inPointerFrame = false;
   const viewportSize = () => ({ width: viewport.clientWidth || 900, height: viewport.clientHeight || 650 });
+  const fitViewport = () => {
+    const style = getComputedStyle(viewport);
+    return { ...viewportSize(),
+      insets: { top: parseFloat(style.scrollPaddingTop) || 0, right: parseFloat(style.scrollPaddingRight) || 0,
+        bottom: parseFloat(style.scrollPaddingBottom) || 0, left: parseFloat(style.scrollPaddingLeft) || 0 } };
+  };
   const camera = () => cameras[mode];
   const scene = (): FieldScene => mode === 'mine' ? combineFieldScene(fieldDocument,liveScene) : searchDocument;
   const activeLayout = (): UnifiedFieldLayout => {
@@ -320,25 +326,25 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   }
   function setCamera(next: FieldCamera, fit: CameraFit = 'manual'): void { if (destroyed) return; cameraFit[mode] = fit; cameras[mode] = normalizeFieldCamera(next); initialized[mode] = true; remember(); schedule(); emit(); }
   function fitOverview(): void {
-    const view = viewportSize();
+    const view = fitViewport();
     contextFocus[mode] = ''; setCamera(fitFieldCamera(layout.bounds, view, { padding: 60, maxScale: view.width >= 720 ? 1.15 : 1 }), 'overview');
   }
-  function focusContext(contextId: string): void {
+  function focusContext(contextId: string, fit: 'context' | 'overview' = 'context'): void {
     const context = layout.contexts.find(item => item.contextId === contextId); if (!context) return;
-    const view = viewportSize(), compact = view.width < 720;
+    const view = fitViewport(), compact = view.width < 720;
     const members = layout.nodes.filter(node => node.contextId === contextId);
     const bounds = compact && members.length ? fieldBounds(members.flatMap(node => node.footprint), 16) : context.bounds;
     const readableWidth = Math.min(144, view.width * .37, Math.max(1, view.height - 48) * Math.sqrt(3) / 2);
     const minScale = compact ? options.readableMobileFocus && members.length ? Math.max(.2, readableWidth / (Math.sqrt(3) * metrics.radius)) : .2 : .45;
-    const fitted = fitFieldCamera(bounds, view, { padding: compact ? 24 : 44, maxScale: compact ? 1 : 1.15, minScale });
-    if (compact && options.readableMobileFocus && members.length && !members.some(node =>
+    const fitted = fitFieldCamera(bounds, view, { padding: compact ? 24 : 44, maxScale: compact ? 1 : 1.15, ...(fit === 'context' ? { minScale } : {}) });
+    if (fit === 'context' && compact && options.readableMobileFocus && members.length && !members.some(node =>
       Math.abs((node.cx - fitted.x) * fitted.scale) + node.width * fitted.scale / 2 <= view.width / 2 - 24
       && Math.abs((node.cy - fitted.y) * fitted.scale) + node.height * fitted.scale / 2 <= view.height / 2 - 24)) {
       const anchor = members.find(node => node.shortcutId === selectedId) ?? members.reduce((nearest, node) =>
         (node.cx - fitted.x) ** 2 + (node.cy - fitted.y) ** 2 < (nearest.cx - fitted.x) ** 2 + (nearest.cy - fitted.y) ** 2 ? node : nearest);
       fitted.x = anchor.cx; fitted.y = anchor.cy;
     }
-    contextFocus[mode] = contextId; setCamera(fitted, 'context');
+    contextFocus[mode] = contextId; setCamera(fitted, fit);
   }
   function revealShortcut(shortcutId:string):void {
     const node=activeNode(shortcutId);if(!node||destroyed)return;
@@ -366,7 +372,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     }
     if (!initialized[mode] && viewport.clientWidth && viewport.clientHeight) {
       if (contextFocus[mode]) focusContext(contextFocus[mode]);
-      else if (viewport.clientWidth < 720 && layout.contexts[0]) focusContext(layout.contexts[0].contextId);
+      else if (viewport.clientWidth < 720 && layout.contexts[0]) focusContext(layout.contexts[0].contextId, 'overview');
       else fitOverview();
     }
     render();
@@ -1050,7 +1056,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     if (!initialized[mode]) rebuild();
     else if (changed && !gesture && !moving) {
       if (cameraFit[mode] === 'context' && contextFocus[mode]) focusContext(contextFocus[mode]);
-      else if (cameraFit[mode] === 'overview') fitOverview();
+      else if (cameraFit[mode] === 'overview') { if (contextFocus[mode]) focusContext(contextFocus[mode], 'overview'); else fitOverview(); }
       else render();
     }
     else render();

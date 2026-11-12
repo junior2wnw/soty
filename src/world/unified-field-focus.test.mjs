@@ -63,7 +63,7 @@ const compiled = ts.transpileModule(closureSource, {
 function harness(options, width = 1280, height = 800) {
   const viewport = { clientWidth: width, clientHeight: height, hasPointerCapture: () => false };
   const context = vm.createContext({ exports: {}, ...contract, ...camera, ...layout,...liveProjection,createFieldHistory,validateFieldPresentation,validateFieldDocument:contract.validateAnyFieldDocument,validateFieldEntity:contract.validateAnyFieldEntity,
-    structuredClone, performance, clearTimeout,
+    structuredClone, performance, clearTimeout, getComputedStyle: () => ({ scrollPaddingTop:'auto', scrollPaddingRight:'auto', scrollPaddingBottom:'auto', scrollPaddingLeft:'auto' }),
     viewport, plane: { contains: () => false }, document: { activeElement: null }, HTMLElement: class {},
     live: {}, render() {}, schedule() {}, flushPointerSample() {},
   });

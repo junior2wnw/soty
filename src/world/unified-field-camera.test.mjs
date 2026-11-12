@@ -21,6 +21,20 @@ test('overview fits arbitrary distant valid coordinates while focus can enforce 
   assert.ok(a.x >= 11.99 && b.x <= 308.01 && a.y >= 11.99 && b.y <= 488.01);
   assert.equal(fitFieldCamera(bounds, viewport, { minScale: .45 }).scale, .45);
 });
+test('fit uses the unobscured viewport without changing world/screen projection or zoom anchors', () => {
+  const bounds = { left: -200, top: -400, right: 200, bottom: 400 };
+  const viewport = { width: 390, height: 844, insets: { top: 12, right: 8, bottom: 88, left: 16 } };
+  const camera = fitFieldCamera(bounds, viewport, { padding: 24 });
+  const a = fieldWorldToScreen({ x: bounds.left, y: bounds.top }, camera, viewport);
+  const b = fieldWorldToScreen({ x: bounds.right, y: bounds.bottom }, camera, viewport);
+  assert.ok(a.x >= 40 - 1e-7 && b.x <= 358 + 1e-7);
+  assert.ok(a.y >= 36 - 1e-7 && b.y <= 732 + 1e-7);
+  const anchor = { x: 120, y: 220 }, world = fieldScreenToWorld(anchor, camera, viewport);
+  const zoomed = zoomFieldCamera(camera, 1.2, anchor, viewport);
+  const actual = fieldWorldToScreen(world, zoomed, viewport); near(actual.x, anchor.x); near(actual.y, anchor.y);
+  assert.deepEqual(fitFieldCamera(bounds, { width: 390, height: 844, insets: { bottom: NaN, left: -10 } }),
+    fitFieldCamera(bounds, { width: 390, height: 844 }));
+});
 test('semantic LOD hysteresis removes chatter and invalid camera input stays finite', () => {
   assert.equal(fieldLevelOfDetail(.43, 'overview'), 'overview'); assert.equal(fieldLevelOfDetail(.43, 'context'), 'context');
   assert.equal(fieldLevelOfDetail(.82, 'detail'), 'detail'); assert.equal(fieldLevelOfDetail(.82, 'context'), 'context');

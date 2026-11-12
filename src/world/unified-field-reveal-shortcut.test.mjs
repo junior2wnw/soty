@@ -46,7 +46,7 @@ function fixture(width = 390, height = 844, scale = 2) {
   const env = {exports: {}, mode: 'mine', destroyed: false, selectedId: 'reading-list', layout: data.layout,
     options: {readableMobileFocus: true}, metrics: UNIFIED_FIELD_METRICS,
     cameras: {mine: normalizeFieldCamera({x: -800, y: -600, scale})}, cameraFit: {mine: 'manual'}, initialized: {mine: true}, contextFocus: {mine: ''},
-    activeLayout: () => data.layout, viewportSize: () => viewport,
+    activeLayout: () => data.layout, viewportSize: () => viewport, fitViewport: () => viewport,
     normalizeFieldCamera, fieldBounds, fitFieldCamera,
     remember() {calls.remember++;}, schedule() {calls.schedule++;}, emit() {calls.emit++;},
   };

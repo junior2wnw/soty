@@ -1,6 +1,6 @@
 export interface FieldCamera {x:number;y:number;scale:number}
 export interface FieldPoint {x:number;y:number}
-export interface FieldViewport {width:number;height:number}
+export interface FieldViewport {width:number;height:number;insets?:Partial<{top:number;right:number;bottom:number;left:number}>}
 export interface FieldBounds {left:number;top:number;right:number;bottom:number}
 export const UNIFIED_SCALE_MIN:number;
 export const UNIFIED_SCALE_MAX:number;

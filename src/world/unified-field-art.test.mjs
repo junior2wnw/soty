@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { resolveAppArt } from './app-art.mjs';
@@ -57,6 +58,67 @@ function harness(resolveArt = () => art(), cachedImage) {
   vm.createContext(env); new vm.Script(code).runInContext(env);
   return { target, env, render: value => env.exports.renderNode(target, { entity: value }) };
 }
+
+// Real renderer DOM ports plus the shipped CSS cascade. Only the class,
+// attribute, :is(), :not() and descendant selectors used for caption colors are
+// needed here; browser typography and compositing remain a separate visual gate.
+const require = createRequire(import.meta.url), postcss = createRequire(require.resolve('vite/package.json'))('postcss');
+const fieldCss = readFileSync(new URL('./unified-field.css', import.meta.url), 'utf8');
+const oneFieldCss = readFileSync(process.env.SOTY_ONE_FIELD_CSS ?? new URL('./one-field.css', import.meta.url), 'utf8');
+function expandIs(selector) {
+  const start = selector.indexOf(':is('); if (start < 0) return [selector];
+  let end = start + 4, depth = 1;
+  while (depth && end < selector.length) { if (selector[end] === '(') depth++; if (selector[end] === ')') depth--; end++; }
+  return postcss.list.comma(selector.slice(start + 4, end - 1)).flatMap(branch => expandIs(selector.slice(0, start) + branch + selector.slice(end)));
+}
+function captionInk(target, cssText) {
+  const caption = target.querySelector('.uf-app-caption'), root = new Port('div', 'sw-app');
+  root.setAttribute('data-experience', 'one-field'); root.append(target);
+  const matchesCompound = (element, selector) => {
+    if (selector.includes('::') || selector.includes(':has(')) return false;
+    for (const [, denied] of selector.matchAll(/:not\((\.[\w-]+)\)/g)) if (element.classList.contains(denied.slice(1))) return false;
+    selector = selector.replace(/:not\([^)]*\)/g, '');
+    if (/:[\w-]/.test(selector)) return false;
+    return [...selector.matchAll(/\.([\w-]+)/g)].every(([, name]) => element.classList.contains(name))
+      && [...selector.matchAll(/\[([\w-]+)(?:=([^\]]+))?\]/g)].every(([, name, value]) => value === undefined
+        ? element.attributes.has(name) : element.attributes.get(name) === value.replace(/^['"]|['"]$/g, ''));
+  };
+  const matches = selector => {
+    const parts = selector.trim().split(/\s+/); let element = caption;
+    if (!matchesCompound(element, parts.pop())) return false;
+    while (parts.length) { const part = parts.pop(); element = element.parentElement; while (element && !matchesCompound(element, part)) element = element.parentElement; if (!element) return false; }
+    return true;
+  };
+  let winner;
+  postcss.parse(fieldCss + '\n' + cssText).walkRules(rule => {
+    for (let parent = rule.parent; parent; parent = parent.parent) if (parent.type === 'atrule' && parent.name === 'media' && /forced-colors/.test(parent.params)) return;
+    for (const selector of rule.selectors) {
+      if (!/(?:\.uf-app-caption|\.uf-label)$/.test(selector.trim())) continue;
+      const branches = expandIs(selector); if (!branches.some(matches)) continue;
+      const specificity = Math.max(...branches.map(branch => (branch.match(/\.[\w-]+|\[[^\]]+\]/g) ?? []).length));
+      for (const declaration of rule.nodes) if (declaration.type === 'decl' && declaration.prop === 'color') {
+        const rank = specificity + (declaration.important ? 1000 : 0);
+        if (!winner || rank >= winner.rank) winner = { rank, value: declaration.value };
+      }
+    }
+  });
+  assert.ok(winner, 'the real caption must have a matching shipped color rule');
+  return winner.value.replace(/var\(--uf-art-ink,\s*var\(--sw-ink\)\)/g, target.style['--uf-art-ink'])
+    .replace(/var\(--sw-ink\)/g, '#252726');
+}
+test('one-field fallback captions retain their contrast palette after missing or failed art, while loaded covers stay white', () => {
+  for (const kind of ['app', 'builtin']) for (const state of ['missing', 'failed', 'ready']) {
+    const h = harness(() => art(state === 'missing' ? {} : { src: '/cover.webp' }));
+    h.render(entity('contrast-fixture', 'Читаемая подпись', { entity: { kind, id: 'contrast-fixture' } }));
+    h.target.querySelector('img')?.dispatch(state === 'ready' ? 'load' : 'error');
+    assert.equal(captionInk(h.target, oneFieldCss), state === 'ready' ? '#fffefa' : '#F5FFE9', `${kind} ${state}`);
+  }
+});
+test('negative control rejects the original one-field palette override on the actual fallback caption', () => {
+  const h = harness(); h.render(entity());
+  const originalOverride = oneFieldCss + '\n.sw-app[data-experience=one-field] .uf-node-app .uf-app-caption { color:var(--sw-ink); }';
+  assert.throws(() => assert.equal(captionInk(h.target, originalOverride), '#F5FFE9'), error => error.code === 'ERR_ASSERTION');
+});
 
 test('an app with no image uses its resolver palette, a large existing symbol and its real caption', () => {
   const h = harness(); h.render(entity());

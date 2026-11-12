@@ -87,6 +87,7 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
   // Production Directory, contract and field share one JS realm. These genuine
   // closures share one VM too; only the synthetic initial JSON DTO crosses in.
   environment = { ...camera, ...layout,...liveProjection,createFieldHistory, TextEncoder, crypto, performance, clearTimeout,
+    getComputedStyle: () => ({ scrollPaddingTop:'auto', scrollPaddingRight:'auto', scrollPaddingBottom:'auto', scrollPaddingLeft:'auto' }),
     liveApps:[],liveProjection:{update:()=>({contexts:[],shortcuts:[]})},refreshLiveApps:async()=>{},
     viewport: { clientWidth: 393, clientHeight: 700, hasPointerCapture: () => false }, plane: { contains: () => false }, document: { activeElement: null }, HTMLElement: NodePort, live: {}, render() {}, schedule() {}, flushPointerSample() {},
     signal: new AbortController().signal, mode, queries: { mine: '', search: '' }, filter: 'all', mineGeneration: 0, mineResolvedGeneration: -1, mineConfirmedGeneration: -1,
