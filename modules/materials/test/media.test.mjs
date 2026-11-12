@@ -34,3 +34,36 @@ test('scoped VP8/Opus video verifies tracks, dimensions and actual keyframe head
   const mismatch=Buffer.from(bytes);mismatch[signature+3]^=1;await assert.rejects(inspectMaterialMedia(mismatch,'video','video/webm'),error=>error.code==='materials_video_bounds');
   await assert.rejects(inspectMaterialMedia(bytes.subarray(0,32),'video','video/webm'));
 });
+
+function observedWebm(trackTypes) {
+  const size=value=>{let width=1;while(value>=2**(7*width)-1)width++;const bytes=Buffer.alloc(width);let encoded=BigInt(value)|(1n<<BigInt(7*width));for(let i=width-1;i>=0;i--){bytes[i]=Number(encoded&255n);encoded>>=8n;}return bytes;};
+  const element=(id,payload)=>Buffer.concat([Buffer.from(id,'hex'),size(payload.length),payload]);
+  const head=Buffer.alloc(19);head.write('OpusHead');head[9]=1;
+  const entries=trackTypes.map((type,index)=>{
+    const number=Buffer.alloc(3);number.writeUIntBE(index+1,0,3);
+    return element('ae',Buffer.concat([element('d7',number),element('83',Buffer.from([type])),
+      element('86',Buffer.from(type===1?'V_VP8':'A_OPUS')),
+      type===1?element('e0',Buffer.concat([element('b0',Buffer.from([1])),element('ba',Buffer.from([1]))])):element('63a2',head)]));
+  });
+  const bytes=Buffer.concat([element('1a45dfa3',element('4282',Buffer.from('webm'))),
+    element('18538067',Buffer.concat([element('1654ae6b',Buffer.concat(entries)),
+      element('1f43b675',Buffer.concat([element('e7',Buffer.from([0])),element('a3',Buffer.from([0x81,0,0,0,0]))]))]))]);
+  const reads={codecs:0,blocks:0},toString=bytes.toString,readInt16BE=bytes.readInt16BE;
+  // Count parser work on this Buffer only; no runtime timing or global instrumentation.
+  bytes.toString=function(...args){const value=toString.apply(this,args);if(args[0]==='ascii'&&['V_VP8','A_OPUS'].includes(value))reads.codecs++;return value;};
+  bytes.readInt16BE=function(...args){reads.blocks++;return readInt16BE.apply(this,args);};
+  return {bytes,reads};
+}
+
+for(const kind of ['audio','video'])test(`${kind} WebM rejects 20000 tracks before reading excess track codecs`,async()=>{
+  const types=Array(20000).fill(2);if(kind==='video')types[0]=1;
+  const {bytes,reads}=observedWebm(types);assert.ok(bytes.length>800000&&bytes.length<1048576);
+  await assert.rejects(inspectMaterialMedia(bytes,kind,kind+'/webm'),error=>error.code==='materials_media_invalid');
+  assert.equal(reads.codecs,kind==='video'?2:1);assert.equal(reads.blocks,0);
+});
+
+for(const type of [1,2])test(`video WebM rejects duplicate track type ${type} before reading any blocks`,()=>{
+  const {bytes,reads}=observedWebm([type,type]);
+  assert.throws(()=>inspectMaterialVideo(bytes,'video/webm'),error=>error.code==='materials_media_invalid');
+  assert.equal(reads.codecs,2);assert.equal(reads.blocks,0);
+});

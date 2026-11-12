@@ -107,10 +107,11 @@ function webm(bytes, limits, kind='audio') {
       });
       else if(node.id===0x1654ae6b) children(node.start,node.end,entry=>{
         if(entry.id!==0xae) return;
+        check(tracks.length<(kind==='video'?2:1),'materials_media_invalid');
         const track={number:0,type:0,codec:'',head:null,width:0,height:0};
         children(entry.start,entry.end,child=>{if(child.id===0xd7)track.number=uint(child.start,child.end);else if(child.id===0x83)track.type=uint(child.start,child.end);else if(child.id===0x86)track.codec=ascii(bytes,child.start,child.end);else if(child.id===0x63a2)track.head=bytes.subarray(child.start,child.end);
           else if(child.id===0xe0)children(child.start,child.end,video=>{if(video.id===0xb0)track.width=uint(video.start,video.end);else if(video.id===0xba)track.height=uint(video.start,video.end);});});
-        check(track.number>0&&!tracks.some(value=>value.number===track.number),'materials_media_invalid');
+        check(track.number>0&&!tracks.some(value=>value.number===track.number||value.type===track.type),'materials_media_invalid');
         if(track.type===2){check(track.codec==='A_OPUS'&&track.head,'materials_audio_unsupported');opusHead(track.head);}
         else check(kind==='video'&&track.type===1&&track.codec==='V_VP8'&&track.width>0&&track.height>0
           &&track.width<=limits.videoSide&&track.height<=limits.videoSide&&track.width*track.height<=limits.videoPixels,'materials_video_unsupported');
