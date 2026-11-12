@@ -34,8 +34,8 @@ async (page) => {
   await app().getByRole('button',{name:'Синтетический объект browser runner',exact:true}).waitFor();
   check(await readInApp(async()=>{for(let attempt=0;attempt<20;attempt++){const response=await fetch('/api/embed/state');if(response.ok&&(await response.json()).entities.some(value=>value.title==='Синтетический объект browser runner'))return true;await new Promise(done=>setTimeout(done,100));}return false;}),'realWriteCommitted');
   await page.evaluate(()=>{window.__scopedQaFrame=document.querySelector('iframe');});
-  await page.getByRole('button',{name:'Сообщить проблему',exact:true}).click();await page.keyboard.press('Escape');
-  check(await page.evaluate(()=>window.__scopedQaFrame===document.querySelector('iframe')&&document.activeElement?.getAttribute('aria-label')==='Сообщить проблему'),'iframeAndFocus');
+  await page.getByRole('button',{name:'Обратная связь',exact:true}).click();await page.keyboard.press('Escape');
+  check(await page.evaluate(()=>window.__scopedQaFrame===document.querySelector('iframe')&&document.activeElement?.getAttribute('aria-label')==='Обратная связь'),'iframeAndFocus');
   await action('Перезапустить исходное приложение');
   const retained=await readInApp(async()=>{const response=await fetch('/api/embed/state'),state=await response.json();const object=state.entities.find(value=>value.title==='Синтетический объект browser runner');return response.status===200&&state.workspaces.length===1&&object?.plan?.start===null;});check(retained,'realUndatedRetained');
   const denied=await readInApp(async()=>{const legacy=await fetch('/api/state'),foreign=await fetch('/api/embed/entities',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspaceId:'not-selected',title:'Must not create'})});return legacy.status>=400&&foreign.status===403;});check(denied,'privateAndLegacyDenied');

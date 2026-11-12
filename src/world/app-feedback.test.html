@@ -10,9 +10,11 @@
 <script type="module">
 import './world.css';
 import { mountAppStage } from './app-stage.ts';
+import { mountShellGlass } from './shell-glass.ts';
 import { formatAppLaunchRoute, parseAppLaunchRoute } from './app-launch.mjs';
 if(!import.meta.env.DEV)throw new Error('fixture_dev_only');
 const host=document.querySelector('#host'), result=document.querySelector('#result');
+mountShellGlass(host,{renderPolicy:'auto'});
 const appId=`app-${'78'.repeat(16)}`,domainId=`dom_${'79'.repeat(16)}`;
 let stage=null,generation=0, serial=0;
 const delay=ms=>new Promise(done=>setTimeout(done,ms));
@@ -21,15 +23,16 @@ function assert(check,label){if(!check)throw new Error(label);}
 const click=text=>[...host.querySelectorAll('button')].find(node=>node.textContent.trim()===text)?.click();
 function model(){
  const accountId=`fixture-feedback-${crypto.randomUUID()}`, installationId=`installation_${++serial}`, calls=[], submissions=[], replies=[], actions=[], actionReceipts=new Map();
- let lose=false, hold=false, release=null, ticket=null, loseAction=false;
+ let lose=false, hold=false, release=null, ticket=null, loseAction=false, refuseVideo=false;
  const context={installationId,appId,title:'Независимый пример',recipientLabel:'Ответственный за тестовое приложение',ticketVisibility:'reporter-and-support',canSubmit:true,canManage:true,
- capabilities:{text:true,voice:true,screenshot:true,asr:false},limits:{bodyChars:8000,totalAttachmentBytes:1048576,maxAttachments:3,maxAudioSeconds:120}};
+ capabilities:{text:true,voice:true,screenshot:true,video:true,asr:false},limits:{bodyChars:8000,totalAttachmentBytes:1048576,maxAttachments:3,maxAudioSeconds:120}};
  const api={async request(op,args){calls.push({op,requestId:args?.requestId??null});
   if(op==='apps.saved.get')return{revision:0,entry:null};
   if(op==='apps.feedback.context'){if(hold){hold=false;return new Promise(done=>{release=()=>done({context,readiness:'ready'});});}return{context,readiness:'ready'};}
   if(op==='apps.feedback.list')return{tickets:ticket?[ticket]:[],nextCursor:null};
   if(op==='apps.feedback.get')return{ticket};
   if(op==='apps.feedback.submit'){
+   if(refuseVideo){refuseVideo=false;throw Object.assign(new Error('feedback_video_duration_limit'),{code:'feedback_video_duration_limit'});}
    submissions.push(structuredClone(args));
    ticket??={id:'ticket_fixture',appId,installationId,body:args.body,status:'received',revision:1,createdAt:Date.now(),attachments:args.attachments,messages:[],canReply:true,canManage:true,canAccept:false};
    if(lose){lose=false;throw Object.assign(new Error('synthetic_response_loss'),{code:'synthetic_response_loss'});}
@@ -47,14 +50,14 @@ function model(){
   }
   throw Object.assign(new Error('fixture_operation_unsupported'),{code:'fixture_operation_unsupported'});
  }};
- return{accountId,api,calls,submissions,replies,actions,lose(){lose=true;},loseAction(){loseAction=true;},advance(){ticket={...ticket,revision:ticket.revision+1};},hold(){hold=true;},release(){release?.();}};
+ return{accountId,api,calls,submissions,replies,actions,refuseVideo(){refuseVideo=true;},lose(){lose=true;},loseAction(){loseAction=true;},advance(){ticket={...ticket,revision:ticket.revision+1};},hold(){hold=true;},release(){release?.();}};
 }
 async function boot(f){
  stage?.dispose();const token=++generation;
  const origin=`http://fixture-app.localhost:${location.port}`,entry={appId,domainId,origin,path:'/start'};
  const intent=parseAppLaunchRoute(formatAppLaunchRoute({appId,domainId,path:'/start'}));history.replaceState(null,'','#'+intent.route);
  const app={appId,name:'Независимый пример',status:'ready',ownerAccountId:f.accountId};
- stage=mountAppStage(host,{api:f.api,accountId:f.accountId,app,intent,isCurrent:()=>token===generation,
+ stage=mountAppStage(host,{minimalChrome:true,api:f.api,accountId:f.accountId,app,intent,isCurrent:()=>token===generation,
   async request(){f.calls.push({op:'launch',requestId:null});return{url:`${origin}/_soty/boot?path=%2Fstart#${'a'.repeat(43)}`,entry};},
   onNavigate(next){history.replaceState(null,'','#'+next.route);},onBack(){},async onAccount(){},onSettings(){}});
  await stage.ready;const frame=host.querySelector('iframe');
@@ -88,6 +91,13 @@ async function run(){
   await open();checks.push('Новый аккаунт получает свою пустую панель.');
   const volatile=host.querySelector('[type=checkbox]');volatile.click();const words=host.querySelector('[aria-label="Содержание обращения"]');words.value='Без локального сохранения';words.dispatchEvent(new Event('input',{bubbles:true}));click('Отправить');
   await until(()=>host.querySelector('.sf-notice')?.textContent.includes('Принято сервером'),'volatile_cannot_submit');assert(next.submissions[0]?.body==='Без локального сохранения','volatile_payload_missing');checks.push('Явный отказ от локального сохранения оставляет отправку доступной; до receipt намерение остаётся в памяти.');
+  const rejected=model();await boot(rejected);await open();rejected.refuseVideo();
+  const edit=host.querySelector('[aria-label="Содержание обращения"]');edit.value='Текст после отказа видео';edit.dispatchEvent(new Event('input',{bubbles:true}));click('Отправить');
+  await until(()=>host.querySelector('.sf-notice')?.textContent.includes('Видео должно'),'video_refusal_not_visible');
+  assert(!edit.disabled&&edit.value==='Текст после отказа видео','video_refusal_locked_or_erased_draft');
+  assert(![...host.querySelectorAll('button')].some(b=>b.textContent.trim()==='Проверить отправку'),'video_refusal_kept_rejected_intent');
+  click('Отправить');await until(()=>host.querySelector('.sf-notice')?.textContent.includes('Принято сервером'),'corrected_video_intent_not_sent');
+  checks.push('Явный отказ длительности видео сохраняет текст, снимает pending и разрешает исправление без бесконечного повтора.');
   result.dataset.status='pass';result.textContent=checks.join('\n');
  }catch(error){result.dataset.status='fail';result.textContent='FAIL: '+String(error.message).replace(/[^a-zA-Z0-9_ -]/g,'').slice(0,160);}
 }

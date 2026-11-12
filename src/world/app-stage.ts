@@ -177,14 +177,15 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const savedReplacementHost = el('div', 'sa-saved-entry-shortcut'); savedReplacementHost.hidden = true;
   const feedbackHost = el('div');
   const reviewsHost = el('div');
-  const report = button('Сообщить проблему', 'flag', 'sw-button-quiet', () => {
+  const report = button('Обратная связь', 'flag', '', () => {
     if (!presented()) return;
     if (!moreBody.hidden) closeMore(true);
     feedback ??= mountAppFeedback(feedbackHost, { api: options.api, accountId, appId: app.appId, title: app.name, isCurrent: presented,
       onModalChange: (modal, open) => { if (!open || presented()) options.onModalChange?.(modal, open); } });
     feedback.open();
   });
-  report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';
+  report.setAttribute('aria-label', 'Обратная связь'); report.title = 'Обратная связь';
+  report.setAttribute('aria-haspopup', 'dialog');
   report.dataset.stageControl = 'feedback';
   const field = iconButton('Разместить на поле', 'plus', () => {
     if (!presented() || field.disabled || !saved) return;
@@ -249,7 +250,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }
   function syncShortToolbar(): void {
     if (options.presentation === 'widget' || !presented()) return;
-    const controls = [field, report], target = compactToolbar() ? moreBody : header;
+    const controls = [field], target = compactToolbar() ? moreBody : header;
     if (controls.some(control => control.parentElement !== target)) {
       const restoreFocus = controls.some(control => control.contains(host.ownerDocument.activeElement));
       if (compactToolbar()) moreBody.prepend(...controls);
@@ -273,7 +274,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (presented()) { closeMore(); void navigatePresentation({ panel: 'discussion' }, true); }
   });
   discuss.setAttribute('aria-controls', panel.id); discuss.dataset.stageControl = 'discussion';
-  modes.append(application, discuss);
+  modes.append(application, discuss, report);
   const more = iconButton('Действия с приложением', 'more', () => {
     if (!presented()) return;
     if(options.minimalChrome&&options.presentation!=='widget'){
@@ -481,7 +482,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   assistToggle.setAttribute('aria-pressed', 'false'); assistToggle.hidden = options.presentation === 'widget'; moreBody.append(assistToggle);
   const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding() || closeAssistDialog && !presented()) stopAssist(); }, 250);
-  header.append(back, title, modes, field, report, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, savedReplacementHost, workspace, feedbackHost, reviewsHost);
+  header.append(back, title, modes, field, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, savedReplacementHost, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   syncShortToolbar();
   const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,

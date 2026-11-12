@@ -14,8 +14,8 @@ export function validateAttachmentBudget(attachments, limits = FEEDBACK_MEDIA_LI
   if (!Array.isArray(attachments) || attachments.length > limits.maxAttachments) throw new Error('feedback_attachment_count');
   let bytes = 0;
   for (const value of attachments) {
-    if (!value || !['image', 'audio'].includes(value.kind) || typeof value.name !== 'string' || value.name.length > 120 ||
-        !(value.kind === 'image' ? ['image/png', 'image/jpeg', 'image/webp'] : ['audio/webm', 'audio/ogg']).includes(value.mimeType)) throw new Error('invalid_feedback_attachment');
+    if (!value || !['image', 'audio', 'video'].includes(value.kind) || typeof value.name !== 'string' || value.name.length > 120 ||
+        !(value.kind === 'image' ? ['image/png', 'image/jpeg', 'image/webp'] : value.kind === 'audio' ? ['audio/webm', 'audio/ogg'] : ['video/webm']).includes(value.mimeType)) throw new Error('invalid_feedback_attachment');
     bytes += attachmentBytes(value);
   }
   if (bytes > limits.totalAttachmentBytes) throw new Error('feedback_attachment_bytes');
@@ -89,6 +89,13 @@ export async function blobAttachment(blob, kind, name, signal) {
   aborted(signal);
   const dataBase64 = await readData(blob); aborted(signal);
   return { kind, name, mimeType: blob.type.split(';')[0], dataBase64 };
+}
+export async function videoFile(file, maxBytes, signal) {
+  aborted(signal);
+  if (file?.type !== 'video/webm' || !Number.isSafeInteger(file.size) || file.size <= 0) throw new Error('feedback_video_format');
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || file.size > maxBytes) throw new Error('feedback_attachment_bytes');
+  // The server validates the actual container, tracks and duration before saving.
+  return blobAttachment(file, 'video', 'video.webm', signal);
 }
 const canvasBlob = (canvas, type, quality) => new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('feedback_image_export')), type, quality));
 

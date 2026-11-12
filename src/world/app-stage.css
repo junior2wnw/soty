@@ -49,6 +49,7 @@
 .sa-mode-switch { display: flex; gap: 2px; flex: none; padding: 3px; border: 1px solid var(--sw-line); border-radius: 14px; }
 .sa-mode-switch>.sw-button { min-height: 44px; min-width: 44px; margin: 0; padding: 8px 12px; border: 0; border-radius: 10px; background: transparent; font-size: 13px; }
 .sa-mode-switch>.sw-button[aria-pressed=true] { background: var(--sw-selected); color: var(--sw-ink); }
+.sa-mode-switch>.sw-button>span { min-width: 0; white-space: normal; line-height: 16px; }
 .sa-stage.has-discussion:not(.has-runtime)>.sa-workspace>.sa-runtime { display: none; }
 .sa-stage.has-discussion:not(.has-runtime)>.sa-workspace>.sa-discussion { flex: 1; border: 0; }
 @media (max-width: 900px) {
@@ -138,4 +139,5 @@
   .sa-stage:not(.sa-widget-stage)>.sa-toolbar>.sw-icon-button:first-child { grid-area: 1/4; order: initial; }
   .sa-stage:not(.sa-widget-stage)>.sa-toolbar>.sa-mode-switch { grid-area: 2/1/3/-1; min-width: 0; padding: 1px; }
   .sa-stage:not(.sa-widget-stage)>.sa-toolbar>.sa-mode-switch>.sw-button { flex: 1; min-width: 0; font-size: 12px; padding: 6px; }
+  .sa-stage:not(.sa-widget-stage)>.sa-toolbar>.sa-mode-switch>.sw-button>.sw-icon { display: none; }
 }

@@ -15,10 +15,12 @@
 import './world.css';
 import {createConnectClient} from '../../modules/connect/browser/index.mjs';
 import {mountAppStage} from './app-stage.ts';
+import {mountShellGlass} from './shell-glass.ts';
 import {formatAppLaunchRoute,parseAppLaunchRoute} from './app-launch.mjs';
 import {accountClient} from '../core/connect-client.ts';
 if(!import.meta.env.DEV||!['127.0.0.1','localhost'].includes(location.hostname))throw new Error('fixture_dev_only');
 const host=document.querySelector('#host'),output=document.querySelector('#result'),actions=[...document.querySelectorAll('.qa button:not(#start)')];
+mountShellGlass(host,{renderPolicy:'auto'});
 let stage,client,other,info,accountId,foreignId,lastTicketId=null,lastSubmitted=null,stageGeneration=0,submissions=[],lastProof=null;
 const humanOutput=document.querySelector('#human-result');let rootAccountId=null,otherRootId=null;
 const showHuman=value=>{humanOutput.textContent=typeof value==='string'?value:JSON.stringify(value,null,2);};
@@ -46,7 +48,7 @@ async function start(){
   stage=mountAppStage(host,{api,accountId,app:{appId:record.id,name:record.name,status:record.state,ownerAccountId:record.ownerAccountId},intent,isCurrent:()=>token===stageGeneration,
     async request(args){const result=await client.extension('apps.launch',args,{expectedAccountId:accountId});return{url:result.launchUrl,entry:result.entry};},
     onNavigate(next){history.replaceState(null,'','#'+next.route);},onBack(){},async onAccount(){},onSettings(){}});
-  await stage.ready;actions.forEach(value=>{value.disabled=false;});show('Готово. Введите значение внутри настоящего приложения. Откройте «Сообщить проблему», добавьте синтетический PNG и текст. Для lost ACK сначала нажмите кнопку стенда.');
+  await stage.ready;actions.forEach(value=>{value.disabled=false;});show('Готово. Введите значение внутри настоящего приложения. Откройте «Обратная связь», добавьте синтетические вложения и текст. Для lost ACK сначала нажмите кнопку стенда.');
  }catch(error){show(code(error),'fail');}
 }
 async function verify(){

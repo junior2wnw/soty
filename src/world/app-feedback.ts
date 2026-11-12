@@ -1,18 +1,18 @@
 import './app-feedback.css';
 import { button, el, labeledField } from './dom';
 import type { WorldApi } from './types';
-import { attachmentBytes, validateAttachmentBudget, rasterFile, captureSelectedDisplay, createFeedbackRecorder, editRaster,
+import { attachmentBytes, validateAttachmentBudget, rasterFile, videoFile, captureSelectedDisplay, createFeedbackRecorder, editRaster,
   type FeedbackAttachment, type RasterRect } from './feedback-media.mjs';
 
 interface FeedbackContext {
   installationId: string; appId: string; title: string; recipientLabel: string;
   ticketVisibility: 'reporter-and-support'; canSubmit: boolean; canManage: boolean;
-  capabilities: { text: boolean; voice: boolean; screenshot: boolean; asr: boolean };
+  capabilities: { text: boolean; voice: boolean; screenshot: boolean; video?: boolean; asr: boolean };
   limits: { bodyChars: number; totalAttachmentBytes: number; maxAttachments: number; maxAudioSeconds: number };
   readiness?: 'ready' | 'pending' | 'unavailable';
 }
 interface FeedbackMessage { id?: string; body: string; createdAt: string | number; kind?: string; label?: string; }
-interface TicketAttachment { id?: string; kind: 'image' | 'audio'; name: string; mimeType: string; dataBase64?: string; byteLength?: number; }
+interface TicketAttachment { id?: string; kind: 'image' | 'audio' | 'video'; name: string; mimeType: string; dataBase64?: string; byteLength?: number; }
 interface FeedbackTicket {
   id: string; appId: string; installationId: string; body: string; status: string; revision: number;
   createdAt: string | number; updatedAt?: string | number; attachments?: TicketAttachment[];
@@ -40,15 +40,17 @@ export interface AppFeedbackHandle { open(): void; flush(): Promise<void>; hasUn
 const DEFAULT_LIMITS = { bodyChars: 8000, totalAttachmentBytes: 1048576, maxAttachments: 3, maxAudioSeconds: 120 };
 const statuses: Record<string, string> = { received: 'Принято', in_progress: 'В работе', needs_action: 'Нужно ваше действие', needs_answer: 'Нужно ваше действие', ready_to_check: 'Готово для проверки', resolved: 'Решено' };
 const mediaRefusals = new Set(['feedback_attachment_invalid', 'feedback_attachment_limit', 'feedback_audio_duration_limit', 'feedback_audio_duration_unknown',
-  'feedback_image_dimensions_limit', 'feedback_media_invalid', 'feedback_media_unsupported', 'feedback_invalid_body']);
+  'feedback_image_dimensions_limit', 'feedback_media_invalid', 'feedback_media_unsupported', 'feedback_invalid_body', 'feedback_video_duration_limit']);
 const errorCode = (error: unknown) => error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
 function failure(error: unknown): string {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
   if (['feedback_attachment_bytes', 'feedback_attachment_limit'].includes(code)) return 'Вложения вместе должны занимать не больше 1 МиБ, максимум три файла. Удалите вложение или сократите запись.';
   if (code === 'feedback_attachment_count') return 'Можно приложить не больше трёх файлов.';
   if (['feedback_image_format', 'feedback_image_dimensions', 'feedback_image_dimensions_limit'].includes(code)) return 'Выберите PNG, JPEG или WebP до 8 МиБ и 16 миллионов пикселей.';
+  if (code === 'feedback_video_format') return 'Выберите видео WebM. MP4 пока не поддерживается. Все вложения вместе — до 1 МиБ.';
+  if (code === 'feedback_video_duration_limit') return 'Видео должно быть короче двух минут. Выберите короткий фрагмент; текст сохранён.';
   if (['feedback_audio_duration_limit', 'feedback_audio_duration_unknown'].includes(code)) return 'Сервер не подтвердил допустимую длительность аудио. Удалите запись и запишите короткую заново; текст сохранён.';
-  if (['feedback_attachment_invalid', 'feedback_media_invalid', 'feedback_media_unsupported'].includes(code)) return 'Сервер не принял формат вложения. Удалите его или выберите другой снимок; текст сохранён.';
+  if (['feedback_attachment_invalid', 'feedback_media_invalid', 'feedback_media_unsupported'].includes(code)) return 'Сервер не принял вложение. Видео поддерживается в WebM (VP8). Удалите файл или выберите другой; текст сохранён.';
   if (code === 'feedback_invalid_body') return 'Проверьте содержание сообщения: оно не должно быть пустым или длиннее 8000 символов.';
   if (code === 'feedback_capture_unavailable') return 'Снимок экрана здесь недоступен. Выберите файл изображения.';
   if (error instanceof DOMException && ['NotAllowedError', 'NotFoundError'].includes(error.name)) return 'Доступ не предоставлен. Текст и выбранный файл остаются доступны.';
@@ -97,7 +99,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
   } catch { draftWarning = 'Не удалось восстановить локальный черновик. Новое сообщение не отправлено.'; }
 
   const dialog = el('dialog', 'sf-dialog'); dialog.setAttribute('aria-labelledby', `feedback-heading-${options.appId}`);
-  const header = el('header', 'sf-header'), title = el('h2', '', 'Сообщить проблему'); title.id = `feedback-heading-${options.appId}`;
+  const header = el('header', 'sf-header'), title = el('h2', '', 'Обратная связь'); title.id = `feedback-heading-${options.appId}`;
   const close = button('Закрыть', 'close', 'sw-button-quiet', () => closeDialog()); header.append(title, close);
   const subtitle = el('p', 'sf-subtitle', options.title), audience = el('p', 'sf-audience', 'Проверяем получателя…');
   const notice = el('p', 'sf-notice'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite'); notice.hidden = true;
@@ -110,16 +112,16 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
   const historyTab = button('История', 'history', '', () => { compose.hidden = true; history.hidden = false; composeTab.setAttribute('aria-pressed', 'false'); historyTab.setAttribute('aria-pressed', 'true'); void loadHistory(); });
   composeTab.setAttribute('aria-pressed', 'true'); historyTab.setAttribute('aria-pressed', 'false'); navigation.append(composeTab, historyTab);
   const form = el('form', 'sf-form'), text = el('textarea', 'sw-input'); text.rows = 5; text.maxLength = 8000; text.value = draft.body;
-  text.placeholder = 'Что произошло? Можно написать, записать голос или приложить снимок.'; text.setAttribute('aria-label', 'Содержание обращения');
+  text.placeholder = 'Что улучшить или что вам понравилось?'; text.setAttribute('aria-label', 'Содержание обращения');
   const media = el('div', 'sf-media-actions'), previews = el('div', 'sf-previews');
-  const recordButton = button('Записать голос');
+  const recordButton = button('Записать голос', 'mic');
   const captureButton = button('Выбрать экран', 'image');
   recordButton.addEventListener('click', event => { if (event.isTrusted) void record(); });
   captureButton.addEventListener('click', event => { if (event.isTrusted) void capture(); });
   const file = el('input'); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/webp'; file.hidden = true;
-  const fileButton = button('Выбрать снимок', 'image', '', () => file.click());
+  const fileButton = button('Фото', 'image', '', () => file.click());
   media.append(recordButton, captureButton, fileButton, file);
-  const noTranscript = el('p', 'sw-muted sf-hint', 'Голос отправляется как аудио. Автоматическая расшифровка пока недоступна.');
+  const noTranscript = el('p', 'sw-muted sf-hint', 'До трёх вложений, вместе до 1 МиБ. Голос отправляется без расшифровки.');
   const storage = el('input'); storage.type = 'checkbox'; storage.checked = true;
   const storageLabel = el('label', 'sf-storage'); storageLabel.append(storage, el('span', '', 'Сохранять черновик в этом браузере на сутки'));
   const submit = button('Отправить', undefined, 'sw-button-primary'); submit.type = 'submit';
@@ -141,6 +143,10 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
     const pending = !!draft.pending, available = !!context?.canSubmit && readiness === 'ready' && (!draft.installationId || draft.installationId === context.installationId);
     text.disabled = busy || pending; fileButton.disabled = captureButton.disabled = busy || pending || !available || context?.capabilities.screenshot === false;
     recordButton.disabled = busy || pending || !available || context?.capabilities.voice === false;
+    const video = context?.capabilities.video === true;
+    file.accept = video ? 'image/png,image/jpeg,image/webp,video/webm' : 'image/png,image/jpeg,image/webp';
+    fileButton.querySelector('span')!.textContent = video ? 'Фото / видео' : 'Фото';
+    noTranscript.textContent = video ? 'До трёх вложений, вместе до 1 МиБ. Видео — WebM (VP8) до двух минут; голос без расшифровки.' : 'До трёх вложений, вместе до 1 МиБ. Голос отправляется без расшифровки.';
     submit.disabled = busy || !available;
     submit.querySelector('span')!.textContent = pending ? 'Проверить отправку' : 'Отправить';
     if (recording) { recordButton.disabled = false; submit.disabled = captureButton.disabled = fileButton.disabled = true; }
@@ -167,7 +173,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
       context = { ...value, limits: Object.fromEntries(Object.entries(DEFAULT_LIMITS).map(([name, maximum]) => [name, Math.min(maximum, Number(value.limits?.[name as keyof typeof DEFAULT_LIMITS]) || maximum)])) as typeof DEFAULT_LIMITS }; readiness = result.readiness ?? value.readiness ?? 'ready';
       subtitle.textContent = context.title;
       if (!draft.installationId) { draft.installationId = context.installationId; persist(); }
-      audience.textContent = `Получатель: ${context.recipientLabel}. Он получит текст и выбранные вложения. Обращение видно вам и допущенной поддержке; оно не публикуется как отзыв.`;
+      audience.textContent = `Получатель: ${context.recipientLabel}. Личное обращение; оно не публикуется как отзыв.`;
       historyHeading.textContent = context.canManage ? 'Обращения приложения' : 'Ваши обращения';
       if (draft.installationId !== context.installationId) say('Очередь изменилась. Прежний черновик не перенесён новому получателю.');
       else if (readiness !== 'ready' || !context.canSubmit) say('Очередь пока недоступна. Черновик можно сохранить и проверить позже.');
@@ -192,8 +198,9 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
   }
   file.addEventListener('change', () => {
     const selected = file.files?.[0]; file.value = ''; if (!selected || !current() || busy || draft.pending) return;
+    if (selected.type.startsWith('video/') && context?.capabilities.video !== true) { say('Видео пока недоступно для этой очереди. Можно приложить фото или голос.'); return; }
     busy = true; controls(); const signal = session.signal;
-    void rasterFile(selected, remaining(), signal).then(value => { if (current() && !signal.aborted) addAttachment(value); })
+    void (selected.type.startsWith('video/') ? videoFile(selected, remaining(), signal) : rasterFile(selected, remaining(), signal)).then(value => { if (current() && !signal.aborted) addAttachment(value); })
       .catch(error => { if (!abortError(error) && !signal.aborted) say(failure(error)); }).finally(() => { if (current()) { busy = false; controls(); } });
   });
   async function record(): Promise<void> {
@@ -247,7 +254,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
         };
         const crop = button('Обрезать выделение', undefined, '', () => edit('crop')), redact = button('Скрыть выделение', undefined, '', () => edit('redact'));
         crop.disabled = redact.disabled = !!draft.pending; actions.append(crop, redact); row.append(el('small', 'sw-muted', 'Выделите участок, чтобы обрезать или скрыть его. Изменения сохраняются в самом изображении.'), actions);
-      } else { const audio = el('audio'); audio.controls = true; audio.preload = 'metadata'; audio.src = mediaUrl(item); row.append(audio); }
+      } else { const player = el(item.kind === 'video' ? 'video' : 'audio'); player.controls = true; player.preload = 'metadata'; player.src = mediaUrl(item); if (player instanceof HTMLVideoElement) player.playsInline = true; row.append(player); }
       const remove = button('Убрать вложение', 'close', 'sw-button-quiet', () => { if (busy || draft.pending) return; draft.attachments.splice(index, 1); persist(); renderPreviews(); }); remove.disabled = !!draft.pending;
       row.append(el('span', 'sf-file-size', `${Math.ceil(attachmentBytes(item) / 1024)} КиБ`), remove); previews.append(row);
     });
@@ -269,7 +276,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
           if (value.pending && !draft.pending) { draft.pending = { requestId: value.pending.requestId, installationId: value.pending.installationId }; draft.body = value.body; draft.attachments = value.attachments; text.value = draft.body; renderPreviews(); }
         }
         if (!draft.pending) {
-          if (!draft.body.trim() && !draft.attachments.length) { say('Напишите сообщение или добавьте голос либо снимок.'); return; }
+          if (!draft.body.trim() && !draft.attachments.length) { say('Напишите сообщение или добавьте вложение.'); return; }
           if (draft.body.length > context.limits.bodyChars || draft.installationId !== context.installationId) { say('Проверьте сообщение и получателя. Черновик не отправлен.'); return; }
           validateAttachmentBudget(draft.attachments, context.limits);
           draft.pending = { requestId: crypto.randomUUID(), installationId: context.installationId };
@@ -278,7 +285,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
         const pending = draft.pending;
         const result = await options.api.request<{ requestId: string; replayed: boolean; receipt: FeedbackReceipt; ticket: FeedbackTicket | null }>('apps.feedback.submit', {
           appId: options.appId, installationId: pending.installationId, requestId: pending.requestId,
-          body: draft.body.trim() || (draft.attachments.some(item => item.kind === 'audio') ? 'Голосовое сообщение' : 'Сообщение со снимком'), attachments: draft.attachments,
+          body: draft.body.trim() || (draft.attachments.some(item => item.kind === 'audio') ? 'Голосовое сообщение' : 'Сообщение с вложением'), attachments: draft.attachments,
         });
         if (!current()) return;
         if (result.requestId !== pending.requestId || !result.receipt?.ticketId) throw new Error('invalid_feedback_receipt');
@@ -335,12 +342,12 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
     detail.replaceChildren(el('h3', '', `Обращение ${ticket.id}`), el('p', 'sf-ticket-status', statuses[ticket.status] ?? 'Обращение'), el('p', 'sf-ticket-body', ticket.body));
     for (const item of ticket.attachments ?? []) {
       if (typeof item.dataBase64 !== 'string') {
-        detail.append(el('p', 'sw-muted', item.kind === 'audio' ? 'К обращению приложена голосовая запись.' : 'К обращению приложен снимок.'), button('Открыть вложения', undefined, '', () => void loadTicket(ticket.id))); continue;
+        detail.append(el('p', 'sw-muted', item.kind === 'audio' ? 'К обращению приложена голосовая запись.' : item.kind === 'video' ? 'К обращению приложено видео.' : 'К обращению приложен снимок.'), button('Открыть вложения', undefined, '', () => void loadTicket(ticket.id))); continue;
       }
       const attachment = { ...item, dataBase64: item.dataBase64 };
       try { validateAttachmentBudget([attachment]); } catch { continue; }
       if (item.kind === 'image') { const image = el('img', 'sf-history-image'); image.src = mediaUrl(attachment); image.alt = 'Снимок из обращения'; detail.append(image); }
-      else { const audio = el('audio'); audio.controls = true; audio.preload = 'metadata'; audio.src = mediaUrl(attachment); detail.append(audio); }
+      else { const player = el(item.kind === 'video' ? 'video' : 'audio'); player.controls = true; player.preload = 'metadata'; player.src = mediaUrl(attachment); if (player instanceof HTMLVideoElement) player.playsInline = true; detail.append(player); }
     }
     for (const message of ticket.messages ?? []) {
       const row = el('article', 'sf-thread-message'); row.append(el('strong', '', message.kind === 'support' ? 'Поддержка' : 'Отправитель'), el('p', '', message.body), el('small', 'sw-muted', formatDate(message.createdAt))); detail.append(row);

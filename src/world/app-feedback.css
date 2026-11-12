@@ -10,6 +10,8 @@
 .sf-previews { display:grid; gap:12px; }.sf-preview { position:relative; border:1px solid var(--sw-line,#d7dce0); border-radius:12px; padding:10px; display:grid; gap:8px; }
 .sf-preview img { display:block; justify-self:start; max-width:100%; width:auto; height:auto; max-height:340px; touch-action:none; user-select:none; }
 .sf-preview audio,.sf-ticket audio { width:100%; }.sf-file-size { font-size:.8rem; color:var(--sw-muted,#55646c); }
+.sf-preview video,.sf-ticket video { display:block; width:auto; max-width:100%; max-height:240px; object-fit:contain; border-radius:8px; }
+.sf-form>.sw-button-primary { position:sticky; bottom:0; z-index:1; justify-self:stretch; }
 .sf-selection { position:absolute; background:rgb(25 105 170 / .22); border:2px solid #286ca1; pointer-events:none; box-sizing:border-box; }
 .sf-history-list { display:grid; gap:8px; }.sf-ticket-row { display:grid; justify-items:start; text-align:left; width:100%; overflow-wrap:anywhere; }
 .sf-ticket-body,.sf-thread-message p { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.5; }.sf-ticket-status { margin:0; font-weight:600; }
@@ -17,5 +19,4 @@
 .sf-dialog button { min-height:44px; }.sf-dialog :focus-visible { outline:3px solid #287eb5; outline-offset:3px; }
 .sf-dialog [hidden] { display:none!important; }
 .sa-toolbar [data-stage-control=feedback] { flex:none; min-height:44px; }
-@media(max-width:700px) { .sa-toolbar>[data-stage-control=feedback] { width:44px; min-width:44px; padding:0; }.sa-toolbar>[data-stage-control=feedback]>span { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; } }
 @media(max-width:480px) { .sf-dialog { padding:14px; border-radius:14px; }.sf-header { flex-wrap:nowrap; }.sf-header h2 { min-width:0; font-size:18px; }.sf-header>button { flex:none; width:44px; min-width:44px; padding:0; }.sf-header>button>span { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }.sf-media-actions button { flex:1 1 130px; }.sf-row button { flex:1 1 150px; } }
