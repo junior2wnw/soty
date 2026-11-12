@@ -1156,6 +1156,20 @@ async function hostSessionStage(t,{retained=false}={}){
   }};
 }
 
+test('actual Stage refines a timed-out loaded window only after fresh host confirmation and keeps its exact document',async t=>{
+  const f=await hostSessionStage(t),root=appSurface(f),runtime=root.querySelector('.sa-runtime'),frame=runtime.querySelector('iframe');
+  const editor=frame.contentWindow.editor={value:'Retained document after a late Root confirmation'};
+  frame.emit('load');await turn();const deadline=[...f.timers.values()].find(value=>value.delay===12000);assert.ok(deadline);
+  deadline.fn();await turn();assert.match(root.querySelector('.sa-message').textContent,/Не удалось подтвердить запуск/u);
+  assert.equal(root.querySelector('.sa-recovery-retry').hidden,false);
+  const renewing=f.stage.renewHostSession('reset');await turn();const carrier=root.querySelector('.sa-host-session-carrier');assert.ok(carrier);
+  assert.equal(root.querySelector('.sa-recovery-retry').hidden,false,'starting renewal cannot clear an unconfirmed opening');
+  f.verify();f.wakeup(carrier);assert.equal(await renewing,true);await turn();
+  assert.equal(root.querySelector('.sa-message').textContent,'');assert.equal(root.querySelector('.sa-recovery-retry').hidden,true);
+  assert.equal(runtime.getAttribute('aria-busy'),'false');assert.equal(runtime.querySelector('iframe'),frame);assert.equal(frame.contentWindow.editor,editor);
+  assert.equal(f.launches(),1);assert.deepEqual(f.operations.map(value=>value.op),['apps.session.context','apps.session.renew','apps.session.confirm']);
+});
+
 test('actual ordinary Stage renews through a separate hidden carrier without changing the visible iframe or its retained input',async t=>{
   const f=await hostSessionStage(t),runtime=appSurface(f).querySelector('.sa-runtime'),frame=runtime.querySelector('iframe'),src=frame.src;
   frame.contentWindow.editor={value:'Retained input without Source SDK',selectionStart:4,selectionEnd:13};const editor=frame.contentWindow.editor;

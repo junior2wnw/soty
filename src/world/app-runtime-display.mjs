@@ -33,10 +33,11 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,m
   const notify=()=>{if(live())onChange(snapshot());};
   const stopProbes=()=>{for(const id of probes)view.clearTimeout(id);probes.length=0;};
   // Source-session ready is not Native DOM paint. A later current-frame
-  // transport error must remain visible. A first late document may refine a
-  // no-load timeout using the same bounded read budget, never a new admission.
-  const lateDocument=()=>terminal&&phase==='unconfirmed'&&lateLoaded&&!dismissed;
-  const finish=next=>{if(!live()||(terminal&&!lateDocument()&&!(['ready','loaded'].includes(phase)&&next==='error')))return;terminal=true;phase=next;view.clearTimeout(timer);stopProbes();notify();};
+  // transport error must remain visible. A late document or trusted host
+  // confirmation may refine a timeout using the same read budget, never a new admission.
+  const canRefine=()=>terminal&&phase==='unconfirmed'&&!dismissed;
+  const lateDocument=()=>canRefine()&&lateLoaded;
+  const finish=next=>{if(!live()||(terminal&&!lateDocument()&&!((['ready','loaded'].includes(phase)||canRefine())&&next==='error')))return;terminal=true;phase=next;view.clearTimeout(timer);stopProbes();notify();};
   const expire=()=>{if(live())finish('unconfirmed');else close();};
   const scheduleDeadline=deadline=>{
     if(deadline===scheduledDeadline)return;
@@ -71,7 +72,7 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,m
   };
   const error=()=>finish('error');
   const receive=event=>{
-    if(!live()||terminal&&!['ready','loaded'].includes(phase)||!nonce||event.source!==frame.contentWindow||event.origin!==origin||event.ports?.length)return;
+    if(!live()||terminal&&!['ready','loaded'].includes(phase)&&!canRefine()||!nonce||event.source!==frame.contentWindow||event.origin!==origin||event.ports?.length)return;
     const v=fields(event.data,['schema','nonce','phase']);
     if(!v||v.schema!=='soty.runtime-display.v1'||v.nonce!==nonce||!PHASES.has(v.phase))return;
     if(v.phase==='boot_failed'){finish('error');return;}
@@ -94,8 +95,9 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,m
     const admissionDeadline=Number.isFinite(remainingMs)&&remainingMs>0?Math.min(openedAt+MAX_HOST_ADMISSION_MS,view.performance.now()+remainingMs):openingDeadline;
     scheduleDeadline(Math.max(openingDeadline,admissionDeadline));
   },confirmHostTransport(){
-    if(!live()||terminal||hostAdmitted)return;
+    if(!live()||hostAdmitted||terminal&&!canRefine())return;
     hostAdmitted=true;
+    if(terminal&&loaded)lateLoaded=true;
     void check();
   },dismiss(){if(!live()||!terminal||['ready','loaded'].includes(phase))return false;dismissed=true;notify();return true;},dispose:close});
 }

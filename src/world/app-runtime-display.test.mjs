@@ -74,7 +74,7 @@ test('a load without readiness or an explicit frame error still uses the ordinar
  const failed=displayFixture();failed.api.waitForHostAdmission?.(29000);failed.tick(13000);failed.frame.emit('error');
  assert.equal(failed.api.snapshot().phase,'error');assert.equal(failed.api.snapshot().canRetry,true);
 });
-test('a managed error-document load during admission cannot hide the eventual retry',async()=>{
+test('a managed document load during admission keeps the retry until fresh host confirmation',async()=>{
  const f=displayFixture('unsupported',true);f.tick(4500);f.api.waitForHostAdmission(24000);f.tick(8300);
  f.frame.emit('load');await tickFlush();
  assert.equal(f.api.snapshot().busy,true,'Chromium load alone cannot end an unconfirmed managed opening');
@@ -84,7 +84,8 @@ test('a managed error-document load during admission cannot hide the eventual re
  assert.equal(f.api.snapshot().canRetry,true);
  assert.match(f.api.snapshot().message,/Попробуйте открыть заново/u);
  f.api.confirmHostTransport?.();await tickFlush();
- assert.equal(f.api.snapshot().phase,'unconfirmed','a timed-out window needs an explicit retry');
+  assert.equal(f.api.snapshot().phase,'loaded','fresh Root confirmation permits only neutral document-load refinement');
+  assert.equal(f.api.snapshot().canRetry,false);assert.equal(f.calls(),1);
 });
 test('ordinary managed transport confirmation and load settle in either order without claiming Source readiness',async()=>{
  for(const first of ['load','confirmation']){
@@ -95,6 +96,66 @@ test('ordinary managed transport confirmation and load settle in either order wi
   await tickFlush();assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.calls(),1);
   assert.equal(f.states.some(state=>state.phase==='ready'||state.phase==='unconfirmed'),false);
  }
+});
+test('a late trusted host confirmation refines only the same timed-out managed document in either load order',async()=>{
+ for(const first of ['load','confirmation']){
+  const f=displayFixture('unsupported',true);f.api.waitForHostAdmission(28000);
+  if(first==='load')f.frame.emit('load');
+  f.tick(30000);assert.equal(f.api.snapshot().phase,'unconfirmed');assert.equal(f.calls(),0);
+  const probes=f.sent.length,timers=f.tasks.size;f.api.confirmHostTransport();await tickFlush();
+  if(first==='confirmation'){assert.equal(f.calls(),0);f.frame.emit('load');await tickFlush();}
+  assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.api.snapshot().message,'');
+  assert.equal(f.api.snapshot().canRetry,false);assert.equal(f.calls(),1);
+  assert.equal(f.sent.length,probes,'late confirmation does not restart Boot probes');
+  assert.equal(f.tasks.size,timers,'late confirmation does not start a new deadline');
+ }
+});
+test('late host confirmation permits only a bounded fresh Root read to establish scoped readiness',async()=>{
+ const held=deferred(),f=displayFixture(()=>held.promise,true);f.api.waitForHostAdmission(28000);f.frame.emit('load');f.tick(30000);
+ assert.equal(f.api.snapshot().phase,'unconfirmed');f.api.confirmHostTransport();await tickFlush();
+ assert.equal(f.calls(),1);assert.equal(f.api.snapshot().phase,'unconfirmed','host confirmation alone is not Source readiness');
+ held.resolve('ready');await tickFlush();assert.equal(f.api.snapshot().phase,'ready');assert.equal(f.api.snapshot().message,'');
+ assert.equal(f.calls(),1);assert.equal(f.tasks.size,0);
+});
+test('late confirmation preserves pending, unknown and denied Root answers without resetting the read budget or deadline',async()=>{
+ for(const answer of ['pending','unknown','denied']){
+  const f=displayFixture(answer,true);f.api.waitForHostAdmission(28000);f.frame.emit('load');f.tick(30000);
+  const probes=f.sent.length;f.api.confirmHostTransport();await tickFlush();
+  assert.equal(f.api.snapshot().phase,answer==='denied'?'denied':'unconfirmed');assert.equal(f.api.snapshot().canRetry,true);
+  for(let i=0;i<10;i++){f.api.confirmHostTransport();f.frame.emit('load');f.phase('boot_navigation');}
+  f.tick(120000);await tickFlush();assert.equal(f.calls(),1);assert.equal(f.sent.length,probes);assert.equal(f.tasks.size,0);
+ }
+});
+test('current explicit iframe and matching Boot failures after timeout latch before late host confirmation',async()=>{
+ for(const failure of ['iframe','boot']){
+  const f=displayFixture('unsupported',true);f.api.waitForHostAdmission(28000);f.frame.emit('load');f.tick(30000);
+  f.phase('boot_cookie_pending');f.phase('boot_failed',{origin:'https://wrong.example'});
+  assert.equal(f.api.snapshot().phase,'unconfirmed','progress and foreign failures cannot change the timed-out display');
+  if(failure==='iframe')f.frame.emit('error');else f.phase('boot_failed');
+  assert.equal(f.api.snapshot().phase,'error');f.api.confirmHostTransport();await tickFlush();
+  assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.calls(),0);
+ }
+});
+test('a current failure during the late fresh Root read cannot be cleared by its eventual ready result',async()=>{
+ for(const failure of ['iframe','boot']){
+  const held=deferred(),f=displayFixture(()=>held.promise,true);f.frame.emit('load');f.tick(12000);f.api.confirmHostTransport();await tickFlush();
+  assert.equal(f.calls(),1);if(failure==='iframe')f.frame.emit('error');else f.phase('boot_failed');
+  assert.equal(f.api.snapshot().phase,'error');held.resolve('ready');await tickFlush();
+  assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.calls(),1);
+ }
+});
+test('late host confirmation cannot refine a disposed, stale, page-hidden or dismissed timeout',async()=>{
+ for(const mode of ['dispose','stale','pagehide','dismiss']){
+  const f=displayFixture('unsupported',true);f.frame.emit('load');f.tick(12000);
+  if(mode==='dispose')f.api.dispose();if(mode==='stale')f.stale();if(mode==='pagehide')f.view.emit('pagehide');if(mode==='dismiss')f.api.dismiss();
+  const notifications=f.states.length;f.api.confirmHostTransport();f.phase('boot_failed');f.frame.emit('error');await tickFlush();
+  assert.equal(f.api.snapshot().phase,'unconfirmed');assert.equal(f.states.length,notifications);assert.equal(f.calls(),0);
+ }
+});
+test('a late fresh Root result cannot outlive the exact display authority',async()=>{
+ const held=deferred(),f=displayFixture(()=>held.promise,true);f.frame.emit('load');f.tick(12000);f.api.confirmHostTransport();await tickFlush();
+ assert.equal(f.calls(),1);const notifications=f.states.length;f.stale();held.resolve('ready');await tickFlush();
+ assert.equal(f.api.snapshot().phase,'unconfirmed');assert.equal(f.states.length,notifications);
 });
 test('managed host loss restores the ordinary deadline and an explicit Boot error still wins',async()=>{
  const lost=displayFixture('unsupported',true);lost.api.waitForHostAdmission(28000);lost.tick(11200);
