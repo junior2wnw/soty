@@ -3,17 +3,19 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { createFeedbackService } from '../server/index.mjs';
 import { DEFAULT_FEEDBACK_PROFILE } from '../server/profile.mjs';
 import { contractDigest } from '../../app-contract/json.mjs';
 
-function fixture(t, filename = ':memory:', limits = {}) {
+function fixture(t, filename = ':memory:', limits = {}, videoEnabled = false) {
   const active = new Set(['owner', 'one', 'two']);
   const access = new Set(['owner', 'one', 'two']);
   const actor = name => ({ accountId: name, deviceId: 'device_' + name });
   const scope = (who, appId) => ({ appId, ownerId: 'owner', accountId: who.accountId, canManage: who.accountId === 'owner',
     title: 'Fixture', entry: { appId, domainId: 'domain', origin: 'http://localhost', path: '/' } });
-  const options = { databasePath: filename, registryId: 'fixture', environmentId: 'test', limits, actorActive: who => active.has(who.accountId),
+  const options = { databasePath: filename, registryId: 'fixture', environmentId: 'test', limits, videoEnabled, actorActive: who => active.has(who.accountId),
     withAppAuthority({ actor: who, appId }, callback) {
       if (!access.has(who.accountId)) throw Object.assign(new Error('denied'), { code: 'apps_access_denied' });
       return callback(scope(who, appId));
@@ -70,6 +72,57 @@ test('agent metadata pages omit original media and preserve the legacy original 
   assert.equal(f.exec('owner', 'get', { appId: c.appId, installationId: c.installationId, ticketId: sent.receipt.ticketId }).ticket.attachments[0].dataBase64, bytes.toString('base64'));
   const page = f.service().agent.execute({ op: 'apps.feedback.list', actor, args: { appId: c.appId, installationId: c.installationId } });
   assert.equal(page.tickets.length, 1); assert.equal(page.nextCursor, ''); assert.equal(JSON.stringify(page).includes('dataBase64'), false);
+});
+
+test('owner attachment reads reassemble durable original audio with stable hashes and no new effects', t => {
+  const folder = mkdtempSync(join(tmpdir(), 'soty-feedback-attachment-')), filename = join(folder, 'feedback.sqlite'), f = fixture(t, filename);
+  t.after(() => { assert.equal(dirname(resolve(folder)), resolve(tmpdir())); assert.match(basename(folder), /^soty-feedback-attachment-/); rmSync(folder, { recursive: true, force: true }); });
+  // A legal EBML Void makes the actual Chrome Opus container span two chunks.
+  const bytes = Buffer.concat([readFileSync(new URL('./fixtures/chrome-recorder.webm', import.meta.url)), Buffer.from([0xec, 0x21, 0, 0]), Buffer.alloc(65536)]);
+  const c = f.context(), args = { appId: c.appId, installationId: c.installationId, requestId: 'voice-once', body: 'Voice',
+    attachments: [{ kind: 'audio', name: 'voice.webm', mimeType: 'audio/webm', dataBase64: bytes.toString('base64') }] };
+  const sent = f.exec('one', 'submit', args), selected = { appId: c.appId, installationId: c.installationId, ticketId: sent.ticket.id, attachmentId: sent.ticket.attachments[0].id };
+  const other = f.exec('one', 'submit', { ...args, requestId: 'separate-voice' });
+  const read = (input = {}, who = 'owner') => f.service().agent.execute({ op: 'apps.feedback.attachment', actor: f.actor(who), args: { ...selected, ...input } });
+  const counts = () => { const db = new DatabaseSync(filename, { readOnly: true }); try { return { version: db.prepare('PRAGMA user_version').get().user_version,
+    ...Object.fromEntries(['installations', 'tickets', 'attachments', 'messages', 'receipts'].map(table => [table, db.prepare('SELECT count(*) AS n FROM feedback_' + table).get().n])) }; } finally { db.close(); } };
+  const before = counts(), expectedSha256 = createHash('sha256').update(bytes).digest('hex'), first = read();
+  assert.equal(first.attachment.sha256, expectedSha256); assert.equal(first.attachment.kind, 'audio'); assert.equal(first.attachment.byteLength, bytes.length);
+  assert.equal(first.offset, 0); assert.equal(first.dataBase64.length, 49152); assert.equal(first.nextOffset, 49152); assert.equal(first.totalChars, args.attachments[0].dataBase64.length);
+  assert.deepEqual(read(), first, 'a repeated read returns the same selected bytes without another effect');
+  f.restart(); assert.deepEqual(read(), first); const replay = f.exec('one', 'submit', args); assert.equal(replay.replayed, true); assert.deepEqual(replay.receipt, sent.receipt);
+  let result = first, encoded = '', chunks = 0;
+  for (;;) { encoded += result.dataBase64; chunks++; assert(Buffer.byteLength(JSON.stringify(result)) < 59000);
+    if (result.nextOffset === -1) break; result = read({ offset: result.nextOffset, expectedSha256 }); assert.equal(result.attachment.sha256, expectedSha256); }
+  assert.equal(chunks, 2); assert.deepEqual(Buffer.from(encoded, 'base64'), bytes);
+  for (const offset of [-4, 1, 0.5, 1398108, first.totalChars]) fails(() => read({ offset }), 'feedback_invalid_arguments');
+  fails(() => read({ expectedSha256: '0'.repeat(64) }), 'feedback_attachment_hash_mismatch');
+  fails(() => read({ expectedSha256: 'UPPERCASE' }), 'feedback_invalid_arguments');
+  fails(() => read({ attachmentId: 'not-this-attachment' }), 'feedback_attachment_unavailable');
+  fails(() => read({ attachmentId: other.ticket.attachments[0].id }), 'feedback_attachment_unavailable');
+  fails(() => read({}, 'one'), 'feedback_support_required'); fails(() => read({}, 'two'), 'feedback_support_required');
+  fails(() => read({ appId: 'unprovisioned-app' }), 'feedback_installation_mismatch');
+  fails(() => read({ installationId: 'not-this-installation' }), 'feedback_installation_mismatch');
+  fails(() => f.exec('owner', 'attachment', selected), 'unsupported_operation');
+  f.access.delete('owner'); fails(() => read(), 'apps_access_denied'); f.access.add('owner');
+  f.active.delete('owner'); fails(() => read(), 'feedback_authentication_required'); f.active.add('owner');
+  assert.deepEqual(counts(), before, 'read, rejected reads and exact submit replay do not provision or alter storage');
+});
+
+test('owner attachment reads select image, audio and video originals without changing legacy metadata projections', t => {
+  const f = fixture(t, ':memory:', {}, true), c = f.context(), images = readFileSync(new URL('./fixtures/chrome.png', import.meta.url)),
+    audio = readFileSync(new URL('./fixtures/chrome-recorder.webm', import.meta.url)), video = readFileSync(new URL('../../materials/test/fixtures/video.webm', import.meta.url));
+  const sent = f.exec('one', 'submit', { appId: c.appId, installationId: c.installationId, requestId: 'mixed-originals', body: 'Media', attachments: [
+    { kind: 'image', name: 'selected.png', mimeType: 'image/png', dataBase64: images.toString('base64') },
+    { kind: 'audio', name: 'voice.webm', mimeType: 'audio/webm', dataBase64: audio.toString('base64') },
+    { kind: 'video', name: 'selected.webm', mimeType: 'video/webm', dataBase64: video.toString('base64') }] });
+  for (const [index, bytes] of [images, audio, video].entries()) {
+    const result = f.service().agent.execute({ op: 'apps.feedback.attachment', actor: f.actor('owner'), args: {
+      appId: c.appId, installationId: c.installationId, ticketId: sent.ticket.id, attachmentId: sent.ticket.attachments[index].id } });
+    assert.equal(result.attachment.kind, ['image', 'audio', 'video'][index]); assert.deepEqual(Buffer.from(result.dataBase64, 'base64'), bytes);
+  }
+  fails(() => f.service().agent.execute({ op: 'apps.feedback.get', actor: f.actor('owner'), args: { appId: c.appId, installationId: c.installationId, ticketId: sent.ticket.id } }), 'unsupported_media_projection');
+  fails(() => f.service().agent.execute({ op: 'apps.feedback.list', actor: f.actor('owner'), args: { appId: c.appId, installationId: c.installationId } }), 'unsupported_media_projection');
 });
 
 test('durable text receipt survives restart, exact lost-ACK replay and source access checks', t => {

@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import WebSocket from 'ws';
 import { nativeHttpFixture, nativeIdentity, good } from './support/native-capability-http.mjs';
-import { APP_FEEDBACK_CATALOG, appFeedbackResource } from '../app-feedback-capabilities.js';
+import { APP_FEEDBACK_CATALOG, appFeedbackResource, createAppFeedbackCapabilities } from '../app-feedback-capabilities.js';
+import { createCatalog } from '../../modules/capabilities/server/catalog.mjs';
+import { createCapabilitiesService, BUILTIN_CAPABILITIES } from '../../modules/capabilities/server/index.mjs';
 import { fixture as accessPanelFixture, settle } from '../../src/world/test-support/access-panel-delegation.mjs';
 
 const until = async read => {
@@ -71,7 +73,7 @@ async function fixture(t) {
     }) });
   }
   const reference = op => f.app.locals.capabilitiesService.external.contracts.find(value => value.capabilityId === 'apps.feedback.' + op);
-  const invoke = (identity, op, input, idempotencyKey = 'feedback-' + ++sequence) => mcp(identity, ['list', 'get'].includes(op) ? 'apps_query' : 'apps_invoke',
+  const invoke = (identity, op, input, idempotencyKey = 'feedback-' + ++sequence) => mcp(identity, ['list', 'get', 'attachment'].includes(op) ? 'apps_query' : 'apps_invoke',
     { reference: reference(op), input, idempotencyKey });
   const feedbackFile = join(f.directory, 'feedback', 'feedback.sqlite');
   const counts = () => f.sql(feedbackFile, db => Object.fromEntries(['installations', 'tickets', 'messages', 'receipts'].map(table =>
@@ -108,6 +110,23 @@ function denied(response, codes = ['access_denied', 'apps_owner_required', 'apps
   const code = JSON.parse(response.body.result.content[0].text).error.code;
   assert.ok(codes.includes(code), code);
 }
+
+test('dedicated owner attachment capability preserves all seven existing v1 catalog bindings', () => {
+  const catalog = createCatalog(APP_FEEDBACK_CATALOG).listAll(), attachment = catalog.find(entry => entry.capabilityId === 'apps.feedback.attachment');
+  assert.ok(attachment, 'the owner must have an explicit selected-original read capability'); assert.deepEqual(attachment.effects, []);
+  const original = {
+    context: '92ff669e5452257fc702970528af8059aa17000cf569e1b503aa6434cc662ba2',
+    submit: '82fb16d1ae16acd7701db9ca9c90773ed28caa5d1f79d545df497b05b4ff07cc',
+    list: '96f196ba897e9ef23597899b9b7c9f7c9ac9d0345c8ff966f705d86423be2b58',
+    get: '26ed2b61a0c3db25cf893a727c4da3e2b9ebb62f7cc3b16095bc56cf9f216c83',
+    reply: 'f62f4deae46af8a2a9ec20babc3b00b8c42aa32be38cf13b269e38a8e7038529',
+    status: '0408193eb74f58934b139186b2e7c4513c67952a52cd23cadf77f24908eed205',
+    accept: 'd20701b60d76427bf6b0360b0018f6191a6f44afb28bc3919c9cb65795297fc2' };
+  for (const [op, digest] of Object.entries(original)) {
+    const entry = catalog.find(value => value.capabilityId === 'apps.feedback.' + op); assert.equal(entry.version, 1); assert.equal(entry.digest, digest);
+    assert.notDeepEqual(attachment.executionBinding.binding, entry.executionBinding.binding);
+  }
+});
 
 test('actual Access consent issues an exact read grant through signed Root, reads only its app and revokes through existing UI', { timeout: 20000 }, async t => {
   const f = await fixture(t), accountId = f.accounts.get(f.owner).accountId;
@@ -161,7 +180,7 @@ function holdSdkJsonEof() {
 test('actual Root MCP maps the non-admin grant creator to their existing queue, replays one effect and reloads', { timeout: 20000 }, async t => {
   const f = await fixture(t), identity = await f.grant(f.owner, f.appId), before = f.counts();
   const catalog = successful(await f.mcp(identity, 'apps_catalog_search', {}));
-  assert.equal(catalog.items.length, 7);
+  assert.equal(catalog.items.length, APP_FEEDBACK_CATALOG.length);
   const ensured = successful(await f.invoke(identity, 'context', { appId: f.appId }, 'context-once'));
   assert.equal(ensured.invocation.status, 'succeeded');
   assert.equal(ensured.invocation.receipt.artifacts[0].type, 'feedback_context');
@@ -308,4 +327,82 @@ test('real Root denies another app of the same owner, another owner, missing app
   const installationId = (await f.context(f.owner)).installationId;
   assert.equal(successful(await f.invoke(readonly, 'list', { appId: f.appId, installationId })).result.tickets.length, 0);
   denied(await f.invoke(identity, 'context', { appId: f.appId, requiredResources: [appFeedbackResource(f.siblingId)] }), ['invalid_input']);
+});
+
+test('actual signed Root MCP owner reads durable selected Opus chunks without widening old metadata grants', { timeout: 20000 }, async t => {
+  const f = await fixture(t), installationId = (await f.context(f.owner)).installationId;
+  const bytes = Buffer.concat([readFileSync(new URL('../../modules/feedback/test/fixtures/chrome-recorder.webm', import.meta.url)), Buffer.from([0xec, 0x21, 0, 0]), Buffer.alloc(65536)]);
+  const sent = good(await f.call(f.reporter, 'apps.feedback.submit', { appId: f.appId, installationId, requestId: 'durable-voice', body: 'Selected private voice',
+    attachments: [{ kind: 'audio', name: 'voice.webm', mimeType: 'audio/webm', dataBase64: bytes.toString('base64') }] }));
+  const input = { appId: f.appId, installationId, ticketId: sent.ticket.id, attachmentId: sent.ticket.attachments[0].id };
+  const identity = await f.grant(f.owner, f.appId, ['apps.feedback.attachment']), before = f.counts(), expectedSha256 = createHash('sha256').update(bytes).digest('hex');
+  const firstResponse = await f.invoke(identity, 'attachment', input), first = successful(firstResponse).result;
+  assert.equal(first.attachment.sha256, expectedSha256); assert.equal(first.dataBase64.length, 49152); assert.equal(first.nextOffset, 49152);
+  t.diagnostic(JSON.stringify({ attachmentChunkChars: first.dataBase64.length, typedResultBytes: Buffer.byteLength(JSON.stringify(first)),
+    mcpEnvelopeBytes: Buffer.byteLength(JSON.stringify(firstResponse.body)) }));
+  assert(Buffer.byteLength(JSON.stringify(first)) < 59000); await f.restart();
+  const last = successful(await f.invoke(identity, 'attachment', { ...input, offset: first.nextOffset, expectedSha256 })).result;
+  assert.equal(last.nextOffset, -1); assert.equal(last.attachment.sha256, expectedSha256);
+  assert.deepEqual(Buffer.from(first.dataBase64 + last.dataBase64, 'base64'), bytes); assert.deepEqual(f.counts(), before);
+  const metadataOnly = await f.grant(f.owner, f.appId, ['apps.feedback.list', 'apps.feedback.get']);
+  const anotherOwner = await f.grant(f.administrator, f.appId, ['apps.feedback.attachment']);
+  const reporter = await f.grant(f.reporter, f.appId, ['apps.feedback.attachment']);
+  const baseOnly = await f.grant(f.owner, f.appId, ['apps.feedback.attachment'], []);
+  const original = DatabaseSync.prototype.prepare; let byteReads = 0;
+  DatabaseSync.prototype.prepare = function (sql, ...rest) {
+    if (/^\s*SELECT\b[\s\S]*\bbytes\b[\s\S]*\bFROM feedback_attachments\b/iu.test(sql)) byteReads++;
+    return original.call(this, sql, ...rest);
+  };
+  try {
+    denied(await f.invoke(metadataOnly, 'attachment', input)); denied(await f.invoke(anotherOwner, 'attachment', input));
+    denied(await f.invoke(reporter, 'attachment', input)); denied(await f.invoke(baseOnly, 'attachment', input));
+    denied(await f.invoke(identity, 'attachment', { ...input, appId: f.siblingId }));
+  } finally { DatabaseSync.prototype.prepare = original; }
+  assert.equal(byteReads, 0, 'failed capability/app/owner fences must precede private byte reads');
+  assert.deepEqual(f.counts(), before);
+});
+
+test('actual MCP withholds selected audio bytes after app or grant revocation at final wire output', { timeout: 20000 }, async t => {
+  for (const mode of ['app-revoke', 'grant-revoke']) {
+    const f = await fixture(t), installationId = (await f.context(f.owner)).installationId;
+    const bytes = readFileSync(new URL('../../modules/feedback/test/fixtures/chrome-recorder.webm', import.meta.url));
+    const sent = good(await f.call(f.reporter, 'apps.feedback.submit', { appId: f.appId, installationId, requestId: 'private-audio-race', body: 'Private voice',
+      attachments: [{ kind: 'audio', name: 'private.webm', mimeType: 'audio/webm', dataBase64: bytes.toString('base64') }] }));
+    const identity = await f.grant(f.owner, f.appId, ['apps.feedback.attachment']), hold = holdSdkJsonEof();
+    try {
+      const pending = f.invoke(identity, 'attachment', { appId: f.appId, installationId, ticketId: sent.ticket.id, attachmentId: sent.ticket.attachments[0].id });
+      await hold.atEnd;
+      assert.equal(f.sql(f.capsFile, db => db.prepare("SELECT status FROM cap_invocations WHERE capability_id='apps.feedback.attachment' ORDER BY created_at DESC LIMIT 1").get()).status, 'succeeded');
+      if (mode === 'app-revoke') good(await f.call(f.owner, 'apps.revoke', { appId: f.appId }));
+      else good(await f.call(f.owner, 'access.grants.revoke', { expectedAccountId: identity.accountId, grantId: identity.grantId }));
+      hold.release(); const response = await pending; denied(response);
+      assert.equal(JSON.stringify(response.body).includes(bytes.toString('base64').slice(0, 64)), false);
+      assert.equal(JSON.stringify(response.body).includes(sent.ticket.attachments[0].id), false);
+    } finally { hold.restore(); }
+  }
+});
+
+test('the unchanged cold capabilities initializer opens new attachment grants with the old seven-entry feedback registry', { timeout: 20000 }, async t => {
+  const f = await fixture(t), oldCatalog = APP_FEEDBACK_CATALOG.filter(entry => entry.capabilityId !== 'apps.feedback.attachment');
+  const legacy = await f.grant(f.owner, f.appId, oldCatalog.map(entry => entry.capabilityId));
+  const selected = await f.grant(f.owner, f.appId, ['apps.feedback.attachment']);
+  const snapshot = () => f.sql(f.capsFile, db => ({ version: db.prepare('PRAGMA user_version').get().user_version,
+    grants: db.prepare('SELECT * FROM cap_grants ORDER BY id').all(), credentials: db.prepare('SELECT * FROM cap_credentials ORDER BY id').all() }));
+  const before = snapshot(); await f.app.locals.closeServices();
+  const unused = () => { throw Error('cold compatibility must not dispatch private content or effects'); };
+  const composition = createAppFeedbackCapabilities({ capabilities: unused, connect: unused, apps: unused, feedback: unused });
+  const old = createCapabilitiesService({ databasePath: f.capsFile, projectId: 'soty', actorActive: () => true,
+    catalog: [...BUILTIN_CAPABILITIES, ...oldCatalog], externalAdapters: composition.effects,
+    readonlyQueries: composition.queries.filter(entry => entry.contract.capabilityId !== 'apps.feedback.attachment') });
+  try {
+    const actor = old.authenticateCredential({ token: legacy.token, audience: f.origin + '/mcp' });
+    for (const entry of createCatalog(oldCatalog).listAll()) {
+      const authorization = old.authorize({ actor, capabilityId: entry.capabilityId, version: 1 });
+      assert.equal(authorization.capabilityDigest, entry.digest);
+    }
+    const attachmentActor = old.authenticateCredential({ token: selected.token, audience: f.origin + '/mcp' });
+    assert.throws(() => old.authorize({ actor: attachmentActor, capabilityId: 'apps.feedback.attachment', version: 1 }), error => error.code === 'not_found');
+    assert.equal(old.external.contracts.length, 7); assert.equal(old.external.contracts.some(entry => entry.capabilityId === 'apps.feedback.attachment'), false);
+  } finally { old.close(); }
+  assert.deepEqual(snapshot(), before, 'old cold startup and denied unknown capability preserve every grant, credential and storage version');
 });

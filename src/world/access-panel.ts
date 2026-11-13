@@ -737,10 +737,12 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     const consent = el('div', 'sa-consent-summary'); consent.append(icon('list'), el('div', '', target ? `Только обращения приложения «${target.name}»` : 'Только создание новых личных записок'));
     const mode = el('select', 'sw-select sa-feedback-mode'); mode.setAttribute('aria-label', 'Права агента на обращения');
     for (const [value, label] of [['read', 'Читать обращения'], ['triage', 'Читать, отвечать и менять статус']]) { const option = el('option', '', label); option.value = value!; option.selected = value === 'read'; mode.append(option); }
+    const mediaAccess = el('input', 'sa-feedback-media'); mediaAccess.type = 'checkbox'; mediaAccess.checked = false;
+    const mediaChoice = el('label', 'sa-delegation'); mediaChoice.append(mediaAccess, el('span', '', 'Получать файлы вложений, включая голосовые'));
     const facts = el('dl', 'sa-consent-facts');
     const accountValue = options.accountLabel ? `${options.accountLabel} · ${accountId}` : accountId;
     facts.append(fact('Аккаунт', accountValue));
-    if (target) facts.append(fact('Приложение', `${target.name} · ${target.appId}`), fact('Обращения', 'Текст и переписка; вложения — только описание'), fact('Ограничения', 'Без других приложений, создания обращений, принятия результата и передачи доступа'));
+    if (target) facts.append(fact('Приложение', `${target.name} · ${target.appId}`), fact('Обращения', 'Текст и переписка; файлы вложений — по отдельному разрешению ниже'), fact('Ограничения', 'Без других приложений, создания обращений, принятия результата и передачи доступа'));
     else facts.append(fact('Получатель текста', 'Записки в Сотах'), fact('Доступ к прежним запискам', 'Не предоставляется'));
     const delegation = el('input', 'sa-delegation-check'); delegation.type = 'checkbox'; delegation.checked = false;
     delegation.id = `${instanceId}-delegation`; delegation.dataset.saDelegation = 'allow';
@@ -756,10 +758,11 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     updateTotals();
     const message = el('p', 'sa-form-message'); message.setAttribute('role', 'alert');
     const submit = button('Создать ключ доступа', 'lock', 'sw-button-primary'); submit.type = 'submit';
-    form.append(labeledField('Название клиента', name), pair, consent, facts, ...(target ? [labeledField('Права агента', mode)] : [delegationChoice]), totals, message, submit);
+    form.append(labeledField('Название клиента', name), pair, consent, facts, ...(target ? [labeledField('Права агента', mode), mediaChoice] : [delegationChoice]), totals, message, submit);
     for (const input of [name, expiry, count]) input.addEventListener('input', () => { state.dirty = true; updateTotals(); });
     delegation.addEventListener('change', () => { state.dirty = true; updateTotals(); });
     mode.addEventListener('change', () => { state.dirty = true; });
+    mediaAccess.addEventListener('change', () => { state.dirty = true; });
     let attempted = false;
     form.addEventListener('submit', event => {
       event.preventDefault(); if (!dialogAlive(state) || attempted || state.busy || !form.reportValidity()) return;
@@ -769,13 +772,13 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       // availability check or another signed request has yielded.
       const allowDelegation = !target && delegation.checked;
       if (target && !['read', 'triage'].includes(mode.value)) { message.textContent = 'Выберите права агента.'; return; }
-      const capabilities = target ? ['list', 'get', ...(mode.value === 'triage' ? ['reply', 'status'] : [])].map(operation => ({ capabilityId: `apps.feedback.${operation}`, version: 1 })) : [notesCapability];
+      const capabilities = target ? ['list', 'get', ...(mediaAccess.checked ? ['attachment'] : []), ...(mode.value === 'triage' ? ['reply', 'status'] : [])].map(operation => ({ capabilityId: `apps.feedback.${operation}`, version: 1 })) : [notesCapability];
       const resources = target ? ['apps.feedback', `apps.feedback:${target.appId}`] : ['notes:new'];
       const effects = target ? mode.value === 'triage' ? ['update'] : [] : ['create'];
       const recipients = target ? ['soty:app-feedback'] : ['soty:notes'];
       attempted = true;
       mutate(state, async () => {
-        submit.disabled = true; name.disabled = true; expiry.disabled = true; count.disabled = true; delegation.disabled = true; mode.disabled = true; message.textContent = 'Подключаем…';
+        submit.disabled = true; name.disabled = true; expiry.disabled = true; count.disabled = true; delegation.disabled = true; mode.disabled = true; mediaAccess.disabled = true; message.textContent = 'Подключаем…';
         let principalId: string | null = null, grantId: string | null = null;
         let issuingKey = false, creatingPrincipal = false;
         try {

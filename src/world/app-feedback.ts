@@ -63,12 +63,19 @@ function failure(error: unknown): string {
 }
 const abortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
 const mediaUrl = (item: FeedbackAttachment) => `data:${item.mimeType};base64,${item.dataBase64}`;
+function audioDownload(item: FeedbackAttachment): HTMLAnchorElement {
+  const link = el('a', 'sw-button', 'Скачать аудио');
+  link.href = mediaUrl(item); link.download = item.name;
+  link.setAttribute('aria-label', `Скачать аудио: ${item.name}`);
+  return link;
+}
 const formatDate = (value: string | number) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('ru-RU'); };
 
 /** One account/app scope for the entire lifetime. Changing global navigation never moves its draft. */
 export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions): AppFeedbackHandle {
   let disposed = false, context: FeedbackContext | null = null, readiness = 'pending', saving = true, saved = true, busy = false, localConflict = false;
   let session = new AbortController(), generation = 0, recording: ReturnType<typeof createFeedbackRecorder> | null = null;
+  let recordingTask: Promise<boolean> | null = null, recordingStarted = false, closing = false;
   let ownsModal = false;
   const current = () => !disposed && options.isCurrent();
   const key = `soty.feedback.v1:${encodeURIComponent(options.accountId)}:${encodeURIComponent(options.appId)}`;
@@ -100,7 +107,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
 
   const dialog = el('dialog', 'sf-dialog'); dialog.setAttribute('aria-labelledby', `feedback-heading-${options.appId}`);
   const header = el('header', 'sf-header'), title = el('h2', '', 'Обратная связь'); title.id = `feedback-heading-${options.appId}`;
-  const close = button('Закрыть', 'close', 'sw-button-quiet', () => closeDialog()); header.append(title, close);
+  const close = button('Закрыть', 'close', 'sw-button-quiet', () => { void closeDialog(); }); header.append(title, close);
   const subtitle = el('p', 'sf-subtitle', options.title), audience = el('p', 'sf-audience', 'Проверяем получателя…');
   const notice = el('p', 'sf-notice'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite'); notice.hidden = true;
   const keepAsNew = button('Оставить текст как новый черновик', undefined, '', () => {
@@ -152,13 +159,29 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
     if (recording) { recordButton.disabled = false; submit.disabled = captureButton.disabled = fileButton.disabled = true; }
   }
   function releaseModal(): void { if (!ownsModal || dialog.open) return; ownsModal = false; options.onModalChange?.(dialog, false); }
-  function closeDialog(): void {
-    if (!current()) return;
-    persist();
-    if (contents() && !saved) { say('Черновик не сохранён. Скопируйте текст или включите сохранение перед закрытием.'); return; }
-    session.abort(); recording?.cancel(); recording = null; dialog.close(); releaseModal(); controls();
+  async function finishRecording(): Promise<boolean> {
+    if (!recording) return true;
+    // An unanswered permission prompt must not hold navigation open. A late
+    // stream is stopped by the recorder's cancellation fence.
+    if (!recordingStarted) {
+      recording.cancel(); recording = null; recordingTask = null;
+      recordButton.querySelector('span')!.textContent = 'Записать голос'; controls(); return true;
+    }
+    recording.stop();
+    // stop() queues the final dataavailable event: persist only after encoding.
+    return await recordingTask ?? false;
   }
-  dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
+  async function closeDialog(): Promise<void> {
+    if (!current() || closing) return;
+    closing = true;
+    try {
+      if (!await finishRecording() || !current()) return;
+      persist();
+      if (contents() && !saved) { say('Черновик не сохранён. Включите сохранение перед закрытием; аудио также можно скачать.'); return; }
+      session.abort(); dialog.close(); releaseModal(); controls();
+    } finally { closing = false; }
+  }
+  dialog.addEventListener('cancel', event => { event.preventDefault(); void closeDialog(); });
   dialog.addEventListener('close', () => { if (dialog.open) return; session.abort(); recording?.cancel(); recording = null; releaseModal(); });
   text.addEventListener('input', () => { draft.body = text.value; persist(); });
   storage.addEventListener('change', () => { saving = storage.checked; persist(); say(saving ? 'Черновик сохраняется в этом браузере. Он не зашифрован.' : 'Черновик хранится только в открытом окне.'); });
@@ -204,15 +227,21 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
       .catch(error => { if (!abortError(error) && !signal.aborted) say(failure(error)); }).finally(() => { if (current()) { busy = false; controls(); } });
   });
   async function record(): Promise<void> {
-    if (recording) { if (recording.active()) recording.stop(); else recording.cancel(); return; }
+    if (recording) { if (recordingStarted) recording.stop(); else await finishRecording(); return; }
     if (!current() || busy || draft.pending) return;
     const signal = session.signal;
     const instance = createFeedbackRecorder({ maxBytes: remaining(), maxSeconds: context?.limits.maxAudioSeconds ?? 120, signal,
-      onTick: seconds => { if (current() && !signal.aborted) recordButton.querySelector('span')!.textContent = `Остановить · ${seconds} с`; } });
+      onTick: seconds => { if (recording === instance) { recordingStarted = true; if (current() && !signal.aborted) recordButton.querySelector('span')!.textContent = `Остановить · ${seconds} с`; } } });
+    recordingStarted = false;
     recording = instance; recordButton.querySelector('span')!.textContent = 'Отменить запрос микрофона'; controls();
-    try { const result = await instance.start(); if (current() && !signal.aborted) addAttachment(result); }
-    catch (error) { if (!abortError(error) && !signal.aborted) say(failure(error)); }
-    finally { if (recording === instance) recording = null; if (current()) { recordButton.querySelector('span')!.textContent = 'Записать голос'; controls(); } }
+    const task = (async () => {
+      try { const result = await instance.start(); if (!current() || signal.aborted) return false; addAttachment(result); return true; }
+      catch (error) { if (!abortError(error) && !signal.aborted) say(failure(error)); return false; }
+      finally { if (recording === instance) { recording = null; recordingStarted = false; if (current()) { recordButton.querySelector('span')!.textContent = 'Записать голос'; controls(); } } }
+    })();
+    recordingTask = task;
+    await task;
+    if (recordingTask === task) recordingTask = null;
   }
 
   function renderPreviews(): void {
@@ -254,7 +283,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
         };
         const crop = button('Обрезать выделение', undefined, '', () => edit('crop')), redact = button('Скрыть выделение', undefined, '', () => edit('redact'));
         crop.disabled = redact.disabled = !!draft.pending; actions.append(crop, redact); row.append(el('small', 'sw-muted', 'Выделите участок, чтобы обрезать или скрыть его. Изменения сохраняются в самом изображении.'), actions);
-      } else { const player = el(item.kind === 'video' ? 'video' : 'audio'); player.controls = true; player.preload = 'metadata'; player.src = mediaUrl(item); if (player instanceof HTMLVideoElement) player.playsInline = true; row.append(player); }
+      } else { const player = el(item.kind === 'video' ? 'video' : 'audio'); player.controls = true; player.preload = 'metadata'; player.src = mediaUrl(item); if (player instanceof HTMLVideoElement) player.playsInline = true; row.append(player); if (item.kind === 'audio') row.append(audioDownload(item)); }
       const remove = button('Убрать вложение', 'close', 'sw-button-quiet', () => { if (busy || draft.pending) return; draft.attachments.splice(index, 1); persist(); renderPreviews(); }); remove.disabled = !!draft.pending;
       row.append(el('span', 'sf-file-size', `${Math.ceil(attachmentBytes(item) / 1024)} КиБ`), remove); previews.append(row);
     });
@@ -347,7 +376,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
       const attachment = { ...item, dataBase64: item.dataBase64 };
       try { validateAttachmentBudget([attachment]); } catch { continue; }
       if (item.kind === 'image') { const image = el('img', 'sf-history-image'); image.src = mediaUrl(attachment); image.alt = 'Снимок из обращения'; detail.append(image); }
-      else { const player = el(item.kind === 'video' ? 'video' : 'audio'); player.controls = true; player.preload = 'metadata'; player.src = mediaUrl(attachment); if (player instanceof HTMLVideoElement) player.playsInline = true; detail.append(player); }
+      else { const player = el(item.kind === 'video' ? 'video' : 'audio'); player.controls = true; player.preload = 'metadata'; player.src = mediaUrl(attachment); if (player instanceof HTMLVideoElement) player.playsInline = true; detail.append(player); if (item.kind === 'audio') detail.append(audioDownload(attachment)); }
     }
     for (const message of ticket.messages ?? []) {
       const row = el('article', 'sf-thread-message'); row.append(el('strong', '', message.kind === 'support' ? 'Поддержка' : 'Отправитель'), el('p', '', message.body), el('small', 'sw-muted', formatDate(message.createdAt))); detail.append(row);
@@ -431,8 +460,8 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
   renderPreviews(); controls();
   return {
     open() { if (!current()) return; if (session.signal.aborted) session = new AbortController(); if (!dialog.open) dialog.showModal(); ownsModal = true; options.onModalChange?.(dialog, true); compose.hidden = false; history.hidden = true; text.focus(); void loadContext(); },
-    async flush() { persist(); },
-    hasUnsavedChanges: () => contents() && !saved,
+    async flush() { if (!await finishRecording()) throw new Error('feedback_record_failed'); persist(); },
+    hasUnsavedChanges: () => !!recording || contents() && !saved,
     dispose() { if (disposed) return; if (current()) persist(); disposed = true; generation++; historyGeneration++; ticketGeneration++; session.abort(); recording?.cancel(); dialog.close(); releaseModal(); dialog.remove(); },
   };
 }

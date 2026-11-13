@@ -37,7 +37,7 @@ export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigure
   const schemas = document.components.schemas;
   schemas.Status = object({ notesCreateEnabled: { type: 'boolean' }, audience: { type: ['string', 'null'], maxLength: 512,
     description: 'Explicit canonical resource origin; null means the private HTTP surface is not configured. A configured origin does not imply execution is enabled.' },
-    appFeedbackEnabled: { type: 'boolean', description: 'All seven application-feedback contracts and the MCP transport are configured. This is not authorization for an app.' },
+    appFeedbackEnabled: { type: 'boolean', description: 'All registered application-feedback contracts and the MCP transport are configured. This is not authorization for an app or its media.' },
     mcpAudience: { type: ['string', 'null'], maxLength: 512, description: 'Canonical origin plus /mcp when application feedback is configured; null otherwise.' } });
   schemas.NativeDraftRequest = copy(note.inputSchema);
   schemas.NativeDraftRequest.properties.title['x-soty-max-utf16-code-units'] = 160;

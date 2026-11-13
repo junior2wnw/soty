@@ -65,7 +65,7 @@ import { createCanvasWidgetsService } from '../modules/canvas-widgets/server.mjs
 import { createCanvasVaultService } from '../modules/canvas-vault/server.mjs';
 import { createCanvasPagesService } from '../modules/canvas-pages/server.mjs';
 import { attachCanvasPagesHttp } from './canvas-pages-http.js';
-import { createAppFeedbackCapabilities } from './app-feedback-capabilities.js';
+import { APP_FEEDBACK_CATALOG, createAppFeedbackCapabilities } from './app-feedback-capabilities.js';
 import { captureUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
 import { fenceClosingHttpSocket } from './http-closing-socket.mjs';
 import { createPersonalAgentComposition } from './personal-agent-composition.js';
@@ -465,7 +465,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.locals.capabilitiesService = capabilities;
   app.locals.monitoringModule=monitoring;app.locals.monitoringCollectors=monitoringCollectors;
   app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
-    appFeedbackReady: () => Boolean(!servicesCleanup && mcp && connect && universal?.feedback && appFeedback?.catalog.length === 7
+    appFeedbackReady: () => Boolean(!servicesCleanup && mcp && connect && universal?.feedback && appFeedback?.catalog.length === APP_FEEDBACK_CATALOG.length
       && appFeedback.catalog.every(entry => capabilities.external?.contracts.some(contract => contract.capabilityId === entry.capabilityId && contract.version === entry.version))),
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
   app.locals.externalCapabilities = attachExternalCapabilities(app,{service:capabilities,origin:admittedCapabilityAudience,appFeedback:appCapabilityGuards});

@@ -20,7 +20,7 @@ function source(index, readonly = false) {
     : { profile: EXTERNAL_ADAPTER_PROFILE, withAuthority: closed, execute: closed, readProof: closed };
   return { appId: 'fixture', target: { revision: 1, digest: 'b'.repeat(64) }, catalog, adapter };
 }
-test('all previously accepted 64 Source contracts coexist with the fixed seven, with the public capture bound unchanged', () => {
+test('all previously accepted 64 Source contracts coexist with feedback including media export, with the public capture bound unchanged', () => {
   const raw = Array.from({ length: 64 }, (_, index) => source(index, index % 2 === 0));
   const captured = captureExternalApplications(raw);
   assert.equal(captured.length, 64);
@@ -31,7 +31,7 @@ test('all previously accepted 64 Source contracts coexist with the fixed seven, 
     catalog: [...captured.map(value => value.catalog), ...bridge.catalog], documentation: [],
     externalAdapters: [...captured.filter(value => !value.readonly).map(({ contract, adapter }) => ({ contract, adapter })), ...bridge.effects],
     readonlyQueries: [...captured.filter(value => value.readonly).map(({ contract, adapter }) => ({ contract, adapter })), ...bridge.queries] });
-  try { assert.equal(service.external.contracts.length, 71); } finally { service.close(); }
+  try { assert.equal(service.external.contracts.length, 72); } finally { service.close(); }
 });
 test('the catalog-bound internal capture admits 128 unique contracts and refuses 129 or duplicates in either path', () => {
   for (const readonly of [false, true]) {

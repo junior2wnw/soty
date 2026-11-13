@@ -347,6 +347,29 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
       },
       execute(request) {
         const { op, actor, args } = request;
+        if (op === 'apps.feedback.attachment') {
+          exact(args, ['appId', 'installationId', 'ticketId', 'attachmentId', 'offset', 'expectedSha256'], ['appId', 'installationId', 'ticketId', 'attachmentId']);
+          id(args.installationId); id(args.ticketId); id(args.attachmentId);
+          const offset = args.offset ?? 0;
+          requireThat(Number.isSafeInteger(offset) && offset >= 0 && offset <= 1398104 && offset % 4 === 0);
+          requireThat(args.expectedSha256 === undefined || typeof args.expectedSha256 === 'string' && /^[a-f0-9]{64}$/u.test(args.expectedSha256));
+          return scoped(actor, args, (context, inbox) => {
+            const current = ticket(actor, context, inbox, args.ticketId);
+            const item = db.prepare('SELECT id,kind,name,mime_type,byte_length,bytes FROM feedback_attachments WHERE ticket_id=? AND id=?').get(current.id, args.attachmentId);
+            requireThat(item && ['image', 'audio', 'video'].includes(item.kind), 'feedback_attachment_unavailable', 404);
+            const bytes = Buffer.from(item.bytes);
+            requireThat(Number.isSafeInteger(item.byte_length) && item.byte_length > 0 && item.byte_length <= FEEDBACK_LIMITS.totalAttachmentBytes
+              && bytes.length === item.byte_length, 'feedback_attachment_invalid', 503);
+            const sha256 = hash(bytes);
+            requireThat(args.expectedSha256 === undefined || args.expectedSha256 === sha256, 'feedback_attachment_hash_mismatch', 409);
+            const encoded = bytes.toString('base64'); requireThat(offset < encoded.length);
+            const end = Math.min(encoded.length, offset + 49152);
+            const result = { attachment: { id: item.id, kind: item.kind, name: item.name, mimeType: item.mime_type, byteLength: item.byte_length, sha256 },
+              offset, totalChars: encoded.length, nextOffset: end < encoded.length ? end : -1, dataBase64: encoded.slice(offset, end) };
+            requireThat(Buffer.byteLength(JSON.stringify(result)) < 59000, 'feedback_response_too_large', 503);
+            return result;
+          }, false, true);
+        }
         if (op === 'apps.feedback.list') {
           const limit = args.limit ?? 10;
           requireThat(Number.isSafeInteger(limit) && limit >= 1 && limit <= 10, 'feedback_invalid_limit');

@@ -48,6 +48,19 @@ test('selected owner app opens the existing consent; default read works with Not
   assert.equal(f.document.activeElement, f.button('Подключить агента к обращениям', f.host));
 });
 
+test('media originals require explicit owner consent and add only the read attachment capability', async t => {
+  const f = feedbackFixture(t); await settle();
+  const media = form(f).querySelector('.sa-feedback-media');
+  assert.ok(media, 'owner must be able to authorize later voice processing');
+  assert.equal(media.checked, false, 'existing metadata consent must not silently expose files');
+  media.checked = true; media.dispatch('change');
+  await submit(f);
+  const issued = calls(f, 'access.grants.issue')[0].args;
+  assert.deepEqual(issued.capabilities, ['list', 'get', 'attachment'].map(operation => ({ capabilityId: 'apps.feedback.' + operation, version: 1 })));
+  assert.deepEqual(issued.effects, []); assert.equal(issued.allowDelegation, false);
+  assert.deepEqual(issued.resources, ['apps.feedback', 'apps.feedback:' + appId]);
+});
+
 test('cancelling initial consent creates no grant and returns keyboard focus to its exact app action', async t => {
   const f = feedbackFixture(t); await settle();
   f.button('Закрыть', f.dialog()).click();
