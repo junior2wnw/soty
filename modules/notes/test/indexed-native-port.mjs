@@ -2,7 +2,7 @@
 // transactions, commit/abort boundaries, upgrade blocking and versionchange.
 // Production storage code is not copied here; real browser IDB is a separate gate.
 export function indexedNativePort(){
-  const databases=new Map(),commitHolds=[],aborts=[];let holdNext=null,abortNext=null;
+  const databases=new Map(),commitHolds=[],holdWaiters=[],aborts=[];let holdNext=null,abortNext=null;
   function open(name,version){
     const request={};queueMicrotask(()=>{
       let record=databases.get(name);if(!record){record={version:0,stores:new Map(),connections:new Set(),queue:[],running:false};databases.set(name,record);}
@@ -27,7 +27,7 @@ export function indexedNativePort(){
       finishScheduled=false;if(ended||pending)return;
       const commit=()=>{if(ended)return;if(mode==='readwrite'&&abortNext?.dbName===dbName&&(!abortNext.store||names.includes(abortNext.store))){abortNext=null;tx.abort();return;}
         ended=true;if(mode==='readwrite')for(const[name,value]of views)record.stores.get(name).rows=value;tx.oncomplete?.();record.running=false;runNext(record);};
-      if(mode==='readwrite'&&holdNext?.dbName===dbName&&(!holdNext.store||names.includes(holdNext.store))){holdNext=null;commitHolds.push(commit);}else commit();
+      if(mode==='readwrite'&&holdNext?.dbName===dbName&&(!holdNext.store||names.includes(holdNext.store))){holdNext=null;commitHolds.push(commit);for(const resolve of holdWaiters.splice(0))resolve();}else commit();
     });};
     const request=read=>{const value={};pending++;const execute=()=>queueMicrotask(()=>{if(ended)return;try{value.result=structuredClone(read());value.onsuccess?.();}catch(error){tx.error=error;tx.abort();}pending--;finish();});if(started)execute();else operations.push(execute);return value;};
     tx.abort=()=>{if(ended)return;ended=true;aborts.push(dbName);queueMicrotask(()=>{tx.onabort?.();record.running=false;runNext(record);});};
@@ -46,6 +46,7 @@ export function indexedNativePort(){
   function runNext(record){if(record.running)return;const tx=record.queue.shift();if(tx){record.running=true;tx._start();}}
   return{indexedDB:{open},databases,aborts,
     hold(dbName,store){holdNext={dbName,store};},abort(dbName,store){abortNext={dbName,store};},get held(){return commitHolds.length;},release(){commitHolds.shift()?.();},
+    whenHeld(){return commitHolds.length?Promise.resolve():new Promise(resolve=>holdWaiters.push(resolve));},
     rows(dbName,store){return[...(databases.get(dbName)?.stores.get(store)?.rows.values()??[])].map(value=>structuredClone(value));},
   };
 }

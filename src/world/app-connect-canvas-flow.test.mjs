@@ -12,11 +12,12 @@ const accountId='connected_canvas_owner',projectId='connected-canvas',appId='app
 const input={name:'Connected one time',address:'localhost:3033/current',hostDeviceId:'owned_host',connectorId:'owned_connector',audience:'private',resultKind:'canvas'};
 const clone=value=>structuredClone(value),failure=code=>Object.assign(new Error(code),{code});
 const local=()=>{const rows=new Map(),queues=new Map();return{rows,storage:{getItem:key=>rows.get(key)??null,setItem:(key,value)=>rows.set(key,value)},locks:{request(key,callback){const value=(queues.get(key)??Promise.resolve()).catch(()=>{}).then(callback);queues.set(key,value.catch(()=>{}));return value;}}};};
-function fixture(t,{loseAt,blockLocal=false,holdRegistration=false}={}){
+function fixture(t,{loseAt,blockLocal=false,holdRegistration=false,storeFactory=createCanvasCreateStore}={}){
  const own=local(),port=indexedNativePort(),stores=[],controllers=[],calls=[],widgets=new Map(),objects=new Map(),placements=new Map();let active=true,registered=null,lost=false,blocked=blockLocal;
- let releaseRegistration;const registrationGate=holdRegistration?new Promise(resolve=>{releaseRegistration=resolve;}):null;
+ let releaseRegistration,enterRegistration;const registrationEntered=new Promise(resolve=>{enterRegistration=resolve;});
+ const registrationGate=holdRegistration?new Promise(resolve=>{releaseRegistration=resolve;}):null;
  let publication={audience:'private',launchPolicy:'restricted',listed:false,policyEpoch:1,activeDomainIds:[]};
- const createStore=()=>{const store=createCanvasCreateStore(accountId,projectId,{origin:'https://connect-canvas.invalid',indexedDB:port.indexedDB});stores.push(store);return store;};
+ const createStore=()=>{const store=storeFactory(accountId,projectId,{origin:'https://connect-canvas.invalid',indexedDB:port.indexedDB});stores.push(store);return store;};
  const api={async request(op,args){
   calls.push({op,args:clone(args)});assert.equal(args.expectedAccountId,accountId);
   if(['apps.register','apps.publication.update','canvas.widgets.create','canvas.objects.create'].includes(op)){
@@ -24,7 +25,7 @@ function fixture(t,{loseAt,blockLocal=false,holdRegistration=false}={}){
    assert.ok(pending&&rows.some(row=>row.operationId===pending.id&&row.connection?.requestId===pending.id),'linked Canvas operation must COMMIT before the first remote mutation');
   }
   let result;
-  if(op==='apps.register'){registered??={id:appId,name:args.name,ownerAccountId:accountId,hostDeviceId:args.hostDeviceId,port:args.port,entryPath:args.entryPath,grants:args.grants};result={app:clone(registered)};}
+  if(op==='apps.register'){enterRegistration();registered??={id:appId,name:args.name,ownerAccountId:accountId,hostDeviceId:args.hostDeviceId,port:args.port,entryPath:args.entryPath,grants:args.grants};result={app:clone(registered)};}
   else if(op==='apps.list')result={apps:registered?[clone(registered)]:[]};
   else if(op==='apps.inspect')result={schema:'soty.app-inspection.v1',app:{id:appId,name:input.name,state:'enabled'},source:{hostDeviceId:input.hostDeviceId,connectorId:input.connectorId,port:3033,entryPath:'/current',revision:1,digest:'c'.repeat(64),profile:RUNTIME_PROFILE},publication:clone(publication),addresses:{aliases:[{id:domainId,state:'bound'}]},actions:{canReserveName:true}};
   else if(op==='apps.directory.resolve')result={items:[{ref:{kind:'app',id:appId},available:true,app:{id:appId,name:input.name,entry:{appId,domainId,path:'/current'}}}]};
@@ -51,7 +52,7 @@ function fixture(t,{loseAt,blockLocal=false,holdRegistration=false}={}){
   }});return{flow,journal,canvas};
  };
  t.after(()=>{controllers.forEach(flow=>flow.dispose());stores.forEach(store=>store.close());});
- return{create,createStore,calls,widgets,objects,placements,port,own,unblock(){blocked=false;},releaseRegistration:()=>releaseRegistration?.(),retire(){active=false;}};
+ return{create,createStore,calls,widgets,objects,placements,port,own,registrationEntered,unblock(){blocked=false;},releaseRegistration:()=>releaseRegistration?.(),retire(){active=false;}};
 }
 
 test('one connect confirmation durably creates exactly one private widget/object/placement and reopens without re-selection',async t=>{
@@ -70,14 +71,31 @@ test('public Source consent remains separate from a private Canvas object; the e
  const f=fixture(t),result=await f.create().flow.run({...input,audience:'public'});assert.equal(result.audience,'public');const publication=f.calls.find(value=>value.op==='apps.publication.update');assert.equal(publication.args.listed,true);assert.equal(publication.args.exposureAck.scope,'whole-port');assert.equal([...f.objects.values()][0].visibility.audience,'private');
 });
 
+async function assertLinkedCommitHeld(f,promise){
+ const settled=promise.then(()=>{throw Error('Connect settled before the held transaction COMMIT');});
+ await Promise.race([f.port.whenHeld(),settled]);
+ // The hold is reached after hashing; let already-queued caller continuations expose an early acknowledgement.
+ await Promise.race([new Promise(resolve=>setImmediate(resolve)),settled]);
+ assert.equal(f.port.held,1);assert.equal(f.calls.length,0);assert.equal(f.port.rows('soty-canvas-create-v1','operations').length,0);
+}
 test('an IndexedDB put request is insufficient: registration waits for the actual linked transaction COMMIT',async t=>{
  const f=fixture(t);f.port.hold('soty-canvas-create-v1','operations');const controller=f.create(),promise=controller.flow.run(input);
- for(let i=0;i<50&&!f.port.held;i++)await new Promise(resolve=>setImmediate(resolve));assert.equal(f.port.held,1);assert.equal(f.calls.length,0);assert.equal(f.port.rows('soty-canvas-create-v1','operations').length,0);
+ await assertLinkedCommitHeld(f,promise);
  f.port.release();assert.equal((await promise).resultKind,'canvas');assert.equal(f.widgets.size,1);
+});
+test('the same held-COMMIT oracle rejects a store that resolves put on request success before transaction completion',async t=>{
+ const url=new URL('./canvas-create-flow.mjs',import.meta.url),current=readFileSync(url,'utf8');
+ const early=current.replace('store.put({scope,key:key(record.operationId),value:record});wrote=true;',
+  'const earlyPutRequest=store.put({scope,key:key(record.operationId),value:record});wrote=true;earlyPutRequest.onsuccess=()=>resolve(wrote);');assert.notEqual(early,current);
+ const code=early.replace(/from '(\.?\.?\/[^']+)'/gu,(_match,path)=>"from '"+new URL(path,url).href+"'"),broken=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+ const f=fixture(t,{storeFactory:broken.createCanvasCreateStore});f.port.hold('soty-canvas-create-v1','operations');const promise=f.create().flow.run(input);
+ try{await assert.rejects(assertLinkedCommitHeld(f,promise),/linked Canvas operation must COMMIT before the first remote mutation/u);}
+ finally{f.port.release();await promise.catch(()=>{});}
+ assert.equal(f.calls.filter(call=>call.op==='apps.register').length,1);assert.equal(f.widgets.size,0);assert.equal(f.objects.size,0);assert.equal(f.placements.size,0);
 });
 test('late old-account registration ACK may settle its own journal, but creates no widget/object/placement or new-account UI',async t=>{
  const f=fixture(t,{holdRegistration:true}),controller=f.create(),promise=controller.flow.run(input);
- for(let i=0;i<50&&!f.calls.some(call=>call.op==='apps.register');i++)await new Promise(resolve=>setImmediate(resolve));assert.equal(f.calls.at(-1).op,'apps.register');f.retire();f.releaseRegistration();await assert.rejects(promise,{code:'field_account_changed'});assert.equal(controller.journal.read().appId,appId);assert.equal(f.widgets.size,0);assert.equal(f.objects.size,0);assert.equal(f.placements.size,0);
+ await Promise.race([f.registrationEntered,promise.then(()=>{throw Error('Connect settled before registration entered');})]);assert.equal(f.calls.at(-1).op,'apps.register');f.retire();f.releaseRegistration();await assert.rejects(promise,{code:'field_account_changed'});assert.equal(controller.journal.read().appId,appId);assert.equal(f.widgets.size,0);assert.equal(f.objects.size,0);assert.equal(f.placements.size,0);
 });
 test('a lost final Connect journal ACK pins the complete Canvas result through normal completed-record pruning',async t=>{
  const f=fixture(t),set=f.own.storage.setItem;let reject=true;

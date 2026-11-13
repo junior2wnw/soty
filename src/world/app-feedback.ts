@@ -175,7 +175,8 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
     if (!current() || closing) return;
     closing = true;
     try {
-      if (!await finishRecording() || !current()) return;
+      if (recording && !await finishRecording()) return;
+      if (!current()) return;
       persist();
       if (contents() && !saved) { say('Черновик не сохранён. Включите сохранение перед закрытием; аудио также можно скачать.'); return; }
       session.abort(); dialog.close(); releaseModal(); controls();
@@ -460,7 +461,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
   renderPreviews(); controls();
   return {
     open() { if (!current()) return; if (session.signal.aborted) session = new AbortController(); if (!dialog.open) dialog.showModal(); ownsModal = true; options.onModalChange?.(dialog, true); compose.hidden = false; history.hidden = true; text.focus(); void loadContext(); },
-    async flush() { if (!await finishRecording()) throw new Error('feedback_record_failed'); persist(); },
+    async flush() { if (recording && !await finishRecording()) throw new Error('feedback_record_failed'); persist(); },
     hasUnsavedChanges: () => !!recording || contents() && !saved,
     dispose() { if (disposed) return; if (current()) persist(); disposed = true; generation++; historyGeneration++; ticketGeneration++; session.abort(); recording?.cancel(); dialog.close(); releaseModal(); dialog.remove(); },
   };
