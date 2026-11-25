@@ -1,0 +1,20 @@
+ARG SOTY_BASE
+FROM ${SOTY_BASE} AS build
+USER root
+RUN apt-get update && apt-get install --no-install-recommends -y cmake g++ make
+COPY whisper.tar.gz /tmp/whisper.tar.gz
+RUN echo '4d46e659151f31535b3947e322a58b0c604d3cbe93dfb284294e989a19d25ad7  /tmp/whisper.tar.gz' | sha256sum -c - \
+    && mkdir /build-whisper && tar -xzf /tmp/whisper.tar.gz -C /build-whisper --strip-components=1 \
+    && cmake -S /build-whisper -B /build-whisper/out -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DWHISPER_BUILD_SERVER=OFF \
+    && cmake --build /build-whisper/out --target whisper-cli -j 4
+
+FROM ${SOTY_BASE}
+USER root
+RUN apt-get update && apt-get install --no-install-recommends -y ffmpeg && rm -rf /var/lib/apt/lists/*
+COPY --from=build /build-whisper/out/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY model.bin /opt/feedback-voice/model.bin
+RUN echo 'ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb  /opt/feedback-voice/model.bin' | sha256sum -c -
+COPY voice-worker.mjs /opt/feedback-voice/worker.mjs
+USER 1000:1000
+ENTRYPOINT ["node", "/opt/feedback-voice/worker.mjs"]
+CMD []

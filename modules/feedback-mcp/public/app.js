@@ -60,7 +60,7 @@ const errors = {
     "Снимок экрана здесь недоступен. Можно выбрать изображение из файла.",
   feedback_record_unavailable:
     "Запись голоса здесь недоступна. Можно отправить текст.",
-  feedback_invalid_body: "Добавьте текст сообщения, не больше 8000 символов.",
+  feedback_invalid_body: "Добавьте текст сообщения или запишите голос. Текст — до 8000 символов.",
   feedback_audio_duration_limit:
     "Аудиозапись должна быть не длиннее двух минут.",
   feedback_invalid_cursor: "Список изменился. Обновите страницу.",
@@ -194,7 +194,7 @@ function guide() {
   const codex = make("section", "card"), commands = `codex mcp add feedback --url ${url}\ncodex mcp login feedback`;
   codex.append(make("h2", "", "Подключить в Codex"), code(commands), button("Скопировать команды", () => copy(commands, message)),
     make("p", "", "Выполните команды в терминале. В браузере войдите в свой аккаунт Сот и подтвердите доступ. Адрес проекта, ключ сервера и SSH не нужны."),
-    make("p", "", "Затем напишите агенту: «Подключи обратную связь к этому проекту». Чтобы получить все сообщения: «Выгрузи мою обратную связь по всем проектам и разбери обращения»."));
+    make("p", "", "Затем напишите агенту: «Подключи обратную связь к этому проекту». Для разбора попросите: «Открой входящие через MCP и разбери обращения, включая голосовые»."));
   root.append(codex);
   const grid = make("div", "grid"),
     left = make("section", "card"),
@@ -212,7 +212,7 @@ function guide() {
     make(
       "p",
       "",
-      "В Сотах откройте «Обратная связь» → «Входящие». «Выгрузить для агента» соберёт JSON с текстами и перепиской. Скачайте файл или скопируйте текст. Через MCP начните с feedback_inbox_list. Готовое решение подтверждает автор обращения.",
+      "Агент получает ваши входящие напрямую через MCP. Для голосового обращения он может забрать запись или запросить расшифровку. Вы сами можете прослушать запись в Сотах → «Обратная связь» → «Входящие».",
     ),
     link("Открыть кабинет", "/", "button primary"),
   );
@@ -222,7 +222,7 @@ function guide() {
     make(
       "p",
       "muted",
-      "При настройке виджета разрешите этот домен в CSP вашего сайта. Если встраивание недоступно, используйте обычную ссылку. Голос сохраняется как аудио без автоматической расшифровки.",
+      "При настройке виджета разрешите этот домен в CSP вашего сайта. Если встраивание недоступно, используйте обычную ссылку.",
     ),
   );
 }
@@ -274,7 +274,7 @@ function attachmentView(items, onLoad) {
       card.append(make("p", "muted", item.name));
       if (onLoad)
         card.append(
-          button("Открыть вложение", async (event) => {
+          button(item.kind === "audio" ? "Открыть голосовую запись" : "Открыть вложение", async (event) => {
             event.currentTarget.disabled = true;
             await onLoad(item);
           }),
@@ -516,7 +516,7 @@ function inbox(host, projectId, call, { owner = false, token } = {}) {
         item.className = "ticket";
         const text = make("span");
         text.append(
-          make("strong", "", ticket.body),
+          make("strong", "", ticket.body.trim() || "Голосовое обращение"),
           make("small", "", date(ticket.createdAt)),
         );
         item.append(
@@ -677,7 +677,7 @@ async function publicForm(projectId) {
     make(
       "p",
       "muted",
-      "До трёх вложений, вместе до 1 МиБ. Голос — до двух минут, без автоматической расшифровки.",
+      "Можно отправить голос без текста. Запись — до двух минут, все вложения вместе — до 1 МиБ.",
     ),
     previews,
     submit,
@@ -700,6 +700,7 @@ async function publicForm(projectId) {
     );
   }
   function controls() {
+    body.required = !attachments.some(item => item.kind === "audio");
     body.disabled = busy || !!pending;
     submit.disabled = busy || !!recording;
     submit.textContent = pending ? "Проверить отправку" : "Отправить";
@@ -840,7 +841,7 @@ async function dashboard() {
   root.replaceChildren(
     hero(
       "Обратная связь для любого проекта",
-      "Все обращения ваших проектов приходят в этот аккаунт Сот. Читайте и отвечайте здесь, подключите агента или выгрузите ему историю.",
+      "Все обращения ваших проектов приходят в этот аккаунт Сот. Читайте, слушайте и отвечайте здесь или поручите разбор агенту.",
     ),
   );
   if (!session.authenticated) {
@@ -867,7 +868,7 @@ async function dashboard() {
     projects = make("section", "card"),
     queue = make("section", "card");
   const accountActions = make("div", "row");
-  accountActions.append(button("Входящие", allInbox, true), button("Выгрузить для агента", () => downloadExport()), button("Создать проект", createDialog));
+  accountActions.append(button("Входящие", allInbox, true), link("Подключить агента", "/guide", "button"), button("Создать проект", createDialog));
   if (!sourceClient)
     accountActions.append(
       button("Выйти", async () => {
@@ -890,7 +891,7 @@ async function dashboard() {
     head.append(
       make("h2", "", project.name),
       button("Подключение", () => integration(project)),
-      button("Выгрузить проект", () => downloadExport(project.id)),
+      button("Скачать переписку", () => downloadExport(project.id)),
     );
     const box = make("div");
     queue.replaceChildren(head, box);
@@ -908,7 +909,7 @@ async function dashboard() {
         if (!cursor && !value.items.length) items.append(make("p", "empty", "Новых обращений пока нет. Подключите форму к проекту — сообщения появятся здесь."));
         for (const item of value.items) {
           const row = button("", () => select(item.project, item.ticket.id)); row.className = "ticket";
-          const text = make("span"); text.append(make("small", "", item.project.name), make("strong", "", item.ticket.body || "Обращение с вложением"), make("small", "", date(item.ticket.createdAt)));
+          const text = make("span"); text.append(make("small", "", item.project.name), make("strong", "", item.ticket.body.trim() || "Голосовое обращение"), make("small", "", date(item.ticket.createdAt)));
           row.append(text, make("span", "badge", states[item.ticket.status])); items.append(row);
         }
         if (value.nextCursor) items.append(button("Показать ещё", event => { event.currentTarget.remove(); void load(value.nextCursor); }));
@@ -918,7 +919,7 @@ async function dashboard() {
   }
   async function downloadExport(projectId) {
     const dialog = make("dialog", "modal"), info = make("p", "notice", "Собираем обращения и переписку…"), controller = new AbortController();
-    dialog.append(make("h2", "", "Выгрузка для агента"), make("p", "", "JSON с текстами, статусами и полной перепиской. Файлы вложений скачиваются отдельно. Передавайте выгрузку только выбранному агенту."), info, button("Отмена", () => dialog.close()));
+    dialog.append(make("h2", "", "Скачать переписку"), make("p", "", "Файл с текстами, статусами и перепиской. Голос и изображения доступны в самом обращении."), info, button("Отмена", () => dialog.close()));
     dialog.addEventListener("close", () => { controller.abort(); dialog.remove(); }); document.body.append(dialog); dialog.showModal();
     try {
       const value = await exportFeedback(ownerCall, { projectId, signal: controller.signal, onProgress: ({ count, waiting }) => notice(info, waiting ? `Лимит запросов. Продолжим через минуту. Обращений: ${count}.` : `Выгружено обращений: ${count}.`) });

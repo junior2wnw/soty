@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createFeedbackService } from "../feedback/server/index.mjs";
 import { contractDigest } from "../app-contract/json.mjs";
 import { isSourceNativeCommitPort } from "../source-app/server/native-authority.mjs";
+import { createVoiceTranscripts } from "./voice.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const newId = (prefix) => prefix + randomBytes(16).toString("hex");
@@ -98,6 +99,7 @@ export function createProjectService({
       project_id TEXT NOT NULL,proof_json TEXT NOT NULL,PRIMARY KEY(account_id,request_id)) STRICT;
     PRAGMA user_version=1; COMMIT;`);
   const actors = new WeakMap();
+  const voice = createVoiceTranscripts(dataDirectory);
   let closed = false,
     sourceFrame = null,
     executingOperation = null;
@@ -546,6 +548,14 @@ export function createProjectService({
         dataBase64: dataBase64.slice(offset, end),
       };
     },
+    voiceTranscript(actor, args) {
+      exact(args, ["projectId", "ticketId", "attachmentId"]);
+      authority(actor, args.projectId, false, true);
+      const { ticket } = api.execute(actor, "ticket_get", { projectId: args.projectId, ticketId: args.ticketId });
+      const attachment = ticket.attachments.find(item => item.id === args.attachmentId && item.kind === "audio");
+      check(attachment, "audio_unavailable", 404);
+      return voice.get(attachment);
+    },
     sourceExecute(actor, { requestId, input }, final) {
       const principal = account(actor);
       check(!principal.readOnly, "read_only", 403);
@@ -870,6 +880,7 @@ export function createProjectService({
     },
     close() {
       if (!closed) {
+        voice.close();
         receiptReader.close();
         core.close();
         db.close();

@@ -67,7 +67,7 @@ test("real modern SDK client creates a project, retrieves integration, and sees 
   );
   t.after(() => client.close());
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 11);
+  assert.equal(tools.length, 12);
   const created = await client.callTool({
     name: "feedback_project_create",
     arguments: {
@@ -355,4 +355,42 @@ test("private attachment is metadata in MCP and original bytes are returned only
       }),
     { code: "project_unavailable" },
   );
+});
+
+test("an external visitor can submit voice without text and the MCP owner chooses original or transcript", async (t) => {
+  const f = await httpFixture(t);
+  const website = "https://voice.example";
+  const project = f.service.execute(f.actors.alice, "project_create", {
+    name: "Voice", requestId: "voice-project", website,
+  }).project;
+  const session = await f.json("/api/public/" + project.id + "/session", { body: {} });
+  const { readFileSync } = await import("node:fs");
+  const bytes = readFileSync(new URL("../../feedback/test/fixtures/chrome-recorder.webm", import.meta.url));
+  const headers = { Origin: website, Authorization: "Bearer " + session.data.token };
+  const path = "/api/public/" + project.id + "/tools/ticket_submit";
+  const submission = { requestId: "voice-only", body: "", attachments: [] };
+  assert.equal((await f.json(path, { body: submission, headers })).status, 400);
+  submission.attachments.push({ kind: "audio", name: "recording.webm", mimeType: "audio/webm", dataBase64: bytes.toString("base64") });
+  const sent = await f.json(path, { body: submission, headers });
+  assert.equal(sent.status, 200);
+  const ticket = sent.data.ticket;
+  const args = { projectId: project.id, ticketId: ticket.id, attachmentId: ticket.attachments[0].id };
+  const client = new Client({ name: "voice-acceptance", version: "1" });
+  const { token } = f.service.issueCredential(f.actors.alice, { label: "Readonly voice check", readOnly: true });
+  await client.connect(new StreamableHTTPClientTransport(new URL(f.origin + "/mcp"), {
+    requestInit: { headers: { Authorization: "Bearer " + token } },
+  }));
+  t.after(() => client.close());
+  const { structuredContent: inbox } = await client.callTool({ name: "feedback_inbox_list", arguments: {} });
+  assert.equal(inbox.items[0].ticket.attachments[0].kind, "audio");
+  const original = await client.callTool({ name: "feedback_attachment_get", arguments: args });
+  assert.deepEqual(Buffer.from(original.content[1].resource.blob, "base64"), bytes);
+  const audio = await client.callTool({ name: "feedback_attachment_get", arguments: { ...args, format: "audio" } });
+  assert.equal(audio.content[1].type, "audio");
+  assert.deepEqual(Buffer.from(audio.content[1].data, "base64"), bytes);
+  const result = await client.callTool({ name: "feedback_voice_transcript", arguments: args });
+  assert.equal(result.structuredContent.status, "unavailable");
+  assert.throws(() => f.service.voiceTranscript(f.actors.bob, args), { code: "project_unavailable" });
+  const guest = f.service.guest(project.id, session.data.token);
+  assert.throws(() => f.service.voiceTranscript(guest.actor, args), { code: "project_unavailable" });
 });

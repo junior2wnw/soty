@@ -15,7 +15,7 @@ const object = value => value && typeof value === 'object' && !Array.isArray(val
 const exact = (value, keys, required = keys) => requireThat(object(value) && Object.keys(value).every(key => keys.includes(key))
   && required.every(key => Object.hasOwn(value, key)));
 const id = value => { requireThat(typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)); return value; };
-const body = value => { requireThat(typeof value === 'string' && value.isWellFormed() && value.trim().length > 0
+const body = (value, allowEmpty = false) => { requireThat(typeof value === 'string' && value.isWellFormed() && (allowEmpty || value.trim().length > 0)
   && value.length <= FEEDBACK_LIMITS.bodyChars && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value), 'feedback_invalid_body'); return value; };
 const hash = value => createHash('sha256').update(value).digest('hex');
 const newId = prefix => prefix + randomBytes(16).toString('hex');
@@ -217,10 +217,11 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
             maxAttachments: FEEDBACK_LIMITS.maxAttachments, maxAudioSeconds: FEEDBACK_LIMITS.maxAudioSeconds } } }));
       }
       if (op === 'apps.feedback.submit') {
-        exact(args, ['appId', 'installationId', 'requestId', 'body', 'attachments']); body(args.body); id(args.installationId);
+        exact(args, ['appId', 'installationId', 'requestId', 'body', 'attachments']); id(args.installationId);
         const media = validateFeedbackAttachments(args.attachments, { limits: {
           maxAttachments: FEEDBACK_LIMITS.maxAttachments, totalAttachmentBytes: FEEDBACK_LIMITS.totalAttachmentBytes,
           maxAudioSeconds: FEEDBACK_LIMITS.maxAudioSeconds } });
+        body(args.body, media.some(item => item.kind === 'audio'));
         const intent = hash(JSON.stringify(['feedback.submit.v1', args.appId, args.installationId, args.body,
           media.map(item => [item.kind, item.name, item.mimeType, hash(item.bytes)])]));
         return scoped(actor, args, (context, inbox) => {
