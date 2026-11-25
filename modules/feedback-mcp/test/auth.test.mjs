@@ -149,6 +149,20 @@ test('strict confidential upstream config rejects wrong callback and extra field
   { service: { actor() {}, identity() {} } }), error => error.code === 'auth_configuration_invalid');
 });
 
+test('Codex native dynamic registration metadata is accepted without widening redirect or PKCE policy', async t => {
+  const f = await fixture(t), logged = await f.login();
+  const registration = await f.register({ client_name: 'Codex', application_type: 'native',
+    redirect_uris: ['http://127.0.0.1:53711/callback/codex-native-test'],
+    grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'feedback' });
+  assert.equal(registration.status, 201);
+  assert.equal(registration.body.application_type, 'native');
+  const consent = await f.consent(logged, registration.body), issued = await f.token(registration.body, consent);
+  assert.equal(issued.status, 200);
+  assert.equal((await f.auth.authenticateBearer('Bearer ' + issued.body.access_token)).accountId, logged.browser.accountId);
+  assert.equal((await f.register({ application_type: 'unknown' })).status, 400);
+  assert.equal((await f.register({ application_type: 'native', redirect_uris: ['http://attacker.example/callback'] })).status, 400);
+});
+
 test('consent form permits only the validated callback origin across its redirect chain', async t => {
   const f = await fixture(t), logged = await f.login(), registered = await f.register({
     redirect_uris: ['https://client.example:8443/oauth/callback?next=https%3A%2F%2Fother.example%2F'] });

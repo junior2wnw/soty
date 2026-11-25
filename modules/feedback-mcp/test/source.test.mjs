@@ -88,7 +88,7 @@ async function fixture(t) {
   } await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 }); });
   return { request, contextRef, newContext, forge: value => { forged = value; }, revoke: () => { live = false; },
     restart() { source.close(); service.close(); start(); }, service: () => service,
-    ownActor: () => service.actor(service.identity(issuerUrl, context.humanPrincipal.subject)), advance: ms => { clock += ms; } };
+    ownActor: () => service.actor(service.identity(issuerUrl, context.humanPrincipal.subject)), now: () => clock, advance: ms => { clock += ms; } };
 }
 
 test('real Root witness: empty own workspace, create/read/receipt/restart and foreign denial', async t => {
@@ -139,15 +139,19 @@ test('embedded browser client uses maintained frame fetch and reconciles lost AC
   const source = (await readFile(new URL('../public/source-client.js', import.meta.url), 'utf8'))
     .replace("'./source-frame-fetch.js'", JSON.stringify(sdkUrl));
   const { createFeedbackSourceClient } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
-  let loseAck = true;
-  const client = createFeedbackSourceClient({ href: 'https://feedback.example/embed?sotyFrame=' + 'a'.repeat(43),
+  let loseAck = true, receiptBeforeContinuation;
+  const client = createFeedbackSourceClient({ href: 'https://feedback.example/embed?sotyFrame=' + 'a'.repeat(43), now: f.now,
     async fetch(path, options) {
       assert.equal(options.credentials, 'same-origin'); assert.equal(options.redirect, 'error');
       assert.equal(new Headers(options.headers).get('x-soty-frame'), 'a'.repeat(43));
       assert.equal(new Headers(options.headers).has('authorization'), false);
       const input = JSON.parse(options.body); calls.push({ path, input });
       const result = await f.request(path, input);
-      if (path.endsWith('/invoke') && loseAck) { loseAck = false; throw Error('Synthetic lost ACK after commit'); }
+      if (path.endsWith('/invoke') && loseAck) {
+        receiptBeforeContinuation = f.service().sourceReceipt(f.ownActor(), { requestId: input.requestId, inputDigest: digest(input.input) });
+        loseAck = false; f.advance(300001); f.newContext();
+        throw Error('Synthetic lost ACK after commit, followed by short-session expiry');
+      }
       return new Response(JSON.stringify(result.body), { status: result.status, headers: { 'content-type': 'application/json' } });
     } });
   const empty = await client.call('projects_list'); assert.deepEqual(empty.projects, []); assert.equal(empty.nextCursor, null);
@@ -157,11 +161,19 @@ test('embedded browser client uses maintained frame fetch and reconciles lost AC
   assert.equal((await client.call('project_create', args)).project.id, made.project.id);
   assert.equal(calls.filter(row => row.path.endsWith('/invoke')).length, 1);
   assert.ok(calls.some(row => row.path.endsWith('/receipt')));
+  assert.ok(calls.some(row => row.input.input?.operation === 'receipt_lookup'));
+  const originalProof = f.service().sourceReceipt(f.ownActor(), { requestId: args.requestId,
+    inputDigest: digest({ operation: 'project_create', name: args.name, publicSubmit: args.publicSubmit }) });
+  assert.equal(originalProof.outcome, 'committed');
+  assert.notEqual(originalProof.contextAfter.mutationRef, undefined);
+  assert.deepEqual(originalProof, receiptBeforeContinuation, 'renewal does not rewrite the original immutable receipt');
   await assert.rejects(client.call('project_create', { ...args, name: 'Changed' }), { code: 'request_conflict' });
   await assert.rejects(client.call('arbitrary_owner_operation', {}), { code: 'feedback_source_operation_denied' });
   const ticket = await client.call('ticket_submit', { projectId: made.project.id, body: 'Browser ticket', requestId: 'browser-source-ticket-001' });
   assert.equal(ticket.ticket.body, 'Browser ticket');
   assert.equal((await client.call('tickets_list', { projectId: made.project.id })).tickets.length, 1);
+  const incoming = await client.call('inbox_list');
+  assert.equal(incoming.items.length, 1); assert.equal(incoming.items[0].project.id, made.project.id);
   const image = await readFile(new URL('../../feedback/test/fixtures/chrome.png', import.meta.url));
   const media = f.service().execute(f.ownActor(), 'ticket_submit', { projectId: made.project.id,
     requestId: 'browser-media-seed-001', body: 'Selected image',
@@ -177,6 +189,12 @@ test('embedded browser client uses maintained frame fetch and reconciles lost AC
   assert.deepEqual(Buffer.from(loaded.attachment.dataBase64, 'base64'), image);
   assert.ok(calls.some(row => row.input.input?.operation === 'attachment_chunk'));
   assert.ok(calls.every(row => row.path.startsWith('/api/embed/')));
+  f.advance(300001); f.newContext();
+  assert.equal((await client.call('tickets_list', { projectId: made.project.id })).tickets.length, 2,
+    'reading an existing queue resumes after the short Source session expires');
+  f.newContext('person-two');
+  await assert.rejects(client.call('projects_list'), { code: 'source_account_changed' });
+  await assert.rejects(client.call('projects_list'), { code: 'source_account_changed' });
 });
 
 test('expired Root context stays denied; a fresh verified context creates a new bounded actor', async t => {

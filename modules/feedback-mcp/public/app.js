@@ -5,6 +5,7 @@ import {
   attachmentBytes,
   validateAttachmentBudget,
 } from "/assets/feedback-media.mjs";
+import { exportFeedback } from "/assets/export.js";
 
 const root = document.querySelector("#app"),
   origin = location.origin;
@@ -64,15 +65,22 @@ const errors = {
     "Аудиозапись должна быть не длиннее двух минут.",
   feedback_invalid_cursor: "Список изменился. Обновите страницу.",
   read_only: "Для этого подключения разрешено только чтение.",
+  source_account_changed: "Аккаунт Сот изменился. Откройте обратную связь заново из нужного аккаунта.",
+  source_workspace_context_denied: "Сессия приложения изменилась. Откройте обратную связь заново в Сотах.",
+  feedback_export_changed: "Обращение изменилось во время выгрузки. Запустите выгрузку заново.",
+  feedback_export_limit: "Выгрузка больше 64 МиБ. Выберите проект и выгрузите его отдельно.",
+  csrf_required: "Сессия входа обновилась. Перезагрузите страницу и повторите действие.",
 };
-function describe(error) {
+function describe(error, read = false) {
   return (
     errors[error.code ?? error.message] ??
     (error.status === 401
       ? "Срок доступа закончился. Войдите заново."
       : error.status === 413
         ? "Сообщение или вложения слишком велики."
-        : "Не получили подтверждение. Точный запрос сохранён для повторной проверки.")
+        : read
+          ? "Не удалось загрузить данные. Нажмите «Обновить»." + (error.code ? " Код: " + error.code + "." : "")
+          : "Не получили подтверждение. Точный запрос сохранён для повторной проверки.")
   );
 }
 function notice(node, text, error = false) {
@@ -109,7 +117,13 @@ async function request(path, body, token) {
 }
 let sourceClient = null;
 async function ownerCall(operation, args = {}) {
-  if (sourceClient) return sourceClient.call(operation, args);
+  if (sourceClient) {
+    try { return await sourceClient.call(operation, args); }
+    catch (error) {
+      if (error.code === "source_account_changed") root.replaceChildren(hero("Аккаунт изменился", describe(error)));
+      throw error;
+    }
+  }
   const result = await request("/api/tools/feedback_" + operation, args);
   if (operation === "attachment_get") {
     const media = result.content.find(
@@ -155,7 +169,7 @@ function guide() {
   root.replaceChildren(
     hero(
       "Подключите через своего агента",
-      "Один MCP для проектов на любом стеке. Обращения можно читать и обрабатывать из вашей среды с ИИ.",
+      "Один вход в аккаунт Сот. Любой проект. Все обращения — во «Входящих» и у вашего агента.",
     ),
   );
   const card = make("section", "card"),
@@ -169,15 +183,18 @@ function guide() {
   );
   const steps = make("ol", "guide-list");
   for (const text of [
-    "Добавьте удалённый MCP по этому адресу в среду, которая поддерживает HTTP MCP и вход через OAuth.",
-    "Войдите через действующий аккаунт Сот и подтвердите доступ. Аккаунт проекта и данные других владельцев остаются отдельными.",
-    "Попросите агента: «Подключи обратную связь к этому проекту». Агент найдёт существующий проект или создаст новый.",
-    "Агент получит ссылку формы и код кнопки. Для изменения исходников ему нужен доступ к вашему проекту.",
-    "Попросите: «Покажи новые обращения по проекту». Ответы людям и исправления выполняются по вашему поручению.",
+    "Добавьте этот MCP в свою среду с ИИ. Для Codex можно выполнить команды ниже.",
+    "В браузере войдите в свой аккаунт Сот и подтвердите доступ.",
+    "Напишите агенту: «Подключи обратную связь к этому проекту». Форму и код кнопки агент получит сам.",
   ])
     steps.append(make("li", "", text));
   card.append(steps);
   root.append(card);
+  const codex = make("section", "card"), commands = `codex mcp add feedback --url ${url}\ncodex mcp login feedback`;
+  codex.append(make("h2", "", "Подключить в Codex"), code(commands), button("Скопировать команды", () => copy(commands, message)),
+    make("p", "", "Выполните команды в терминале. В браузере войдите в свой аккаунт Сот и подтвердите доступ. Адрес проекта, ключ сервера и SSH не нужны."),
+    make("p", "", "Затем напишите агенту: «Подключи обратную связь к этому проекту». Чтобы получить все сообщения: «Выгрузи мою обратную связь по всем проектам и разбери обращения»."));
+  root.append(codex);
   const grid = make("div", "grid"),
     left = make("section", "card"),
     right = make("section", "card");
@@ -194,7 +211,7 @@ function guide() {
     make(
       "p",
       "",
-      "Читайте обращения через MCP или в этом кабинете. Передавайте готовое решение на проверку; подтверждает его автор обращения.",
+      "В Сотах откройте «Обратная связь» → «Входящие»: здесь собраны обращения всех проектов вашего аккаунта. Кнопка «Выгрузить для агента» скачивает JSON с текстами и перепиской — его можно передать любому Codex или другому агенту. Через MCP начните с feedback_inbox_list. Готовое решение подтверждает автор обращения.",
     ),
     link("Открыть кабинет", "/", "button primary"),
   );
@@ -300,7 +317,7 @@ function inbox(host, projectId, call, { owner = false, token } = {}) {
       conversation = value.messagesPage ?? null;
       render();
     } catch (error) {
-      notice(message, describe(error), true);
+      notice(message, describe(error, true), true);
     }
   }
   async function mutate(operation, args) {
@@ -515,7 +532,7 @@ function inbox(host, projectId, call, { owner = false, token } = {}) {
           }),
         );
     } catch (error) {
-      notice(message, describe(error), true);
+      notice(message, describe(error, true), true);
     }
   }
   void load();
@@ -825,7 +842,7 @@ async function dashboard() {
   root.replaceChildren(
     hero(
       "Обратная связь для любого проекта",
-      "Подключите сайт, приложение или просто поделитесь ссылкой. Читайте обращения здесь и через своего ИИ-агента.",
+      "Все обращения ваших проектов приходят в этот аккаунт Сот. Читайте и отвечайте здесь, подключите агента или выгрузите ему историю.",
     ),
   );
   if (!session.authenticated) {
@@ -852,7 +869,7 @@ async function dashboard() {
     projects = make("section", "card"),
     queue = make("section", "card");
   const accountActions = make("div", "row");
-  accountActions.append(button("Создать проект", createDialog, true));
+  accountActions.append(button("Входящие", allInbox, true), button("Выгрузить для агента", () => downloadExport()), button("Создать проект", createDialog));
   if (!sourceClient)
     accountActions.append(
       button("Выйти", async () => {
@@ -870,15 +887,49 @@ async function dashboard() {
   queue.append(
     make("p", "empty", "Выберите проект, чтобы открыть его обращения."),
   );
-  function select(project) {
+  function select(project, ticketId) {
     const head = make("div", "row spread");
     head.append(
       make("h2", "", project.name),
       button("Подключение", () => integration(project)),
+      button("Выгрузить проект", () => downloadExport(project.id)),
     );
     const box = make("div");
     queue.replaceChildren(head, box);
-    inbox(box, project.id, ownerCall, { owner: true });
+    const view = inbox(box, project.id, ownerCall, { owner: true });
+    if (ticketId) void view.select(ticketId);
+  }
+  async function allInbox() {
+    const title = make("div", "row spread"), info = make("p", "notice"), items = make("div", "list");
+    title.append(make("h2", "", "Входящие · все проекты"), button("Обновить", allInbox));
+    queue.replaceChildren(title, info, items);
+    async function load(cursor) {
+      try {
+        const value = await ownerCall("inbox_list", { limit: 20, ...(cursor ? { cursor } : {}) });
+        if (!items.isConnected) return;
+        if (!cursor && !value.items.length) items.append(make("p", "empty", "Новых обращений пока нет. Подключите форму к проекту — сообщения появятся здесь."));
+        for (const item of value.items) {
+          const row = button("", () => select(item.project, item.ticket.id)); row.className = "ticket";
+          const text = make("span"); text.append(make("small", "", item.project.name), make("strong", "", item.ticket.body || "Обращение с вложением"), make("small", "", date(item.ticket.createdAt)));
+          row.append(text, make("span", "badge", states[item.ticket.status])); items.append(row);
+        }
+        if (value.nextCursor) items.append(button("Показать ещё", event => { event.currentTarget.remove(); void load(value.nextCursor); }));
+      } catch (error) { notice(info, describe(error, true), true); }
+    }
+    await load();
+  }
+  async function downloadExport(projectId) {
+    const dialog = make("dialog", "modal"), info = make("p", "notice", "Собираем обращения и переписку…"), controller = new AbortController();
+    dialog.append(make("h2", "", "Выгрузка для агента"), make("p", "", "JSON с текстами, статусами и полной перепиской. Файлы вложений скачиваются отдельно. Передавайте выгрузку только выбранному агенту."), info, button("Отмена", () => dialog.close()));
+    dialog.addEventListener("close", () => { controller.abort(); dialog.remove(); }); document.body.append(dialog); dialog.showModal();
+    try {
+      const value = await exportFeedback(ownerCall, { projectId, signal: controller.signal, onProgress: ({ count, waiting }) => notice(info, waiting ? `Лимит запросов. Продолжим через минуту. Обращений: ${count}.` : `Выгружено обращений: ${count}.`) });
+      if (!dialog.isConnected) return;
+      const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }), url = URL.createObjectURL(blob), anchor = link("Скачать JSON", url, "button primary");
+      anchor.download = `feedback-${new Date().toISOString().slice(0, 10)}.json`;
+      notice(info, `Готово: проектов ${value.projects.length}, обращений ${value.tickets.length}.`);
+      dialog.append(anchor); anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (error) { if (error.name !== "AbortError" && info.isConnected) notice(info, describe(error, true), true); }
   }
   async function list(cursor) {
     try {
@@ -1012,6 +1063,7 @@ async function dashboard() {
     }
   }
   await list();
+  await allInbox();
 }
 
 try {

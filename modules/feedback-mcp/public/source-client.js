@@ -1,6 +1,6 @@
 import { createSourceFrameFetch } from './source-frame-fetch.js';
 
-const reads = new Set(['projects_list', 'integration_get', 'tickets_list', 'ticket_get']);
+const reads = new Set(['projects_list', 'inbox_list', 'integration_get', 'tickets_list', 'ticket_get']);
 const writes = new Set(['project_create', 'ticket_submit', 'ticket_reply', 'ticket_status', 'ticket_accept']);
 const failure = (code, status = 503) => Object.assign(new Error(code), { code, status });
 const id = () => 'feedback-ui-' + crypto.randomUUID();
@@ -21,7 +21,8 @@ async function hash(text) {
 export function createFeedbackSourceClient(options = {}) {
   const sourceFetch = createSourceFrameFetch({ fetch: options.fetch ?? globalThis.fetch,
     href: options.href ?? globalThis.location?.href, shortSessionHandoff: true });
-  let contextRef, acquiring;
+  const now = options.now ?? Date.now;
+  let contextRef, contextExpiresAt = 0, accountId, accountChanged = false, acquiring;
   const pending = new Map();
   async function request(path, input) {
     const body = JSON.stringify(input);
@@ -45,19 +46,35 @@ export function createFeedbackSourceClient(options = {}) {
     if (path === 'query' && data?.messagesPage?.nextOffset === -1) data.messagesPage.nextOffset = null;
     return data;
   }
-  async function acquire() {
-    if (contextRef) return;
+  async function acquire(force = false) {
+    if (accountChanged) throw failure('source_account_changed', 401);
+    if (!force && contextRef && contextExpiresAt > now() + 5000) return;
     if (!acquiring) acquiring = (async () => {
       await request('session-continue', { requestId: id() });
       const context = await request('query', { requestId: id(), input: { operation: 'soty.current_context' } });
-      if (!/^[A-Za-z0-9_-]{43}$/u.test(context?.context?.ref)) throw failure('source_workspace_context_denied');
+      if (!/^[A-Za-z0-9_-]{43}$/u.test(context?.context?.ref)
+        || !Number.isSafeInteger(context.context.expiresAt) || context.context.expiresAt <= now()) throw failure('source_workspace_context_denied');
+      const identity = await request('query', { requestId: id(), contextRef: context.context.ref, input: { operation: 'account_info' } });
+      if (!/^fu_[a-f0-9]{32}$/u.test(identity?.accountId)) throw failure('source_workspace_context_denied');
+      if (accountId && identity.accountId !== accountId) {
+        accountChanged = true; contextRef = undefined; throw failure('source_account_changed', 401);
+      }
+      accountId = identity.accountId;
       contextRef = context.context.ref;
+      contextExpiresAt = context.context.expiresAt;
     })().finally(() => { acquiring = undefined; });
     await acquiring;
   }
-  async function read(operation, args) {
-    await acquire(); return request('query', { requestId: id(), contextRef, input: { ...args, operation } });
+  async function authorizedRead(path, input) {
+    await acquire();
+    try { return await request(path, { requestId: id(), ...input, contextRef }); }
+    catch (error) {
+      if (!['authentication_required', 'source_workspace_context_denied', 'source_app_root_changed'].includes(error.code)) throw error;
+      await acquire(true);
+      return request(path, { requestId: id(), ...input, contextRef });
+    }
   }
+  const read = (operation, args) => authorizedRead('query', { input: { ...args, operation } });
   async function finish(entry, proof) {
     if (proof?.requestId !== entry.requestId || proof.inputDigest !== entry.digest || proof.outcome !== 'committed'
       || typeof proof.receipt?.id !== 'string') throw failure('source_app_effect_unknown');
@@ -70,6 +87,7 @@ export function createFeedbackSourceClient(options = {}) {
     return read('ticket_get', { projectId: entry.input.projectId, ticketId: proof.receipt.id });
   }
   return Object.freeze({ async call(operation, args = {}) {
+    if (accountChanged) throw failure('source_account_changed', 401);
     if (!args || Object.getPrototypeOf(args) !== Object.prototype || Object.hasOwn(args, 'operation')) throw failure('invalid_arguments', 400);
     if (operation === 'attachment_get') {
       if (Object.keys(args).sort().join(',') !== 'attachmentId,projectId,ticketId') throw failure('invalid_arguments', 400);
@@ -110,7 +128,14 @@ export function createFeedbackSourceClient(options = {}) {
         try { proof = await request('invoke', { requestId, contextRef: entry.contextRef, input: entry.input }); }
         catch { /* Only the original receipt may resolve an unknown write. */ }
       }
-      if (!proof) proof = await request('receipt', { requestId, contextRef: entry.contextRef, input: { inputDigest: entry.digest } });
+      if (!proof) {
+        try { proof = await authorizedRead('receipt', { requestId, input: { inputDigest: entry.digest } }); }
+        catch (error) {
+          if (error.code !== 'source_workspace_receipt_denied') throw error;
+          proof = await read('receipt_lookup', { requestId, inputDigest: entry.digest });
+          if (proof.schema !== 'soty.feedback-reconciliation.v1') throw failure('source_app_effect_unknown');
+        }
+      }
       return finish(entry, proof);
     })().finally(() => { entry.flight = undefined; });
     return entry.flight;

@@ -6,7 +6,7 @@ import { selectedResourceProfile } from '../apps/scoped-embed/resource-profile.m
 import { check, fields, digest, jsonCopy, syncResult } from '../source-app/server/wire.mjs';
 import { callFeedbackTool } from './tools.mjs';
 
-const reads = new Set(['projects_list', 'integration_get', 'tickets_list', 'ticket_get', 'attachment_chunk']);
+const reads = new Set(['projects_list', 'inbox_list', 'integration_get', 'tickets_list', 'ticket_get', 'attachment_chunk', 'account_info', 'receipt_lookup']);
 const writes = new Set(['project_create', 'ticket_submit', 'ticket_reply', 'ticket_status', 'ticket_accept']);
 
 // Only short Root-witness sessions live here. Native changes and their proofs
@@ -121,6 +121,14 @@ export function createFeedbackSource({ service, config, now = Date.now } = {}) {
     read(proof, binding, args) {
       const { actor } = inspect(proof, binding), { operation, ...input } = args.input;
       check(reads.has(operation), 'feedback_source_operation_denied', 403);
+      if (operation === 'account_info') { fields(input, []); return { accountId: actor.accountId }; }
+      if (operation === 'receipt_lookup') {
+        fields(input, ['requestId', 'inputDigest']);
+        const result = syncResult(service.sourceReceipt(actor, input));
+        // A fresh authorized domain read never rebinds the original lease proof.
+        return { schema: 'soty.feedback-reconciliation.v1', requestId: result.requestId, inputDigest: result.inputDigest,
+          outcome: result.outcome, ...(result.receipt ? { receipt: result.receipt, replayed: true } : {}) };
+      }
       if (operation === 'attachment_chunk') return syncResult(service.attachmentChunk(actor, input));
       const result = syncResult(callFeedbackTool(service, actor, 'feedback_' + operation, input)).structuredContent;
       // Root's bounded schema dialect has no nullable unions. Keep this wire

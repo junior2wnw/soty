@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProjectService } from "../service.mjs";
+import { callFeedbackTool } from "../tools.mjs";
+import { exportFeedback } from "../public/export.js";
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "feedback-mcp-"));
@@ -39,6 +41,49 @@ const create = (s, a, requestId = "project-request-1", options = {}) =>
     requestId,
     ...options,
   }).project;
+
+test("account inbox is paginated across projects, private to the owner, bounded and cursor scoped", t => {
+  const { service: s, alice, bob } = fixture(t), first = create(s, alice), second = create(s, alice, "second"), foreign = create(s, bob, "foreign");
+  const guest = s.guest(first.id).actor;
+  const one = s.execute(guest, "ticket_submit", { projectId: first.id, body: "🙂".repeat(4000), requestId: "first-ticket" }).ticket;
+  const two = s.execute(alice, "ticket_submit", { projectId: second.id, body: "Second", requestId: "second-ticket" }).ticket;
+  s.execute(bob, "ticket_submit", { projectId: foreign.id, body: "Private foreign ticket", requestId: "foreign-ticket" });
+  const page = callFeedbackTool(s, alice, "feedback_inbox_list", { limit: 1 }).structuredContent;
+  assert.equal(page.items.length, 1); assert.ok(page.nextCursor);
+  const next = s.execute(alice, "inbox_list", { limit: 1, cursor: page.nextCursor });
+  assert.equal(next.items.length, 1); assert.equal(next.nextCursor, null);
+  assert.deepEqual(new Set([...page.items, ...next.items].map(i => i.ticket.id)), new Set([one.id, two.id]));
+  const all = s.execute(alice, "inbox_list");
+  assert.equal(all.items.find(i => i.ticket.id === one.id).bodyTruncated, true);
+  assert.equal(Array.from(all.items.find(i => i.ticket.id === one.id).ticket.body).length, 600);
+  assert.equal(all.items.every(i => i.ticket.messages.length === 0 && i.ticket.attachments.every(a => !a.dataBase64)), true);
+  assert.throws(() => s.execute(bob, "inbox_list", { cursor: page.nextCursor }), { code: "feedback_invalid_cursor" });
+  assert.throws(() => s.execute(guest, "inbox_list"), { code: "owner_access_required" });
+  assert.deepEqual(s.execute(alice, "inbox_list", { status: "resolved" }).items, []);
+  assert.equal(s.execute(alice, "inbox_list", { projectId: second.id }).items[0].ticket.id, two.id);
+});
+
+test("agent export includes full bodies and every conversation page without foreign data or credentials", async t => {
+  const { service: s, alice, bob } = fixture(t), first = create(s, alice), second = create(s, alice, "second"), foreign = create(s, bob, "foreign");
+  const guest = s.guest(first.id), issued = s.issueCredential(alice, { label: "Export test", projectId: first.id });
+  let ticket = s.execute(guest.actor, "ticket_submit", { projectId: first.id, body: "Полный текст ".repeat(300), requestId: "export-ticket" }).ticket;
+  for (let n = 0; n < 25; n++) ticket = s.execute(alice, "ticket_reply", { projectId: first.id, ticketId: ticket.id,
+    expectedRevision: ticket.revision, requestId: "export-reply-" + n, body: "Ответ " + n }).ticket;
+  s.execute(alice, "ticket_submit", { projectId: second.id, body: "Second project", requestId: "export-second" });
+  s.execute(bob, "ticket_submit", { projectId: foreign.id, body: "Foreign secret", requestId: "export-foreign" });
+  const calls = [], read = (op, args) => { calls.push(op); return callFeedbackTool(s, alice, "feedback_" + op, args).structuredContent; };
+  const result = await exportFeedback(read);
+  assert.equal(result.tickets.length, 2); assert.equal(result.projects.length, 2);
+  const exported = result.tickets.find(value => value.id === ticket.id);
+  assert.equal(exported.body, ticket.body); assert.equal(exported.messages.length, ticket.messages.length);
+  assert.deepEqual(exported.messages, ticket.messages);
+  assert.ok(calls.filter(op => op === "ticket_get").length >= 3);
+  const json = JSON.stringify(result);
+  for (const secret of [guest.token, issued.token, "Foreign secret"]) assert.equal(json.includes(secret), false);
+  assert.equal((await exportFeedback(read, { projectId: second.id })).tickets.length, 1);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(exportFeedback(read, { signal: controller.signal }), { name: "AbortError" });
+});
 
 test("two owners are isolated; a copied actor and arbitrary project ID grant no access", (t) => {
   const { service: s, alice, bob } = fixture(t),
@@ -181,6 +226,8 @@ test("project-restricted credentials cannot list another project, mint a broader
   });
   const agent = s.authenticateCredential(token);
   assert.equal(s.execute(agent, "projects_list").projects.length, 1);
+  assert.deepEqual(s.execute(agent, "inbox_list").items, []);
+  assert.throws(() => s.execute(agent, "inbox_list", { projectId: second.id }), { code: "project_unavailable" });
   assert.throws(
     () => s.execute(agent, "integration_get", { projectId: second.id }),
     { code: "project_unavailable" },

@@ -164,8 +164,10 @@ export async function createFeedbackAuth(config, { service } = {}) {
     check(client && Array.isArray(client.redirect_uris) && client.redirect_uris.length >= 1 && client.redirect_uris.length <= 8
       && client.redirect_uris.every(uri => typeof uri === 'string' && uri.length <= 2048 && safeURL(uri) && !uri.includes('*'))
       && ['none', 'client_secret_basic'].includes(client.token_endpoint_auth_method ?? 'none')
-      && (!client.response_types || client.response_types.every(type => type === 'code'))
-      && (!client.grant_types || client.grant_types.every(type => ['authorization_code', 'refresh_token'].includes(type)))
+      && (client.application_type === undefined || ['native', 'web'].includes(client.application_type))
+      && (client.response_types === undefined || Array.isArray(client.response_types) && client.response_types.length === 1 && client.response_types[0] === 'code')
+      && (client.grant_types === undefined || Array.isArray(client.grant_types) && client.grant_types.length >= 1 && client.grant_types.length <= 2
+        && client.grant_types.every(type => ['authorization_code', 'refresh_token'].includes(type)))
       && (!client.client_name || typeof client.client_name === 'string' && client.client_name.length <= 100), 'invalid_client_metadata', 400);
     return client;
   }
@@ -353,7 +355,7 @@ export async function createFeedbackAuth(config, { service } = {}) {
       if (path.startsWith('/oauth/')) {
         if (path === '/oauth/register' && req.method === 'POST') {
           const data = validateClient(await body(req, true));
-          check(Object.keys(data).every(k => ['client_name', 'redirect_uris', 'response_types', 'grant_types', 'token_endpoint_auth_method', 'scope'].includes(k))
+          check(Object.keys(data).every(k => ['client_name', 'redirect_uris', 'response_types', 'grant_types', 'token_endpoint_auth_method', 'scope', 'application_type'].includes(k))
             && (!data.scope || data.scope === 'feedback' || data.scope === 'openid feedback'), 'invalid_client_metadata', 400);
           req.body = { ...data, token_endpoint_auth_method: data.token_endpoint_auth_method ?? 'none',
             response_types: ['code'], grant_types: data.grant_types ?? ['authorization_code', 'refresh_token'], scope: data.scope ?? 'feedback' };

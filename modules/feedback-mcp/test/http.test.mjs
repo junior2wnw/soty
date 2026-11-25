@@ -67,7 +67,7 @@ test("real modern SDK client creates a project, retrieves integration, and sees 
   );
   t.after(() => client.close());
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 10);
+  assert.equal(tools.length, 11);
   const created = await client.callTool({
     name: "feedback_project_create",
     arguments: {

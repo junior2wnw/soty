@@ -602,6 +602,48 @@ export function createProjectService({
     },
     execute(actor, op, args = {}) {
       authenticate(actor);
+      if (op === "inbox_list") {
+        exact(args, ["projectId", "status", "limit", "cursor"], []);
+        const a = account(actor), limit = args.limit ?? 20;
+        check(Number.isInteger(limit) && limit >= 1 && limit <= 50);
+        check(args.status === undefined || ["received", "in_progress", "needs_action", "ready_to_check", "resolved"].includes(args.status));
+        if (args.projectId !== undefined) authority(actor, args.projectId, false, true);
+        const scope = hash(JSON.stringify([actor.accountId, a.projectId ?? null, args.projectId ?? null, args.status ?? null]));
+        let after;
+        if (args.cursor !== undefined && args.cursor !== null) {
+          try {
+            check(typeof args.cursor === "string" && args.cursor.length <= 768);
+            after = JSON.parse(Buffer.from(args.cursor, "base64url").toString("utf8"));
+            exact(after, ["scope", "createdAt", "id"]);
+            check(after.scope === scope && Number.isSafeInteger(after.createdAt) && after.createdAt >= 0 && id(after.id)
+              && Buffer.from(JSON.stringify(after)).toString("base64url") === args.cursor);
+          } catch { throw new FeedbackProjectError("feedback_invalid_cursor"); }
+        }
+        const projects = db.prepare("SELECT * FROM projects WHERE owner_id=? AND (? IS NULL OR id=?) AND (? IS NULL OR id=?) ORDER BY id")
+          .all(actor.accountId, a.projectId ?? null, a.projectId ?? null, args.projectId ?? null, args.projectId ?? null);
+        if (!projects.length) return { items: [], nextCursor: null };
+        const byId = new Map(projects.map(row => [row.id, row]));
+        const rows = receiptReader.prepare(`SELECT t.id,t.created_at,i.app_id FROM feedback_tickets t
+          JOIN feedback_installations i ON i.id=t.installation_id WHERE i.app_id IN (${projects.map(() => "?").join(",")})
+          AND (? IS NULL OR t.status=?) AND (? IS NULL OR t.created_at<? OR (t.created_at=? AND t.id<?))
+          ORDER BY t.created_at DESC,t.id DESC LIMIT ?`).all(...projects.map(row => row.id), args.status ?? null, args.status ?? null,
+            after?.createdAt ?? null, after?.createdAt ?? null, after?.createdAt ?? null, after?.id ?? "", limit + 1);
+        const items = []; let bytes = 0;
+        for (const row of rows.slice(0, limit)) {
+          authority(actor, row.app_id, false, true);
+          const context = coreCall(actor, "context", { appId: row.app_id }).context;
+          const original = wrap(coreCall(actor, "get", { appId: row.app_id, installationId: context.installationId, ticketId: row.id }), row.app_id).ticket;
+          const preview = Array.from(original.body).slice(0, 600).join("");
+          const ticket = { ...original, body: preview, messages: [], attachments: original.attachments.map(({ dataBase64, ...metadata }) => metadata) };
+          const item = { project: publicProject(byId.get(row.app_id)), ticket, bodyTruncated: preview !== original.body };
+          const size = Buffer.byteLength(JSON.stringify(item));
+          if (items.length && bytes + size > 32000) break;
+          bytes += size; items.push(item);
+        }
+        const last = rows[items.length - 1];
+        return { items, nextCursor: rows.length > items.length && last
+          ? Buffer.from(JSON.stringify({ scope, createdAt: last.created_at, id: last.id })).toString("base64url") : null };
+      }
       if (op === "projects_list") {
         exact(args, ["limit", "cursor"], []);
         const a = account(actor),
