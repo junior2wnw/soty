@@ -212,7 +212,7 @@ function guide() {
     make(
       "p",
       "",
-      "В Сотах откройте «Обратная связь» → «Входящие». «Выгрузить для агента» соберёт JSON с текстами и перепиской. В Сотах его можно скопировать, в отдельном кабинете — скачать файлом. Через MCP начните с feedback_inbox_list. Готовое решение подтверждает автор обращения.",
+      "В Сотах откройте «Обратная связь» → «Входящие». «Выгрузить для агента» соберёт JSON с текстами и перепиской. Скачайте файл или скопируйте текст. Через MCP начните с feedback_inbox_list. Готовое решение подтверждает автор обращения.",
     ),
     link("Открыть кабинет", "/", "button primary"),
   );
@@ -925,6 +925,11 @@ async function dashboard() {
       if (!dialog.isConnected) return;
       const json = JSON.stringify(value, null, 2);
       notice(info, `Готово: проектов ${value.projects.length}, обращений ${value.tickets.length}.`);
+      const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+      const anchor = link("Скачать JSON", url, "button primary");
+      anchor.download = `feedback-${new Date().toISOString().slice(0, 10)}.json`;
+      dialog.append(anchor);
+      dialog.addEventListener("close", () => URL.revokeObjectURL(url), { once: true });
       if (sourceClient) {
         const output = make("textarea");
         output.value = json;
@@ -939,13 +944,7 @@ async function dashboard() {
             output.select();
             notice(info, "Текст выделен. Нажмите Ctrl+C или скопируйте его через меню.");
           }
-        }, true));
-      } else {
-        const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
-        const anchor = link("Скачать JSON", url, "button primary");
-        anchor.download = `feedback-${new Date().toISOString().slice(0, 10)}.json`;
-        dialog.append(anchor);
-        dialog.addEventListener("close", () => URL.revokeObjectURL(url), { once: true });
+        }));
       }
     } catch (error) { if (error.name !== "AbortError" && info.isConnected) notice(info, describe(error, true), true); }
   }
