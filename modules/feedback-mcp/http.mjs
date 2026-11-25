@@ -230,14 +230,16 @@ export function createFeedbackHttp({
     }),
   );
   app.post(
-    "/api/tools/:name",
+    ["/api/tools", "/api/tools/:name"],
     asyncRoute(async (req, res) => {
       check(singleHeader(req, "origin") === origin, "origin_denied", 403);
       await auth.assertCsrf(req);
       const actor = await auth.browserActor(req);
       check(actor, "authentication_required", 401);
       const args = await readJson(req);
-      const result = callFeedbackTool(service, actor, req.params.name, args);
+      // The account inbox also uses the published collection path on hosts
+      // that only route an explicit allowlist of individual tool paths.
+      const result = callFeedbackTool(service, actor, req.params.name ?? "feedback_inbox_list", args);
       res.json(result);
     }),
   );

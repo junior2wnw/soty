@@ -123,6 +123,14 @@ test("real modern SDK client creates a project, retrieves integration, and sees 
     arguments: { projectId: project.id },
   });
   assert.equal(page.structuredContent.tickets[0].body, args.body);
+  const inbox = await client.callTool({ name: "feedback_inbox_list", arguments: {} });
+  const cabinet = await f.json("/api/tools", {
+    body: {}, headers: { Origin: f.origin, "X-Test-Owner": "alice", "X-Feedback-CSRF": "fixture-csrf" },
+  });
+  assert.equal(cabinet.status, 200);
+  assert.deepEqual(cabinet.data.structuredContent, inbox.structuredContent);
+  assert.equal(inbox.structuredContent.items[0].ticket.id, sent.data.ticket.id);
+  assert.equal((await f.json("/api/tools", { body: {}, headers: { Origin: f.origin } })).status, 403);
   const detail = await client.callTool({
     name: "feedback_ticket_get",
     arguments: { projectId: project.id, ticketId: sent.data.ticket.id },

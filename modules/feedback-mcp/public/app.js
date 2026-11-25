@@ -124,7 +124,8 @@ async function ownerCall(operation, args = {}) {
       throw error;
     }
   }
-  const result = await request("/api/tools/feedback_" + operation, args);
+  const path = operation === "inbox_list" ? "/api/tools" : "/api/tools/feedback_" + operation;
+  const result = await request(path, args);
   if (operation === "attachment_get") {
     const media = result.content.find(
       (item) => item.type === "resource",
