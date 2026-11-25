@@ -140,7 +140,7 @@ test('embedded browser client uses maintained frame fetch and reconciles lost AC
     .replace("'./source-frame-fetch.js'", JSON.stringify(sdkUrl));
   const { createFeedbackSourceClient } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
   let loseAck = true, receiptBeforeContinuation;
-  const client = createFeedbackSourceClient({ href: 'https://feedback.example/embed?sotyFrame=' + 'a'.repeat(43), now: f.now,
+  const client = await createFeedbackSourceClient({ href: 'https://feedback.example/embed?sotyFrame=' + 'a'.repeat(43), now: f.now,
     async fetch(path, options) {
       assert.equal(options.credentials, 'same-origin'); assert.equal(options.redirect, 'error');
       assert.equal(new Headers(options.headers).get('x-soty-frame'), 'a'.repeat(43));

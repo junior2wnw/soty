@@ -5,7 +5,7 @@ import {
   attachmentBytes,
   validateAttachmentBudget,
 } from "/assets/feedback-media.mjs";
-import { exportFeedback } from "/assets/export.js";
+import { createFeedbackSourceClient, exportFeedback } from "/assets/source-client.js";
 
 const root = document.querySelector("#app"),
   origin = location.origin;
@@ -211,7 +211,7 @@ function guide() {
     make(
       "p",
       "",
-      "В Сотах откройте «Обратная связь» → «Входящие»: здесь собраны обращения всех проектов вашего аккаунта. Кнопка «Выгрузить для агента» скачивает JSON с текстами и перепиской — его можно передать любому Codex или другому агенту. Через MCP начните с feedback_inbox_list. Готовое решение подтверждает автор обращения.",
+      "В Сотах откройте «Обратная связь» → «Входящие». «Выгрузить для агента» соберёт JSON с текстами и перепиской. В Сотах его можно скопировать, в отдельном кабинете — скачать файлом. Через MCP начните с feedback_inbox_list. Готовое решение подтверждает автор обращения.",
     ),
     link("Открыть кабинет", "/", "button primary"),
   );
@@ -830,9 +830,6 @@ async function publicForm(projectId) {
 async function dashboard() {
   let session;
   if (location.pathname === "/embed") {
-    const { createFeedbackSourceClient } = await import(
-      "/assets/source-client.js"
-    );
     sourceClient = await createFeedbackSourceClient();
     session = { authenticated: true };
   } else {
@@ -925,10 +922,30 @@ async function dashboard() {
     try {
       const value = await exportFeedback(ownerCall, { projectId, signal: controller.signal, onProgress: ({ count, waiting }) => notice(info, waiting ? `Лимит запросов. Продолжим через минуту. Обращений: ${count}.` : `Выгружено обращений: ${count}.`) });
       if (!dialog.isConnected) return;
-      const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }), url = URL.createObjectURL(blob), anchor = link("Скачать JSON", url, "button primary");
-      anchor.download = `feedback-${new Date().toISOString().slice(0, 10)}.json`;
+      const json = JSON.stringify(value, null, 2);
       notice(info, `Готово: проектов ${value.projects.length}, обращений ${value.tickets.length}.`);
-      dialog.append(anchor); anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+      if (sourceClient) {
+        const output = make("textarea");
+        output.value = json;
+        output.readOnly = true;
+        output.rows = 8;
+        dialog.append(field("JSON для агента", output), button("Скопировать JSON", async () => {
+          try {
+            await navigator.clipboard.writeText(json);
+            notice(info, "Скопировано.");
+          } catch {
+            output.focus();
+            output.select();
+            notice(info, "Текст выделен. Нажмите Ctrl+C или скопируйте его через меню.");
+          }
+        }, true));
+      } else {
+        const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+        const anchor = link("Скачать JSON", url, "button primary");
+        anchor.download = `feedback-${new Date().toISOString().slice(0, 10)}.json`;
+        dialog.append(anchor);
+        dialog.addEventListener("close", () => URL.revokeObjectURL(url), { once: true });
+      }
     } catch (error) { if (error.name !== "AbortError" && info.isConnected) notice(info, describe(error, true), true); }
   }
   async function list(cursor) {

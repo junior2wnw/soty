@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProjectService } from "../service.mjs";
 import { callFeedbackTool } from "../tools.mjs";
-import { exportFeedback } from "../public/export.js";
+import { exportFeedback } from "../public/source-client.js";
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "feedback-mcp-"));
